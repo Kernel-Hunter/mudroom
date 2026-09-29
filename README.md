@@ -7,8 +7,9 @@ micro-VM, on a copy of your project. Your real folder is never mounted. When
 the agent is done you read the diff, then apply all of it, some files, or
 none. Every apply can be undone.
 
-> Status: early prototype. Command-line only. Expect rough edges and breaking
-> changes.
+> Status: early prototype. Expect rough edges and breaking changes.
+
+![Reviewing a session in Mudroom](docs/screenshots/review-light.png)
 
 ## Why
 
@@ -42,6 +43,13 @@ Mudroom puts a review step in between:
 ```sh
 git clone https://github.com/Kernel-Hunter/mudroom
 cd mudroom
+scripts/build-app.sh            # build/Mudroom.app (app + bundled CLI), ad-hoc signed
+open build/Mudroom.app
+```
+
+For the command line only:
+
+```sh
 swift build -c release
 cp .build/release/mudroom /usr/local/bin/   # or anywhere on your PATH
 ```
@@ -54,7 +62,37 @@ container system start          # first run offers to download Apple's default k
 mudroom image build             # builds mudroom/agent-base:latest (Node LTS, git, ripgrep, claude, codex, gemini)
 ```
 
-## Usage
+## The app
+
+- **Sidebar**: sessions grouped by project, each with its agent, time and
+  status (running, ready to review, applied, discarded).
+- **New Session** (⌘N): pick a folder, pick Claude Code, Codex, Gemini CLI or
+  a custom command, start. Mudroom clones the folder and opens the agent in a
+  new Terminal window.
+- **Review**: changed files grouped into Added, Modified, Deleted and
+  Mode & Type, each with a checkbox. The right pane shows a unified or
+  side-by-side diff with line numbers. Modified text files have a checkbox per
+  hunk, so you can take some edits and leave others.
+- **Conflicts**: files you changed yourself since the session started are
+  flagged in the list and above the diff, and are never overwritten.
+- **Apply Selected** (⌘↩), **Apply All** (⇧⌘↩), **Undo** (⌥⌘Z) and
+  **Discard** (⌘⌫). One click is one rollback bundle, so one Undo reverts it.
+  Space toggles the selected file.
+
+Why Terminal: agents are interactive terminal programs and you often need to
+answer them. Terminal.app gives you scrollback, copy/paste and resizing
+without Mudroom shipping a terminal emulator. The app writes a small
+`run.command` into the session folder that runs `mudroom start <id>` in a
+login shell (so `PATH` and API keys match your usual shell), and it follows
+progress by polling `session.json`, which `mudroom start` keeps up to date
+(status, runner pid, start and end time). An embedded terminal may come later.
+
+| | |
+|---|---|
+| ![Dark mode, split diff](docs/screenshots/review-split-dark.png) | ![A conflict](docs/screenshots/conflict-light.png) |
+| ![After a partial apply](docs/screenshots/applied-light.png) | ![New session](docs/screenshots/new-session-light.png) |
+
+## Command line
 
 ```sh
 # Start a session: clone the project, boot a VM, run the agent on the clone.
@@ -65,9 +103,11 @@ mudroom run ~/code/myapp -- claude --dangerously-skip-permissions
 mudroom diff last --stat
 mudroom diff last
 
-# Apply everything, or only some paths.
+# Apply everything, only some paths, or only some hunks of one file.
 mudroom apply last --all
 mudroom apply last src/parser.swift docs/
+mudroom hunks last src/parser.swift            # numbered hunks
+mudroom apply last src/parser.swift --hunks 1,3
 
 # Changed your mind.
 mudroom undo last
@@ -75,6 +115,10 @@ mudroom undo last
 # Housekeeping.
 mudroom list
 mudroom discard <session>       # deletes the session's clones, never the project
+
+# Two-step start (what the app does).
+mudroom new ~/code/myapp --agent "Claude Code" -- claude --dangerously-skip-permissions
+mudroom start <session>
 ```
 
 Sessions can be named by full id, a unique prefix, or `last`.
@@ -119,6 +163,11 @@ applies. Other rules:
 - Before touching a file, Mudroom copies it into a rollback bundle in the
   session directory. `undo` restores from there, and skips any path you changed
   again after the apply (`--force` overrides).
+- Per-hunk apply uses Mudroom's own line diff (Myers), not `patch`. It
+  rebuilds the file from the base version plus the chosen hunks, keeps CRLF
+  line endings and a missing final newline as they were, and writes through
+  the same checks. A file that already has some hunks from an earlier apply is
+  not a conflict; the new hunks are added to it.
 
 ## How it works
 
@@ -143,16 +192,22 @@ package can replace it later without touching the diff/apply code.
 ## Not done yet
 
 - Network is not restricted. The VM has normal outbound access.
-- No per-hunk apply; selection is per path.
-- No GUI yet.
-- Agent config inside the VM (`~/.claude`, etc.) is thrown away with the VM.
+- Agent config inside the VM (`~/.claude`, etc.) is thrown away with the VM,
+  so interactive logins have to be repeated each session.
+- No snapshot timeline yet: one base per session, undo per apply.
+- The app is ad-hoc signed; no notarized build or Homebrew cask yet.
 
 ## Development
 
 ```sh
 swift build
-swift test     # clone, diff, apply, conflict and undo tests; no VM needed
+swift test                 # diff, hunks, apply, conflict and undo tests; no VM needed
+scripts/make-demo.sh       # demo sessions in build/demo (no VM)
+scripts/screenshots.sh     # regenerates docs/screenshots from the demo
 ```
+
+The app target is `MudroomApp` (SwiftUI, macOS 26+). `MudroomCore` has no UI
+code; the app and the CLI both sit on top of it.
 
 ## License
 
