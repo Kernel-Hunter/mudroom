@@ -84,7 +84,7 @@ final class AppModel {
             if reload { r.reload() }
             return
         }
-        let r = ReviewModel(handle: h)
+        let r = ReviewModel(handle: h, store: store)
         reviews[h.session.id] = r
         review = r
         r.reload(keepSelection: false)

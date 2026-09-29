@@ -32,7 +32,7 @@ struct MudroomApp: App {
                     .disabled(!canApply)
                 Button("Undo Last Apply") { review?.undo() }
                     .keyboardShortcut("z", modifiers: [.command, .option])
-                    .disabled(review?.snapshot?.canUndo != true)
+                    .disabled(review?.canUndo != true)
                 Divider()
                 Button("Toggle File") { review?.toggleFocused() }
                     .disabled(review?.focused?.canApply != true)
@@ -202,7 +202,9 @@ struct RootView: View {
             .navigationSplitViewColumnWidth(min: 300, ideal: 350, max: 480)
         } detail: {
             Group {
-                if let review = app.review, let entry = review.focused {
+                if let review = app.review, review.tab == .network {
+                    NetworkDetailView(review: review)
+                } else if let review = app.review, let entry = review.focused {
                     FileDetailView(review: review, entry: entry)
                 } else if let review = app.review, !review.files.isEmpty {
                     ContentUnavailableView("No File Selected", systemImage: "doc.text",
@@ -239,7 +241,7 @@ struct RootView: View {
         }
         if let review = app.review, review.handle.hasClones {
             ToolbarItemGroup(placement: .primaryAction) {
-                if review.snapshot?.canUndo == true {
+                if review.canUndo {
                     Button { review.undo() } label: { Label("Undo Apply", systemImage: "arrow.uturn.backward") }
                         .help("Undo the last apply (⌥⌘Z)")
                         .disabled(review.isWorking)

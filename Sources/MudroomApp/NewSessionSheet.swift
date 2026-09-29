@@ -11,6 +11,9 @@ struct NewSessionSheet: View {
     @State private var customCommand = ""
     @State private var image = AppleContainerBackend.defaultImage
     @State private var showAdvanced = false
+    @State private var networkMode: NetworkMode = .locked
+    @State private var registries = false
+    @State private var projectHosts: [String] = []
 
     private let customID = "custom"
 
@@ -89,6 +92,23 @@ struct NewSessionSheet: View {
                 }
             }
 
+            section("Network") {
+                Picker("Network", selection: $networkMode) {
+                    Label("Locked", systemImage: "lock.shield").tag(NetworkMode.locked)
+                    Label("Open", systemImage: "globe").tag(NetworkMode.open)
+                    Label("Offline", systemImage: "wifi.slash").tag(NetworkMode.offline)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                Text(networkHint)
+                    .font(.system(size: 11)).foregroundStyle(networkMode == .open ? Color.orange : Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if networkMode == .locked {
+                    Toggle("Also allow package registries (npm, PyPI, GitHub)", isOn: $registries)
+                        .font(.system(size: 12))
+                }
+            }
+
             DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
                 LabeledContent("Image") {
                     TextField("Image", text: $image).textFieldStyle(.roundedBorder)
@@ -107,6 +127,7 @@ struct NewSessionSheet: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Start Session") {
                     guard let project else { return }
+                    saveNetwork(project)
                     app.startSession(project: project, preset: preset, customCommand: customCommand, image: image)
                     dismiss()
                 }
@@ -119,6 +140,44 @@ struct NewSessionSheet: View {
         .frame(width: 540)
         .onAppear {
             if project == nil, let recent = app.recentProjects.first { project = URL(fileURLWithPath: recent) }
+            loadNetwork()
+        }
+        .onChange(of: project) { loadNetwork() }
+    }
+
+    var configStore: ProjectConfigStore { ProjectConfigStore(store: app.store) }
+
+    var networkHint: String {
+        switch networkMode {
+        case .locked:
+            let agentHosts = NetworkDefaults.hosts(forAgent: preset?.id)
+            var parts: [String] = []
+            if !agentHosts.isEmpty { parts.append("\(preset?.name ?? "the agent")'s API") }
+            if !projectHosts.isEmpty { parts.append("\(projectHosts.count) host\(projectHosts.count == 1 ? "" : "s") you allowed") }
+            let what = parts.isEmpty ? "nothing (add hosts from the Network tab)" : parts.joined(separator: " and ")
+            return "The VM can only reach \(what). Blocked attempts show up in the review."
+        case .open:
+            return "The VM gets normal internet access. Nothing is filtered or logged."
+        case .offline:
+            return "No internet at all. The agent can't reach its own API, so this suits local commands."
+        }
+    }
+
+    func loadNetwork() {
+        guard let project, let c = try? configStore.load(project.path) else { return }
+        networkMode = c.networkMode
+        registries = c.includePackageRegistries
+        projectHosts = c.allowedHosts.map(\.value)
+    }
+
+    func saveNetwork(_ project: URL) {
+        do {
+            try configStore.update(project.path) {
+                $0.networkMode = networkMode
+                $0.includePackageRegistries = registries
+            }
+        } catch {
+            app.errorMessage = "Couldn't save the network setting: \(error)"
         }
     }
 

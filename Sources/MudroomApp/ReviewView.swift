@@ -9,7 +9,35 @@ struct FileListColumn: View {
     var body: some View {
         VStack(spacing: 0) {
             SessionHeader(review: review)
+            Picker("View", selection: $review.tab) {
+                Text(review.baseFiles.isEmpty ? "Files" : "Files \(review.baseFiles.count)").tag(ReviewTab.files)
+                Text(review.blockedHosts.isEmpty ? "Network" : "Network · \(review.blockedHosts.count) blocked").tag(ReviewTab.network)
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 12)
+            .padding(.bottom, 9)
             Divider()
+            if review.tab == .network {
+                NetworkListColumn(review: review)
+                if let result = review.lastResult { resultBanner(result) }
+            } else {
+                filesTab
+            }
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    @ViewBuilder var filesTab: some View {
+            if !review.timeline.isEmpty && review.handle.hasClones {
+                TimelineBar(review: review)
+                Divider()
+            }
+            if let s = review.compareSnapshot {
+                Banner(style: .info, title: "Changes after snapshot \(s.number), read-only",
+                       detail: "Apply always uses the whole session. Press Reset to pick changes.")
+                    .padding(10)
+            }
             if review.isRunning {
                 Banner(style: .running, title: "\(review.handle.session.agentLabel) is still working",
                        detail: "Follow it in Terminal. The list refreshes when it finishes; applying is disabled until then.")
@@ -23,20 +51,21 @@ struct FileListColumn: View {
                     .padding(.top, 10)
                     .padding(.bottom, review.lastResult == nil ? 4 : 0)
             }
-            if let result = review.lastResult {
-                Banner(style: result.style == .success ? .success : result.style == .warning ? .warning : .info,
-                       title: result.title, detail: result.detail,
-                       actions: AnyView(HStack(spacing: 6) {
-                           if result.offerUndo && review.snapshot?.canUndo == true {
-                               Button("Undo") { review.undo() }.controlSize(.small)
-                           }
-                           Button { review.lastResult = nil } label: { Image(systemName: "xmark") }
-                               .buttonStyle(.borderless).controlSize(.small)
-                       }))
-                    .padding(10)
-            }
+            if let result = review.lastResult { resultBanner(result) }
             fileList
-        }
+    }
+
+    func resultBanner(_ result: ReviewModel.ResultBanner) -> some View {
+        Banner(style: result.style == .success ? .success : result.style == .warning ? .warning : .info,
+               title: result.title, detail: result.detail,
+               actions: AnyView(HStack(spacing: 6) {
+                   if result.offerUndo && review.canUndo {
+                       Button("Undo") { review.undo() }.controlSize(.small)
+                   }
+                   Button { review.lastResult = nil } label: { Image(systemName: "xmark") }
+                       .buttonStyle(.borderless).controlSize(.small)
+               }))
+            .padding(10)
     }
 
     var conflictSummary: String {
@@ -55,7 +84,8 @@ struct FileListColumn: View {
             ContentUnavailableView {
                 Label(review.isRunning ? "No changes yet" : "No changes", systemImage: "checkmark.seal")
             } description: {
-                Text(review.isRunning ? "Files the agent edits will show up here."
+                Text(review.isTimelineView ? "Nothing changed after this snapshot."
+                     : review.isRunning ? "Files the agent edits will show up here."
                      : "The agent didn't change any files.")
             }
         } else {
@@ -93,7 +123,7 @@ struct FileListColumn: View {
                 review.toggleFocused()
                 return .handled
             }
-            .safeAreaInset(edge: .bottom) { selectionBar }
+            .safeAreaInset(edge: .bottom) { if !review.isTimelineView { selectionBar } }
         }
     }
 
@@ -121,13 +151,15 @@ struct SessionHeader: View {
     var body: some View {
         let s = review.handle.session
         let phase = SessionPhase(review.handle)
-        let files = review.files
+        let files = review.baseFiles
         HStack(alignment: .center, spacing: 10) {
             AgentIcon(session: s, size: 32)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(s.projectName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                        .layoutPriority(1)
                     StatusBadge(phase: phase)
+                    if let net = s.network { NetworkBadge(network: net, compact: true) }
                 }
                 HStack(spacing: 4) {
                     Text(s.agentLabel)
@@ -156,8 +188,10 @@ struct FileRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            CheckBox(state: entry.isApplied ? .on : review.checkState(entry), disabled: !entry.canApply) {
-                review.toggle(entry.path)
+            if !entry.readOnly {
+                CheckBox(state: entry.isApplied ? .on : review.checkState(entry), disabled: !entry.canApply) {
+                    review.toggle(entry.path)
+                }
             }
             KindTag(entry: entry)
             VStack(alignment: .leading, spacing: 0) {

@@ -47,6 +47,8 @@ struct FileEntry: Identifiable, Sendable {
     var isApplied: Bool
     /// Hunks already in the project from an earlier partial apply.
     var appliedHunks: Set<Int>
+    /// Shown for a timeline comparison (snapshot to work): look, don't apply.
+    var readOnly = false
 
     var path: String { change.path }
     var group: ChangeGroup { ChangeGroup(change.kind) }
@@ -68,7 +70,7 @@ struct FileEntry: Identifiable, Sendable {
 
     var added: Int { hunks.reduce(0) { $0 + $1.added } }
     var removed: Int { hunks.reduce(0) { $0 + $1.removed } }
-    var canApply: Bool { conflict == nil && !isApplied }
+    var canApply: Bool { conflict == nil && !isApplied && !readOnly }
 }
 
 /// Everything the review screen needs, computed off the main thread.
@@ -81,6 +83,26 @@ struct ReviewSnapshot: Sendable {
     var canUndo: Bool
 
     static let maxTextBytes: Int64 = 4 << 20
+
+    /// Changes from `from` (a snapshot directory) to work/, read-only: the
+    /// review timeline. Apply always works on base -> work.
+    static func loadTimeline(_ handle: SessionHandle, from: URL) throws -> ReviewSnapshot {
+        let diff = try Differ.compare(base: from, work: handle.work)
+        let paths = diff.changes.map(\.path)
+        var files: [FileEntry] = []
+        for change in diff.changes {
+            let isDir = change.after.isDirectory || (change.kind == .deleted && change.before.isDirectory)
+            if isDir && (change.kind == .added || change.kind == .deleted) && paths.contains(where: { $0.hasPrefix(change.path + "/") }) {
+                continue
+            }
+            let content = try Self.content(for: change, before: from, after: handle.work, applier: nil)
+            files.append(FileEntry(change: change, content: content, conflict: nil, isApplied: false,
+                                   appliedHunks: [], readOnly: true))
+        }
+        files.sort { ($0.group, $0.path) < ($1.group, $1.path) }
+        return ReviewSnapshot(files: files, hiddenDeletedDirectories: [],
+                              gitMetadataChanges: diff.gitMetadataChanges.count, canUndo: false)
+    }
 
     static func load(_ handle: SessionHandle) throws -> ReviewSnapshot {
         let diff = try Differ.compare(base: handle.base, work: handle.work)
@@ -102,7 +124,7 @@ struct ReviewSnapshot: Sendable {
                 if change.kind == .deleted { hiddenDeleted.append(change.path) }
                 continue
             }
-            let content = try Self.content(for: change, handle: handle, applier: applier)
+            let content = try Self.content(for: change, before: handle.base, after: handle.work, applier: applier)
             var appliedHunks: Set<Int> = []
             if case .text(_, true) = content { appliedHunks = (try? applier.appliedHunks(for: change)) ?? [] }
             files.append(FileEntry(change: change, content: content, conflict: conflicts[change.path],
@@ -113,15 +135,22 @@ struct ReviewSnapshot: Sendable {
                               gitMetadataChanges: diff.gitMetadataChanges.count, canUndo: applier.canUndo)
     }
 
-    static func content(for change: Change, handle: SessionHandle, applier: Applier) throws -> FileContent {
-        let beforeURL = handle.base.appendingPathComponent(change.path)
-        let afterURL = handle.work.appendingPathComponent(change.path)
+    /// `applier` is nil for timeline views: hunks are then computed between
+    /// the two trees and can't be picked.
+    static func content(for change: Change, before: URL, after: URL, applier: Applier?) throws -> FileContent {
+        let beforeURL = before.appendingPathComponent(change.path)
+        let afterURL = after.appendingPathComponent(change.path)
         switch (change.kind, change.before, change.after) {
         case (.modified, .file, .file):
             if max(change.before.size ?? 0, change.after.size ?? 0) > maxTextBytes {
                 return .tooLarge(change.after.size ?? 0)
             }
-            if let hunks = try applier.hunks(for: change) { return .text(hunks: hunks, partial: true) }
+            if let applier {
+                if let hunks = try applier.hunks(for: change) { return .text(hunks: hunks, partial: true) }
+            } else if try !DiffRenderer.looksBinary(beforeURL), try !DiffRenderer.looksBinary(afterURL) {
+                return .text(hunks: LineDiff.hunks(base: try Data(contentsOf: beforeURL), work: try Data(contentsOf: afterURL)),
+                             partial: false)
+            }
             return .binary(before: change.before.size, after: change.after.size)
         case (.added, _, .file(_, let size, _)):
             if size > maxTextBytes { return .tooLarge(size) }
