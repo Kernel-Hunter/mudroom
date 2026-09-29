@@ -10,6 +10,8 @@ public enum SessionStatus: String, Codable, Sendable {
     case applied
     /// The last apply was rolled back.
     case undone
+    /// Clones deleted; only session.json is kept as a record.
+    case discarded
 }
 
 public struct Session: Codable, Sendable, Equatable {
@@ -21,9 +23,15 @@ public struct Session: Codable, Sendable, Equatable {
     public var status: SessionStatus
     public var cloneMethod: CloneMethod
     public var exitCode: Int32?
+    /// Display name of the agent preset, e.g. "Claude Code". Optional in the file.
+    public var agent: String?
+    /// PID of the `mudroom` process running the agent while status is `running`.
+    public var runnerPID: Int32?
+    public var started: Date?
+    public var finished: Date?
 
     public init(id: String, projectPath: String, created: Date, command: [String], image: String,
-                status: SessionStatus, cloneMethod: CloneMethod, exitCode: Int32? = nil) {
+                status: SessionStatus, cloneMethod: CloneMethod, exitCode: Int32? = nil, agent: String? = nil) {
         self.id = id
         self.projectPath = projectPath
         self.created = created
@@ -32,6 +40,15 @@ public struct Session: Codable, Sendable, Equatable {
         self.status = status
         self.cloneMethod = cloneMethod
         self.exitCode = exitCode
+        self.agent = agent
+    }
+
+    public var projectName: String { URL(fileURLWithPath: projectPath).lastPathComponent }
+
+    /// The agent label to show: the preset name, else the command's first word.
+    public var agentLabel: String {
+        if let agent, !agent.isEmpty { return agent }
+        return command.first.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "image default"
     }
 }
 
@@ -64,6 +81,23 @@ public struct SessionHandle: Sendable {
         if let exitCode { session.exitCode = exitCode }
         try save()
     }
+
+    /// Re-reads session.json (another process may have updated it).
+    public mutating func reload() throws {
+        session = try SessionStore.decode(Data(contentsOf: metadataURL))
+    }
+
+    /// True while status is `running` and the recorded runner process exists.
+    /// A `running` session whose runner is gone (terminal closed, crash) is stale.
+    public var isRunnerAlive: Bool {
+        guard session.status == .running, let pid = session.runnerPID else { return false }
+        return kill(pid, 0) == 0 || errno == EPERM
+    }
+
+    /// Whether the clones still exist (false after a discard).
+    public var hasClones: Bool {
+        FileManager.default.fileExists(atPath: base.path) && FileManager.default.fileExists(atPath: work.path)
+    }
 }
 
 public struct SessionStore: Sendable {
@@ -93,7 +127,8 @@ public struct SessionStore: Sendable {
 
     /// Creates the session directory with `base/` and `work/` cloned from the
     /// project. The project itself is only read.
-    public func create(project: URL, command: [String], image: String, allowClonefile: Bool = true) throws -> SessionHandle {
+    public func create(project: URL, command: [String], image: String, agent: String? = nil,
+                       allowClonefile: Bool = true) throws -> SessionHandle {
         let project = project.resolvingSymlinksInPath().standardizedFileURL
         var isDir: ObjCBool = false
         guard FileManager.default.fileExists(atPath: project.path, isDirectory: &isDir), isDir.boolValue else {
@@ -108,7 +143,7 @@ public struct SessionStore: Sendable {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
         var handle = SessionHandle(directory: dir, session: Session(
             id: id, projectPath: project.path, created: Date(), command: command, image: image,
-            status: .created, cloneMethod: .clonefile))
+            status: .created, cloneMethod: .clonefile, agent: agent))
         do {
             let m1 = try Cloner.cloneTree(from: project, to: handle.base, allowClonefile: allowClonefile)
             let m2 = try Cloner.cloneTree(from: project, to: handle.work, allowClonefile: allowClonefile)
@@ -121,14 +156,20 @@ public struct SessionStore: Sendable {
         return handle
     }
 
-    public func list() throws -> [SessionHandle] {
-        guard FileManager.default.fileExists(atPath: sessionsDirectory.path) else { return [] }
+    static func decode(_ data: Data) throws -> Session {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(Session.self, from: data)
+    }
+
+    /// All sessions, oldest first. Unreadable session.json files are skipped.
+    public func list() throws -> [SessionHandle] {
+        guard FileManager.default.fileExists(atPath: sessionsDirectory.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(atPath: sessionsDirectory.path).sorted().compactMap { name in
             let dir = sessionsDirectory.appendingPathComponent(name, isDirectory: true)
-            guard let data = try? Data(contentsOf: dir.appendingPathComponent("session.json")) else { return nil }
-            return SessionHandle(directory: dir, session: try decoder.decode(Session.self, from: data))
+            guard let data = try? Data(contentsOf: dir.appendingPathComponent("session.json")),
+                  let session = try? Self.decode(data) else { return nil }
+            return SessionHandle(directory: dir, session: session)
         }
     }
 
@@ -151,11 +192,24 @@ public struct SessionStore: Sendable {
     }
 
     /// Deletes the session directory. Never touches the project.
-    public func discard(_ handle: SessionHandle) throws {
+    ///
+    /// With `keepRecord`, only the clones and rollback bundles are deleted and
+    /// session.json stays behind with status `discarded`, so the session still
+    /// shows up in history.
+    public func discard(_ handle: SessionHandle, keepRecord: Bool = false) throws {
         let dir = handle.directory.standardizedFileURL
         guard dir.path.hasPrefix(sessionsDirectory.standardizedFileURL.path + "/") else {
             throw MudroomError.invalid("refusing to delete \(dir.path): not inside \(sessionsDirectory.path)")
         }
-        try FileManager.default.removeItem(at: dir)
+        guard keepRecord else {
+            try FileManager.default.removeItem(at: dir)
+            return
+        }
+        for sub in [handle.base, handle.work, handle.rollbackRoot] where FileManager.default.fileExists(atPath: sub.path) {
+            try FileManager.default.removeItem(at: sub)
+        }
+        var h = handle
+        h.session.runnerPID = nil
+        try h.setStatus(.discarded)
     }
 }
