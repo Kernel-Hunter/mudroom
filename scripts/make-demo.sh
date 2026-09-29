@@ -29,6 +29,10 @@ json.dump(s, open(p, "w"), indent=2, sort_keys=True)
 PY
 }
 ago() { date -u -v-"$1" +%Y-%m-%dT%H:%M:%SZ; }
+snap() {  # snap <session dir> <n> <age>: APFS-clone work/ as snapshot n, taken <age> ago
+  mkdir -p "$1/snapshots"
+  cp -cR "$1/work" "$1/snapshots/$2-$(date -u -v-"$3" +%Y%m%d-%H%M%S)"
+}
 
 # ---------------------------------------------------------------- weather-cli
 P=$ROOT/projects/weather-cli
@@ -284,6 +288,8 @@ s = s.replace('''  private async get(path: string, params: Record<string, string
   }''')
 open(p, "w").write(s)
 PY
+snap $S 1 11M
+
 cat > $W/src/cache.ts <<'EOF'
 interface Entry {
   value: unknown;
@@ -327,6 +333,8 @@ describe("ResponseCache", () => {
   });
 });
 EOF
+snap $S 2 7M
+
 python3 - $W/README.md <<'PY'
 import sys
 p = sys.argv[1]
@@ -348,6 +356,32 @@ chmod 755 $W/scripts/release.sh
 # Meanwhile, you bumped a dependency in the real project: a conflict.
 sed -i '' 's/"commander": "\^12.1.0"/"commander": "^12.2.0"/' $P/package.json
 
+snap $S 3 3M
+
+# What the VM connected to: the model API, plus npm and the weather API
+# the agent tried while running the tests (not on the allowlist).
+python3 - $S <<'PY'
+import json, sys, datetime, random
+d = sys.argv[1]
+now = datetime.datetime.now(datetime.timezone.utc)
+random.seed(7)
+rows = []
+def at(m): return (now - datetime.timedelta(minutes=m)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+for i in range(23):
+    m = 14 - i * 0.48
+    rows.append(dict(time=at(m), host="api.anthropic.com", port=443, method="CONNECT", allowed=True,
+                     bytesOut=random.randint(9000, 60000), bytesIn=random.randint(3000, 190000), durationMs=random.randint(1800, 26000)))
+for m in (9.2, 9.1, 8.7):
+    rows.append(dict(time=at(m), host="registry.npmjs.org", port=443, method="CONNECT", allowed=False,
+                     reason="not on this project's allowlist", bytesOut=0, bytesIn=0, durationMs=0))
+for m in (6.4, 6.3):
+    rows.append(dict(time=at(m), host="api.openweathermap.org", port=443, method="CONNECT", allowed=False,
+                     reason="not on this project's allowlist", bytesOut=0, bytesIn=0, durationMs=0))
+rows.sort(key=lambda r: r["time"])
+with open(f"{d}/network.jsonl", "w") as f:
+    for r in rows: f.write(json.dumps(r, sort_keys=True) + "\n")
+PY
+setjson $S network='{"mode":"locked","enforcement":"enforced","allowlist":["api.anthropic.com","console.anthropic.com","platform.claude.com","claude.ai"],"proxy":"http://192.168.128.1:52140","vmNetwork":"mudroom-hostonly"}'
 setjson $S status='"finished"' exitCode=0 started="\"$(ago 14M)\"" finished="\"$(ago 3M)\"" created="\"$(ago 15M)\""
 
 # ---------------------------------------------------------------- api-gateway
@@ -376,6 +410,7 @@ GW_ID=$($M new $G --agent "Codex" -- codex --dangerously-bypass-approvals-and-sa
 GS=$MUDROOM_HOME/sessions/$GW_ID
 sed -i '' 's/w.Write(\[\]byte("ok"))/w.Header().Set("Content-Type", "text\/plain")\n\tw.Write([]byte("ok"))/' $GS/work/src/server.go
 $M apply $GW_ID --all >/dev/null
+setjson $GS network='{"mode":"open","enforcement":"none","allowlist":[]}'
 setjson $GS exitCode=0 created="\"$(ago 3H)\"" started="\"$(ago 3H)\"" finished="\"$(ago 2H)\""
 
 # An older, discarded attempt on weather-cli, and one still running.

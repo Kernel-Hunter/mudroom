@@ -20,6 +20,9 @@ shot review-light light -MudroomFocus src/api.ts -diffLayout Unified
 shot review-dark dark -MudroomFocus src/api.ts -diffLayout Unified
 shot review-split-dark dark -MudroomFocus src/api.ts -diffLayout Split
 shot conflict-light light -MudroomFocus package.json -diffLayout Unified
+shot network-light light -MudroomTab network -MudroomFocusHost registry.npmjs.org:443:false
+shot network-dark dark -MudroomTab network
+shot timeline-light light -MudroomCompareFrom 2 -MudroomFocus src/cache.ts -diffLayout Unified
 shot new-session-light light -MudroomSnapshotAction newSession
 MUDROOM_HOME=$PWD/build/demo/empty-store shot welcome-dark dark
 # Last, since it writes to the demo project: api.ts hunk 1 left out, rest applied.
