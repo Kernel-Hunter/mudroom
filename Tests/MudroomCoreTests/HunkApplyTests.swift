@@ -124,4 +124,18 @@ struct HunkApplyTests {
         #expect(try read(target(f)) == Self.base)
         #expect(!exists(f.handle.rollbackRoot))
     }
+
+    @Test("whole paths and hunks in one call share one bundle; one undo reverts both")
+    func mixed() throws {
+        let f = try fixture()
+        let applier = Applier(handle: f.handle)
+        let report = try applier.apply(paths: ["other.txt"], hunks: ["src/file.txt": [1, 3]])
+        #expect(Set(report.applied) == ["other.txt", "src/file.txt"])
+        #expect(try FileManager.default.contentsOfDirectory(atPath: f.handle.rollbackRoot.path).count == 1)
+        #expect(try read(f.project.appendingPathComponent("other.txt")) == "y\n")
+        #expect(!(try read(target(f)).contains("extra")))
+        _ = try applier.undo()
+        #expect(try read(f.project.appendingPathComponent("other.txt")) == "x\n")
+        #expect(try read(target(f)) == Self.base)
+    }
 }

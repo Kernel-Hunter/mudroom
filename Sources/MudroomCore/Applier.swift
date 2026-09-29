@@ -94,20 +94,40 @@ public struct Applier {
 
     /// - Parameters:
     ///   - paths: project-relative paths (files or directories) to apply; nil applies everything.
+    ///   - hunks: for modified text files, apply only these hunk ids (see `hunks(for:)`)
+    ///     instead of the whole file. Hunks applied earlier stay applied.
     ///   - includeGit: also apply changes inside `.git/`.
     ///   - dryRun: only check; `applied` then lists what would be written.
-    public func apply(paths: [String]?, includeGit: Bool = false, dryRun: Bool = false) throws -> ApplyReport {
+    ///
+    /// Everything written by one call goes into one rollback bundle, so one
+    /// `undo` reverts it.
+    public func apply(paths: [String]?, hunks hunkSelection: [String: Set<Int>] = [:],
+                      includeGit: Bool = false, dryRun: Bool = false) throws -> ApplyReport {
         let diff = try Differ.compare(base: handle.base, work: handle.work)
         var changes = diff.changes + (includeGit ? diff.gitMetadataChanges : [])
         var report = ApplyReport()
+        let hunkSel = Dictionary(hunkSelection.map { (Self.normalize($0.key), $0.value) }, uniquingKeysWith: { $0.union($1) })
 
         if let paths {
-            let selection = paths.map(Self.normalize)
+            let selection = paths.map(Self.normalize) + hunkSel.keys
             changes = changes.filter { Self.matches($0.path, selection: selection) }
             for sel in selection where sel != "." && !changes.contains(where: { Self.matches($0.path, selection: [sel]) }) {
                 report.skipped.append(PathIssue(path: sel, reason: "no change at this path"))
             }
         }
+
+        // Per-hunk paths are planned separately (below).
+        var hunkPlans: [HunkPlan] = []
+        for (path, selected) in hunkSel.sorted(by: { $0.key < $1.key }) {
+            guard let change = changes.first(where: { $0.path == path }) else {
+                if !report.skipped.contains(where: { $0.path == path }) {
+                    report.skipped.append(PathIssue(path: path, reason: "no change at this path"))
+                }
+                continue
+            }
+            if let plan = try planHunks(change, selected: selected, report: &report) { hunkPlans.append(plan) }
+        }
+        changes.removeAll { hunkSel[$0.path] != nil }
 
         // Directories this apply will create; their children aren't blocked by
         // whatever currently sits at that path (it gets replaced first).
@@ -128,18 +148,16 @@ public struct Applier {
             if real == change.after {
                 report.alreadyApplied.append(change.path)
             } else if !isExpected(real, for: change) {
-                report.conflicts.append(PathIssue(
-                    path: change.path,
-                    reason: "project changed since the session started (expected \(describe(change.before)), found \(describe(real)))"))
+                report.conflicts.append(PathIssue(path: change.path, reason: conflictReason(change, real)))
             } else {
                 planned.append((change, real))
             }
         }
         if dryRun {
-            report.applied = planned.map(\.change.path)
+            report.applied = planned.map(\.change.path) + hunkPlans.map(\.change.path)
             return report
         }
-        guard !planned.isEmpty else { return report }
+        guard !planned.isEmpty || !hunkPlans.isEmpty else { return report }
 
         let bundle = try makeBundleDirectory()
         report.bundle = bundle
@@ -191,6 +209,24 @@ public struct Applier {
             }
         }
 
+        // 2b. Partial files: write the base with the chosen hunks applied.
+        for plan in hunkPlans {
+            run(plan.change) {
+                if let bad = unsafeAncestor(of: plan.change.path) {
+                    throw MudroomError.invalid("\(bad) in the project is not a plain directory")
+                }
+                let target = project.appendingPathComponent(plan.change.path)
+                var entry = try backup(plan.change.path, prior: plan.real, applied: .absent, bundle: bundle)
+                let staged = bundle.appendingPathComponent("staged-\(UUID().uuidString.prefix(8))")
+                try plan.content.write(to: staged)
+                defer { try? fm.removeItem(at: staged) }
+                try placeFile(from: staged, to: target, mode: plan.mode)
+                entry.applied = try FileNode.read(at: target)
+                entry.hunks = plan.hunks
+                entries.append(entry)
+            }
+        }
+
         // 3. Directory permissions last, so a read-only dir doesn't block its children.
         for (path, mode) in deferredDirModes.sorted(by: { $0.0 > $1.0 }) {
             try chmodOrThrow(project.appendingPathComponent(path), mode)
@@ -198,7 +234,20 @@ public struct Applier {
         return report
     }
 
+    private func conflictReason(_ change: Change, _ real: FileNode) -> String {
+        "project changed since the session started (expected \(describe(change.before)), found \(describe(real)))"
+    }
+
     // MARK: - Hunks
+
+    struct HunkPlan {
+        let change: Change
+        let real: FileNode
+        let content: Data
+        let mode: UInt16
+        /// Hunk ids present after the write; nil when that is all of them.
+        let hunks: [Int]?
+    }
 
     /// The hunks of a modified text file, numbered from 1. Nil when the path
     /// isn't a text file on both sides (binary, added, deleted, symlink...).
@@ -219,74 +268,53 @@ public struct Applier {
         return Set(ids)
     }
 
-    /// Applies some hunks of one modified text file. Hunks applied earlier
-    /// stay applied. The same safety rules as `apply` hold: the project file
-    /// must be exactly the base version or what Mudroom last wrote there.
-    public func applyHunks(path: String, hunks selected: Set<Int>) throws -> ApplyReport {
-        let path = Self.normalize(path)
-        var report = ApplyReport()
-        let diff = try Differ.compare(base: handle.base, work: handle.work)
-        guard let change = diff.changes.first(where: { $0.path == path }) else {
-            report.skipped.append(PathIssue(path: path, reason: "no change at this path"))
-            return report
-        }
+    /// Checks one per-hunk selection and computes the file to write. Returns
+    /// nil (after noting why in `report`) when there is nothing to write.
+    func planHunks(_ change: Change, selected: Set<Int>, report: inout ApplyReport) throws -> HunkPlan? {
+        let path = change.path
         guard let hunks = try hunks(for: change) else {
             report.skipped.append(PathIssue(path: path, reason: "not a modified text file; apply the whole path instead"))
-            return report
+            return nil
         }
-        let known = Set(hunks.map(\.id))
-        let unknown = selected.subtracting(known)
+        let unknown = selected.subtracting(hunks.map(\.id))
         if !unknown.isEmpty {
             throw MudroomError.invalid("\(path) has hunks 1-\(hunks.count); no hunk \(unknown.sorted().map(String.init).joined(separator: ", "))")
         }
         if let bad = unsafeAncestor(of: path) {
             report.conflicts.append(PathIssue(path: path, reason: "\(bad) in the project is not a plain directory"))
-            return report
+            return nil
         }
-        let target = project.appendingPathComponent(path)
-        let real = try FileNode.read(at: target)
+        let real = try FileNode.read(at: project.appendingPathComponent(path))
         let previous: Set<Int>
         if real == change.before {
             previous = []
         } else if real == change.after {
             report.alreadyApplied.append(path)
-            return report
+            return nil
         } else if let last = lastWritten(path), last.applied == real {
             previous = Set(last.hunks ?? [])
         } else {
-            report.conflicts.append(PathIssue(
-                path: path, reason: "project changed since the session started (expected \(describe(change.before)), found \(describe(real)))"))
-            return report
+            report.conflicts.append(PathIssue(path: path, reason: conflictReason(change, real)))
+            return nil
         }
         let wanted = previous.union(selected)
         if wanted == previous {
             report.alreadyApplied.append(path)
-            return report
+            return nil
         }
-
         let baseLines = TextLines(try Data(contentsOf: handle.base.appendingPathComponent(path)))
         let workData = try Data(contentsOf: handle.work.appendingPathComponent(path))
-        let result = LineDiff.apply(hunks, selected: wanted, base: baseLines, work: TextLines(workData)).data
-        let complete = result == workData
-        let mode = (complete ? change.after.mode : change.before.mode) ?? 0o644
+        let content = LineDiff.apply(hunks, selected: wanted, base: baseLines, work: TextLines(workData)).data
+        let complete = content == workData
+        return HunkPlan(change: change, real: real, content: content,
+                        mode: (complete ? change.after.mode : change.before.mode) ?? 0o644,
+                        hunks: complete ? nil : wanted.sorted())
+    }
 
-        let bundle = try makeBundleDirectory()
-        report.bundle = bundle
-        var entry = try backup(path, prior: real, applied: .absent, bundle: bundle)
-        do {
-            let staged = bundle.appendingPathComponent("staged-\(UUID().uuidString.prefix(8))")
-            try result.write(to: staged)
-            defer { try? fm.removeItem(at: staged) }
-            try placeFile(from: staged, to: target, mode: mode)
-            entry.applied = try FileNode.read(at: target)
-            entry.hunks = complete ? nil : wanted.sorted()
-            report.applied.append(path)
-        } catch {
-            report.conflicts.append(PathIssue(path: path, reason: "\(error)"))
-        }
-        try Self.writeManifest(RollbackManifest(sessionID: handle.session.id, created: Date(),
-                                                entries: report.applied.isEmpty ? [] : [entry], undone: false), to: bundle)
-        return report
+    /// Applies some hunks of one modified text file. Shorthand for
+    /// `apply(paths: [], hunks: [path: hunks])`.
+    public func applyHunks(path: String, hunks selected: Set<Int>) throws -> ApplyReport {
+        try apply(paths: [], hunks: [path: selected])
     }
 
     // MARK: - Undo
