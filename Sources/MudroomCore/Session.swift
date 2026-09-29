@@ -29,6 +29,9 @@ public struct Session: Codable, Sendable, Equatable {
     public var runnerPID: Int32?
     public var started: Date?
     public var finished: Date?
+    /// How the last run reached the network. Nil for sessions that never ran
+    /// (or ran before Mudroom recorded this).
+    public var network: SessionNetwork?
 
     public init(id: String, projectPath: String, created: Date, command: [String], image: String,
                 status: SessionStatus, cloneMethod: CloneMethod, exitCode: Int32? = nil, agent: String? = nil) {
@@ -52,6 +55,27 @@ public struct Session: Codable, Sendable, Equatable {
     }
 }
 
+/// The network setup of a run, as recorded in session.json.
+public struct SessionNetwork: Codable, Sendable, Equatable {
+    public var mode: NetworkMode
+    public var enforcement: NetworkEnforcement
+    /// Effective allowlist for the run (locked mode).
+    public var allowlist: [String]
+    /// Proxy address given to the VM, e.g. "http://192.168.128.1:51234".
+    public var proxy: String?
+    /// VM network name; nil means the runtime's default (NAT) network.
+    public var vmNetwork: String?
+
+    public init(mode: NetworkMode, enforcement: NetworkEnforcement, allowlist: [String] = [],
+                proxy: String? = nil, vmNetwork: String? = nil) {
+        self.mode = mode
+        self.enforcement = enforcement
+        self.allowlist = allowlist
+        self.proxy = proxy
+        self.vmNetwork = vmNetwork
+    }
+}
+
 /// A session directory on disk:
 ///
 ///     <root>/sessions/<id>/
@@ -59,6 +83,8 @@ public struct Session: Codable, Sendable, Equatable {
 ///       base/        clone of the project at session start (never mounted)
 ///       work/        clone the agent edits (mounted at /workspace)
 ///       rollback/    one bundle per apply, used by `undo`
+///       snapshots/   <n>-<time>/ clones of work/ taken while the agent ran
+///       network.jsonl  one line per proxied or refused connection
 public struct SessionHandle: Sendable {
     public let directory: URL
     public var session: Session
@@ -66,6 +92,8 @@ public struct SessionHandle: Sendable {
     public var base: URL { directory.appendingPathComponent("base", isDirectory: true) }
     public var work: URL { directory.appendingPathComponent("work", isDirectory: true) }
     public var rollbackRoot: URL { directory.appendingPathComponent("rollback", isDirectory: true) }
+    public var snapshotsRoot: URL { directory.appendingPathComponent("snapshots", isDirectory: true) }
+    public var networkLog: URL { directory.appendingPathComponent("network.jsonl") }
     public var project: URL { URL(fileURLWithPath: session.projectPath, isDirectory: true) }
     var metadataURL: URL { directory.appendingPathComponent("session.json") }
 
@@ -205,7 +233,7 @@ public struct SessionStore: Sendable {
             try FileManager.default.removeItem(at: dir)
             return
         }
-        for sub in [handle.base, handle.work, handle.rollbackRoot] where FileManager.default.fileExists(atPath: sub.path) {
+        for sub in [handle.base, handle.work, handle.rollbackRoot, handle.snapshotsRoot] where FileManager.default.fileExists(atPath: sub.path) {
             try FileManager.default.removeItem(at: sub)
         }
         var h = handle

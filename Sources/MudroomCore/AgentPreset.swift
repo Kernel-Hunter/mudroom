@@ -52,36 +52,3 @@ public struct AgentPreset: Sendable, Equatable, Identifiable, Hashable {
         return args
     }
 }
-
-/// Runs the agent for a session that already has its clones, keeping
-/// session.json up to date (status, runner pid, timestamps, exit code).
-public struct SessionRunner {
-    public let backend: SandboxBackend
-
-    public init(backend: SandboxBackend = AppleContainerBackend()) { self.backend = backend }
-
-    public func run(_ handle: inout SessionHandle, tty: Bool, cpus: Int? = nil, memory: String? = nil,
-                    environment: [String] = AgentEnvironment.present()) throws -> Int32 {
-        guard handle.hasClones else { throw MudroomError.invalid("session \(handle.session.id) was discarded") }
-        let s = handle.session
-        let spec = SandboxSpec(
-            name: "mudroom-\(s.id)", image: s.image, workspace: handle.work, command: s.command,
-            environmentNames: environment, interactive: true, tty: tty, cpus: cpus, memory: memory)
-        handle.session.runnerPID = getpid()
-        handle.session.started = Date()
-        try handle.setStatus(.running)
-        let status: Int32
-        do {
-            status = try backend.run(spec)
-        } catch {
-            handle.session.runnerPID = nil
-            handle.session.finished = Date()
-            try? handle.setStatus(.finished, exitCode: -1)
-            throw error
-        }
-        handle.session.runnerPID = nil
-        handle.session.finished = Date()
-        try handle.setStatus(.finished, exitCode: status)
-        return status
-    }
-}
