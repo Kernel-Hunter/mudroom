@@ -69,6 +69,7 @@ struct Run: ParsableCommand {
             cpus: cpus, memory: memory)
 
         try handle.setStatus(.running)
+        fflush(stdout)
         let status: Int32
         do { status = try backend.run(spec) } catch {
             try? handle.setStatus(.finished, exitCode: -1)
