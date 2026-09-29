@@ -7,3 +7,4 @@ xcuserdata/
 DerivedData/
 .env
 .env.*
+/build
