@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .library(name: "MudroomCore", targets: ["MudroomCore"]),
         .executable(name: "mudroom", targets: ["mudroom"]),
+        .executable(name: "MudroomApp", targets: ["MudroomApp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.5.0"),
@@ -19,6 +20,10 @@ let package = Package(
                 "MudroomCore",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
+        ),
+        .executableTarget(
+            name: "MudroomApp",
+            dependencies: ["MudroomCore"]
         ),
         .testTarget(name: "MudroomCoreTests", dependencies: ["MudroomCore"]),
     ],
