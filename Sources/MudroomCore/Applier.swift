@@ -10,6 +10,9 @@ public struct RollbackEntry: Codable, Sendable, Equatable {
     public var applied: FileNode
     /// For a prior regular file: its copy inside the bundle's `files/` dir.
     public var backup: String?
+    /// Set when only some hunks were applied: every hunk id now present in
+    /// the project (including ones applied earlier). Nil for a whole-path apply.
+    public var hunks: [Int]?
 }
 
 public struct RollbackManifest: Codable, Sendable {
@@ -34,6 +37,8 @@ public struct ApplyReport: Sendable {
     public var skipped: [PathIssue] = []
     /// Rollback bundle directory, if anything was written.
     public var bundle: URL?
+
+    public var wroteAnything: Bool { !applied.isEmpty }
 }
 
 public struct UndoReport: Sendable {
@@ -65,10 +70,33 @@ public struct Applier {
         selection.contains { sel in sel == "." || path == sel || path.hasPrefix(sel + "/") }
     }
 
+    /// What Mudroom itself last wrote at a path, from rollback bundles that
+    /// haven't been undone. A project path in this state is not a conflict:
+    /// the user didn't touch it, a previous (partial) apply did.
+    public func lastWritten(_ path: String) -> RollbackEntry? {
+        guard let bundles = try? activeBundles() else { return nil }
+        for (_, manifest) in bundles.reversed() {
+            if let e = manifest.entries.last(where: { $0.path == path }) { return e }
+        }
+        return nil
+    }
+
+    /// True if the project state at a path is one this session may write over.
+    func isExpected(_ real: FileNode, for change: Change) -> Bool {
+        real == change.before || lastWritten(change.path)?.applied == real
+    }
+
+    /// Checks every change against the real project without writing.
+    /// `applied` lists what would be written.
+    public func preflight(paths: [String]? = nil, includeGit: Bool = false) throws -> ApplyReport {
+        try apply(paths: paths, includeGit: includeGit, dryRun: true)
+    }
+
     /// - Parameters:
     ///   - paths: project-relative paths (files or directories) to apply; nil applies everything.
     ///   - includeGit: also apply changes inside `.git/`.
-    public func apply(paths: [String]?, includeGit: Bool = false) throws -> ApplyReport {
+    ///   - dryRun: only check; `applied` then lists what would be written.
+    public func apply(paths: [String]?, includeGit: Bool = false, dryRun: Bool = false) throws -> ApplyReport {
         let diff = try Differ.compare(base: handle.base, work: handle.work)
         var changes = diff.changes + (includeGit ? diff.gitMetadataChanges : [])
         var report = ApplyReport()
@@ -86,7 +114,7 @@ public struct Applier {
         let becomingDirs = Set(changes.filter { $0.after.isDirectory }.map(\.path))
 
         // Decide per path before writing anything.
-        var planned: [Change] = []
+        var planned: [(change: Change, real: FileNode)] = []
         for change in changes {
             if case .special = change.after {
                 report.skipped.append(PathIssue(path: change.path, reason: "special file (fifo/socket/device) not applied"))
@@ -99,13 +127,17 @@ public struct Applier {
             let real = try FileNode.read(at: project.appendingPathComponent(change.path))
             if real == change.after {
                 report.alreadyApplied.append(change.path)
-            } else if real != change.before {
+            } else if !isExpected(real, for: change) {
                 report.conflicts.append(PathIssue(
                     path: change.path,
                     reason: "project changed since the session started (expected \(describe(change.before)), found \(describe(real)))"))
             } else {
-                planned.append(change)
+                planned.append((change, real))
             }
+        }
+        if dryRun {
+            report.applied = planned.map(\.change.path)
+            return report
         }
         guard !planned.isEmpty else { return report }
 
@@ -127,31 +159,31 @@ public struct Applier {
         }
 
         // 1. Deletions, deepest first, so directories are empty when removed.
-        for change in planned.filter({ $0.kind == .deleted }).sorted(by: { $0.path > $1.path }) {
+        for (change, real) in planned.filter({ $0.change.kind == .deleted }).sorted(by: { $0.change.path > $1.change.path }) {
             run(change) {
-                let entry = try backup(change.path, prior: change.before, applied: .absent, bundle: bundle)
-                try remove(project.appendingPathComponent(change.path), node: change.before)
+                let entry = try backup(change.path, prior: real, applied: .absent, bundle: bundle)
+                try remove(project.appendingPathComponent(change.path), node: real)
                 entries.append(entry)
             }
         }
 
         // 2. Everything else, parents before children.
         var deferredDirModes: [(String, UInt16)] = []
-        for change in planned.filter({ $0.kind != .deleted }).sorted(by: { $0.path < $1.path }) {
+        for (change, real) in planned.filter({ $0.change.kind != .deleted }).sorted(by: { $0.change.path < $1.change.path }) {
             run(change) {
                 if let bad = unsafeAncestor(of: change.path) {
                     throw MudroomError.invalid("\(bad) in the project is not a plain directory")
                 }
                 try createMissingParents(of: change.path, entries: &entries)
                 let target = project.appendingPathComponent(change.path)
-                let entry = try backup(change.path, prior: change.before, applied: change.after, bundle: bundle)
+                let entry = try backup(change.path, prior: real, applied: change.after, bundle: bundle)
                 switch (change.kind, change.after) {
                 case (.modeChanged, .file(let mode, _, _)):
                     try chmodOrThrow(target, mode)
                 case (.modeChanged, .directory(let mode)):
                     deferredDirModes.append((change.path, mode))
                 default:
-                    if change.kind == .typeChanged { try remove(target, node: change.before) }
+                    if change.kind == .typeChanged { try remove(target, node: real) }
                     try write(change.after, from: handle.work.appendingPathComponent(change.path), to: target,
                               deferredDirModes: &deferredDirModes, path: change.path)
                 }
@@ -166,7 +198,101 @@ public struct Applier {
         return report
     }
 
+    // MARK: - Hunks
+
+    /// The hunks of a modified text file, numbered from 1. Nil when the path
+    /// isn't a text file on both sides (binary, added, deleted, symlink...).
+    public func hunks(for change: Change) throws -> [Hunk]? {
+        guard change.kind == .modified, case .file = change.before, case .file = change.after else { return nil }
+        let b = handle.base.appendingPathComponent(change.path)
+        let w = handle.work.appendingPathComponent(change.path)
+        if try DiffRenderer.looksBinary(b) || DiffRenderer.looksBinary(w) { return nil }
+        return LineDiff.hunks(base: try Data(contentsOf: b), work: try Data(contentsOf: w))
+    }
+
+    /// Hunk ids of `path` already in the project because of an earlier
+    /// partial apply. Empty when the project still has the base version.
+    public func appliedHunks(for change: Change) throws -> Set<Int> {
+        let real = try FileNode.read(at: project.appendingPathComponent(change.path))
+        if real == change.after, let hunks = try hunks(for: change) { return Set(hunks.map(\.id)) }
+        guard let last = lastWritten(change.path), last.applied == real, let ids = last.hunks else { return [] }
+        return Set(ids)
+    }
+
+    /// Applies some hunks of one modified text file. Hunks applied earlier
+    /// stay applied. The same safety rules as `apply` hold: the project file
+    /// must be exactly the base version or what Mudroom last wrote there.
+    public func applyHunks(path: String, hunks selected: Set<Int>) throws -> ApplyReport {
+        let path = Self.normalize(path)
+        var report = ApplyReport()
+        let diff = try Differ.compare(base: handle.base, work: handle.work)
+        guard let change = diff.changes.first(where: { $0.path == path }) else {
+            report.skipped.append(PathIssue(path: path, reason: "no change at this path"))
+            return report
+        }
+        guard let hunks = try hunks(for: change) else {
+            report.skipped.append(PathIssue(path: path, reason: "not a modified text file; apply the whole path instead"))
+            return report
+        }
+        let known = Set(hunks.map(\.id))
+        let unknown = selected.subtracting(known)
+        if !unknown.isEmpty {
+            throw MudroomError.invalid("\(path) has hunks 1-\(hunks.count); no hunk \(unknown.sorted().map(String.init).joined(separator: ", "))")
+        }
+        if let bad = unsafeAncestor(of: path) {
+            report.conflicts.append(PathIssue(path: path, reason: "\(bad) in the project is not a plain directory"))
+            return report
+        }
+        let target = project.appendingPathComponent(path)
+        let real = try FileNode.read(at: target)
+        let previous: Set<Int>
+        if real == change.before {
+            previous = []
+        } else if real == change.after {
+            report.alreadyApplied.append(path)
+            return report
+        } else if let last = lastWritten(path), last.applied == real {
+            previous = Set(last.hunks ?? [])
+        } else {
+            report.conflicts.append(PathIssue(
+                path: path, reason: "project changed since the session started (expected \(describe(change.before)), found \(describe(real)))"))
+            return report
+        }
+        let wanted = previous.union(selected)
+        if wanted == previous {
+            report.alreadyApplied.append(path)
+            return report
+        }
+
+        let baseLines = TextLines(try Data(contentsOf: handle.base.appendingPathComponent(path)))
+        let workData = try Data(contentsOf: handle.work.appendingPathComponent(path))
+        let result = LineDiff.apply(hunks, selected: wanted, base: baseLines, work: TextLines(workData)).data
+        let complete = result == workData
+        let mode = (complete ? change.after.mode : change.before.mode) ?? 0o644
+
+        let bundle = try makeBundleDirectory()
+        report.bundle = bundle
+        var entry = try backup(path, prior: real, applied: .absent, bundle: bundle)
+        do {
+            let staged = bundle.appendingPathComponent("staged-\(UUID().uuidString.prefix(8))")
+            try result.write(to: staged)
+            defer { try? fm.removeItem(at: staged) }
+            try placeFile(from: staged, to: target, mode: mode)
+            entry.applied = try FileNode.read(at: target)
+            entry.hunks = complete ? nil : wanted.sorted()
+            report.applied.append(path)
+        } catch {
+            report.conflicts.append(PathIssue(path: path, reason: "\(error)"))
+        }
+        try Self.writeManifest(RollbackManifest(sessionID: handle.session.id, created: Date(),
+                                                entries: report.applied.isEmpty ? [] : [entry], undone: false), to: bundle)
+        return report
+    }
+
     // MARK: - Undo
+
+    /// True when there is an apply that `undo` would roll back.
+    public var canUndo: Bool { ((try? latestBundle()) ?? nil) != nil }
 
     /// Restores the most recent apply that hasn't been undone.
     public func undo(force: Bool = false) throws -> UndoReport {
@@ -229,17 +355,23 @@ public struct Applier {
     }
 
     func latestBundle() throws -> (URL, RollbackManifest)? {
+        try activeBundles().last
+    }
+
+    /// Bundles not yet undone, oldest first.
+    func activeBundles() throws -> [(URL, RollbackManifest)] {
         let root = handle.rollbackRoot
-        guard fm.fileExists(atPath: root.path) else { return nil }
+        guard fm.fileExists(atPath: root.path) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        for name in try fm.contentsOfDirectory(atPath: root.path).sorted().reversed() {
+        var out: [(URL, RollbackManifest)] = []
+        for name in try fm.contentsOfDirectory(atPath: root.path).sorted() {
             let dir = root.appendingPathComponent(name, isDirectory: true)
             guard let data = try? Data(contentsOf: dir.appendingPathComponent("manifest.json")) else { continue }
             let manifest = try decoder.decode(RollbackManifest.self, from: data)
-            if !manifest.undone { return (dir, manifest) }
+            if !manifest.undone && !manifest.entries.isEmpty { out.append((dir, manifest)) }
         }
-        return nil
+        return out
     }
 
     // MARK: - Helpers
