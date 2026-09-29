@@ -13,7 +13,7 @@ struct Mudroom: ParsableCommand {
         touches your real folder until you review the diff and apply it.
         """,
         version: "0.1.0",
-        subcommands: [Run.self, Diff.self, Apply.self, Undo.self, List.self, Discard.self, Image.self]
+        subcommands: [Run.self, New.self, Start.self, Diff.self, Hunks.self, Apply.self, Undo.self, List.self, Discard.self, Image.self]
     )
 }
 
@@ -60,28 +60,112 @@ struct Run: ParsableCommand {
         print("session \(s.id)  (\(s.cloneMethod == .clonefile ? "APFS clone" : "copied"))")
         print("project \(s.projectPath) stays untouched; the agent sees a copy at /workspace")
 
-        let env = AgentEnvironment.present()
-        if !env.isEmpty { print("passing through: \(env.joined(separator: ", "))") }
+        try runAgent(&handle, backend: backend, cpus: cpus, memory: memory)
+    }
+}
 
-        let spec = SandboxSpec(
-            name: "mudroom-\(s.id)", image: image, workspace: handle.work, command: command,
-            environmentNames: env, interactive: true, tty: isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1,
-            cpus: cpus, memory: memory)
+/// Shared by `run` and `start`: runs the agent attached to this terminal and
+/// prints a summary of what changed.
+func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, cpus: Int?, memory: String?) throws {
+    let env = AgentEnvironment.present()
+    if !env.isEmpty { print("passing through: \(env.joined(separator: ", "))") }
+    fflush(stdout)
+    let tty = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
+    let status: Int32
+    do {
+        status = try SessionRunner(backend: backend).run(&handle, tty: tty, cpus: cpus, memory: memory, environment: env)
+    } catch { fail(error) }
 
-        try handle.setStatus(.running)
-        fflush(stdout)
-        let status: Int32
-        do { status = try backend.run(spec) } catch {
-            try? handle.setStatus(.finished, exitCode: -1)
-            fail(error)
-        }
-        try handle.setStatus(.finished, exitCode: status)
+    let id = handle.session.id
+    print("\nagent exited with status \(status). Changes in session \(id):")
+    let result = try Differ.compare(base: handle.base, work: handle.work)
+    print(DiffRenderer(base: handle.base, work: handle.work).stat(result))
+    print("\nreview: mudroom diff \(id)    apply: mudroom apply \(id) --all    drop: mudroom discard \(id)")
+    if status != 0 { throw ExitCode(status) }
+}
 
-        print("\nagent exited with status \(status). Changes in session \(s.id):")
-        let result = try Differ.compare(base: handle.base, work: handle.work)
-        print(DiffRenderer(base: handle.base, work: handle.work).stat(result))
-        print("\nreview: mudroom diff \(s.id)    apply: mudroom apply \(s.id) --all    drop: mudroom discard \(s.id)")
-        if status != 0 { throw ExitCode(status) }
+struct New: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Create a session (clone the project) without starting the agent.",
+        discussion: "Prints the session id. Start it later with `mudroom start <id>`.")
+
+    @Argument(help: "The project directory.")
+    var project: String
+
+    @Option(help: "Container image to run.")
+    var image: String = AppleContainerBackend.defaultImage
+
+    @Option(help: "Agent name to record, e.g. \"Claude Code\".")
+    var agent: String?
+
+    @Argument(parsing: .postTerminator, help: "Command to run inside the VM (after --).")
+    var command: [String] = []
+
+    func run() throws {
+        do {
+            let handle = try store().create(project: URL(fileURLWithPath: project, isDirectory: true),
+                                            command: command, image: image, agent: agent)
+            print(handle.session.id)
+        } catch { fail(error) }
+    }
+}
+
+struct Start: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Run the agent for a session created with `mudroom new` (or by the app).")
+
+    @Argument(help: "Session id, unique prefix, or 'last'.")
+    var session: String
+
+    @Option(help: "CPUs for the VM.")
+    var cpus: Int?
+
+    @Option(help: "Memory for the VM, e.g. 4G.")
+    var memory: String?
+
+    func run() throws {
+        let backend = AppleContainerBackend()
+        var handle: SessionHandle
+        do {
+            try backend.checkAvailable()
+            handle = try store().open(session)
+        } catch { fail(error) }
+        if handle.isRunnerAlive { fail(MudroomError.invalid("session \(handle.session.id) is already running")) }
+        let s = handle.session
+        print("session \(s.id)  \(s.agentLabel) on \(s.projectName)")
+        print("project \(s.projectPath) stays untouched; the agent sees a copy at /workspace")
+        try runAgent(&handle, backend: backend, cpus: cpus, memory: memory)
+    }
+}
+
+struct Hunks: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Show one file's changes as numbered hunks, for `apply --hunks`.")
+
+    @Argument(help: "Session id, unique prefix, or 'last'.")
+    var session: String
+
+    @Argument(help: "A modified text file in the session.")
+    var path: String
+
+    func run() throws {
+        do {
+            let handle = try store().open(session)
+            let applier = Applier(handle: handle)
+            let diff = try Differ.compare(base: handle.base, work: handle.work)
+            guard let change = diff.changes.first(where: { $0.path == path }) else {
+                throw MudroomError.invalid("no change at \(path)")
+            }
+            guard let hunks = try applier.hunks(for: change) else {
+                throw MudroomError.invalid("\(path) is not a modified text file; it can only be applied as a whole")
+            }
+            let applied = try applier.appliedHunks(for: change)
+            print("--- a/\(path)\n+++ b/\(path)")
+            print(LineDiff.numberedText(hunks))
+            if !applied.isEmpty {
+                print("\nalready applied: \(applied.sorted().map(String.init).joined(separator: ", "))")
+            }
+        } catch { fail(error) }
     }
 }
 
@@ -132,10 +216,24 @@ struct Apply: ParsableCommand {
     @Flag(help: "Also apply changes inside .git/.")
     var includeGit = false
 
+    @Option(help: "Apply only these hunks (e.g. 1,3) of a single text file. See `mudroom hunks`.")
+    var hunks: String?
+
     func validate() throws {
         if all == !paths.isEmpty {
             throw ValidationError("pass paths to apply, or --all (not both)")
         }
+        if hunks != nil {
+            guard paths.count == 1 else { throw ValidationError("--hunks needs exactly one file path") }
+            guard hunkIDs != nil else { throw ValidationError("--hunks takes numbers like 1,3") }
+        }
+    }
+
+    var hunkIDs: Set<Int>? {
+        guard let hunks else { return nil }
+        let parts = hunks.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        let ids = parts.compactMap(Int.init)
+        return ids.count == parts.count && !ids.isEmpty ? Set(ids) : nil
     }
 
     func run() throws {
@@ -143,7 +241,12 @@ struct Apply: ParsableCommand {
         let report: ApplyReport
         do {
             handle = try store().open(session)
-            report = try Applier(handle: handle).apply(paths: all ? nil : paths, includeGit: includeGit)
+            let applier = Applier(handle: handle)
+            if let ids = hunkIDs {
+                report = try applier.applyHunks(path: paths[0], hunks: ids)
+            } else {
+                report = try applier.apply(paths: all ? nil : paths, includeGit: includeGit)
+            }
         } catch { fail(error) }
 
         for p in report.applied { print("applied    \(p)") }
@@ -209,10 +312,14 @@ struct Discard: ParsableCommand {
     @Argument(help: "Session id, unique prefix, or 'last'.")
     var session: String
 
+    @Flag(help: "Keep session.json as a record (status: discarded); delete only the clones.")
+    var keepRecord = false
+
     func run() throws {
         do {
             let handle = try store().open(session)
-            try store().discard(handle)
+            if handle.isRunnerAlive { throw MudroomError.invalid("session \(handle.session.id) is still running") }
+            try store().discard(handle, keepRecord: keepRecord)
             print("discarded \(handle.session.id)")
         } catch { fail(error) }
     }
