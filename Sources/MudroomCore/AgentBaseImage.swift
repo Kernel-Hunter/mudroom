@@ -1,0 +1,27 @@
+// Copy of images/agent-base/Containerfile, embedded so an installed `mudroom`
+// binary can build the image without the repo. A test checks they match.
+
+public enum AgentBaseImage {
+    public static let tag = "mudroom/agent-base:latest"
+
+    public static let containerfile = #"""
+# Mudroom agent base image: Node LTS plus the three common coding-agent CLIs.
+# Build with `mudroom image build` (tags it mudroom/agent-base:latest).
+FROM docker.io/library/node:lts-slim
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ripgrep ca-certificates less procps \
+ && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli \
+ && npm cache clean --force
+
+# The node user (uid 1000) owns files it creates in /workspace; the host sees
+# them as your user. Claude Code also refuses to skip permissions as root.
+USER node
+ENV HOME=/home/node
+WORKDIR /workspace
+CMD ["bash"]
+
+"""#
+}
