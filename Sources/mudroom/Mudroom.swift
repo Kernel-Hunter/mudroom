@@ -52,6 +52,9 @@ struct RunFlags: ParsableArguments {
     @Option(help: "Keep at most this many snapshots.")
     var snapshotLimit: Int?
 
+    @Flag(help: "Start even if the agent isn't signed in, and sign in inside the session.")
+    var signInInSession = false
+
     func options(tty: Bool) throws -> RunOptions {
         var hosts: [HostPattern] = []
         for raw in allow {
@@ -114,6 +117,8 @@ struct Run: ParsableCommand {
             backend = try backendOptions.make()
             try backend.checkAvailable()
         } catch { fail(error) }
+
+        if !flags.signInInSession, let why = signInProblem(agent: nil, command: command) { fail(why) }
 
         let projectURL = URL(fileURLWithPath: project, isDirectory: true)
         var handle: SessionHandle
@@ -229,6 +234,9 @@ struct Start: ParsableCommand {
             try backend.checkAvailable()
         } catch { fail(error) }
         if handle.isRunnerAlive { fail(MudroomError.invalid("session \(handle.session.id) is already running")) }
+        if !flags.signInInSession, let why = signInProblem(agent: handle.session.agent, command: handle.session.command) {
+            fail(why)
+        }
         let s = handle.session
         print("session \(s.id)  \(s.agentLabel) on \(s.projectName)")
         print("project \(s.projectPath) stays untouched; the agent sees a copy at /workspace")

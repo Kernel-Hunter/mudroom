@@ -437,11 +437,31 @@ func readSecretFromTerminal() -> String {
 
 /// Before a session: if the agent isn't signed in yet, say how the code
 /// paste works (and that a token avoids it).
+/// Claude Code, Codex and Gemini CLI start signed in or not at all:
+/// sessions don't stop to ask. Nil when the agent can start (or isn't one
+/// of these three).
+func signInProblem(agent: String?, command: [String]) -> MudroomError? {
+    guard let preset = AgentPreset.matching(agent: agent, command: command), !preset.isMultiProvider else { return nil }
+    let status = SignInStatus.check(preset, store: store(), tokens: AgentToken.defaultStore(store()))
+    if status.isSignedIn { return nil }
+    let how = switch preset.id {
+    case "claude": "mudroom agent login claude   (or set CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY)"
+    case "codex": HostLogin.forAgent("codex")?.isAvailable == true ? "mudroom agent import codex" : "mudroom agent login codex"
+    case "gemini": HostLogin.forAgent("gemini")?.isAvailable == true ? "mudroom agent import gemini" : "mudroom agent login gemini   (or mudroom keys set GEMINI_API_KEY)"
+    default: "mudroom setup"
+    }
+    return .invalid("""
+        \(preset.name) isn't signed in yet. Sign in once, then run this again:
+          \(how)
+        Or add --sign-in-in-session to sign in inside this session.
+        """)
+}
+
 func printSignInHint(_ session: Session, options: RunOptions) {
     guard let preset = AgentPreset.matching(agent: session.agent, command: session.command),
           let home = AgentHome(store: store(), agent: preset.id), !home.hasCredentials else { return }
     if let name = AgentToken.variable(for: preset.id), options.environmentNames.contains(name) { return }
-    if ((try? options.tokenStore?.read(preset.id)) ?? nil) != nil { return }
+    if options.tokenStore?.contains(preset.id) == true { return }
     if preset.credential.map(options.environmentNames.contains) == true { return }
     print("\(preset.name) isn't signed in yet. When it asks for a code: \(AuthLinkHandoff.pasteNote)")
     print("The sign-in page opens in your browser on its own. To skip this next time: mudroom agent login \(preset.id)")

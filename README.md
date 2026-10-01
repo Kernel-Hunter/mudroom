@@ -269,7 +269,10 @@ so the agent can't change them.
 
 Sessions never stop to ask you to sign in. Sign each agent in once, in Setup
 or with these commands, and every session after that starts signed in. New
-Session points you to Setup when the agent you picked isn't signed in yet.
+Session points you to Setup when the agent you picked isn't signed in yet,
+and `mudroom run` and `mudroom start` refuse to start Claude Code, Codex or
+Gemini CLI before it is (add `--sign-in-in-session` to sign in inside the
+session instead).
 
 `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY` and
 `GEMINI_API_KEY` are also forwarded into the VM when they are set in your
