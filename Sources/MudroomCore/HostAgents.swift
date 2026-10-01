@@ -223,7 +223,9 @@ public struct HostLogin: Sendable, Equatable {
     }
 
     public var displayPath: String {
-        (sourceDirectory.appendingPathComponent(files[0].name).path as NSString).abbreviatingWithTildeInPath
+        let path = sourceDirectory.appendingPathComponent(files[0].name).path
+        let home = NSHomeDirectory()
+        return path.hasPrefix(home + "/") ? "~" + path.dropFirst(home.count) : path
     }
 
     /// True if the main credential file exists (it is not read).

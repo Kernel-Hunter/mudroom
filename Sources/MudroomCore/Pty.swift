@@ -24,14 +24,7 @@ public final class PtyProcess: @unchecked Sendable {
 
     public init(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
                 cwd: URL? = nil) throws {
-        let m = posix_openpt(O_RDWR | O_NOCTTY)
-        guard m >= 0 else { throw MudroomError.posix("posix_openpt", executable, errno) }
-        guard grantpt(m) == 0, unlockpt(m) == 0, let name = ptsname(m) else {
-            let e = errno
-            close(m)
-            throw MudroomError.posix("grantpt", executable, e)
-        }
-        let slavePath = String(cString: name)
+        let (m, slavePath) = try Self.openMaster(executable)
         let s = open(slavePath, O_RDWR | O_NOCTTY)
         guard s >= 0 else {
             let e = errno
@@ -69,6 +62,33 @@ public final class PtyProcess: @unchecked Sendable {
         let t = Thread { [self] in readLoop() }
         t.name = "mudroom.pty"
         t.start()
+    }
+
+    /// A new pseudo-terminal: the master descriptor and the slave's path.
+    static func openMaster(_ what: String) throws -> (Int32, String) {
+        #if os(Linux)
+        // Glibc's Swift module leaves out posix_openpt and friends; these
+        // are the ioctls they wrap (devpts needs no grantpt).
+        let m = open("/dev/ptmx", O_RDWR | O_NOCTTY | O_CLOEXEC)
+        guard m >= 0 else { throw MudroomError.posix("open", "/dev/ptmx", errno) }
+        var unlock: Int32 = 0
+        var n: UInt32 = 0
+        guard ioctl(m, UInt(0x4004_5431), &unlock) == 0, ioctl(m, UInt(0x8004_5430), &n) == 0 else {  // TIOCSPTLCK, TIOCGPTN
+            let e = errno
+            close(m)
+            throw MudroomError.posix("ioctl", what, e)
+        }
+        return (m, "/dev/pts/\(n)")
+        #else
+        let m = posix_openpt(O_RDWR | O_NOCTTY)
+        guard m >= 0 else { throw MudroomError.posix("posix_openpt", what, errno) }
+        guard grantpt(m) == 0, unlockpt(m) == 0, let name = ptsname(m) else {
+            let e = errno
+            close(m)
+            throw MudroomError.posix("grantpt", what, e)
+        }
+        return (m, String(cString: name))
+        #endif
     }
 
     private func readLoop() {

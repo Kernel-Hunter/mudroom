@@ -42,6 +42,19 @@ struct TokenCaptureTests {
         #expect(SetupTokenCapture.extract("sk-ant-oat01-short") == nil)
     }
 
+    @Test("a program in the pty sees a wide terminal, takes typed input, and its token is captured")
+    func pty() throws {
+        let p = try PtyProcess("/bin/sh", ["-c", "test -t 0 && echo tty=yes; stty size; read line; echo \"got $line\"; echo '\(fakeToken)'"])
+        usleep(300_000)
+        p.sendLine("code-123")
+        #expect(p.wait() == 0)
+        let out = String(decoding: p.allOutput, as: UTF8.self)
+        #expect(out.contains("tty=yes") && out.contains("got code-123"))
+        #expect(out.contains("50 \(PtyProcess.columns)"))
+        #expect(SetupTokenCapture.extract(out) == fakeToken)
+        #expect(!ConsoleText.lines(p.allOutput).joined().contains("sk-ant"))
+    }
+
     @Test("readable output hides tokens and drops escape codes and repeated lines")
     func readable() {
         let raw = Data("\u{1B}[33mWaiting…\u{1B}[0m\r\nWaiting…\nYour token:\n\(fakeToken)\nsk-proj-\(String(repeating: "a", count: 30))\n".utf8)
