@@ -138,6 +138,11 @@ public protocol SandboxBackend: Sendable {
     func stop(_ name: String)
     /// The command a person would run to stop it.
     func stopHint(_ name: String) -> String
+    /// Labels of a local image, or nil if there is no such image.
+    func imageLabels(_ tag: String) -> [String: String]?
+    /// Builds an image with labels, handing each output line to `onLine`.
+    func buildImage(containerfile: URL, context: URL, tag: String, labels: [String: String],
+                    onLine: @escaping @Sendable (String) -> Void) throws
 }
 
 extension SandboxBackend {
@@ -155,6 +160,11 @@ extension SandboxBackend {
     public func isRunning(_ name: String) -> Bool { false }
     public func stop(_ name: String) {}
     public func stopHint(_ name: String) -> String { "stop the container \(name)" }
+    public func imageLabels(_ tag: String) -> [String: String]? { nil }
+    public func buildImage(containerfile: URL, context: URL, tag: String, labels: [String: String],
+                           onLine: @escaping @Sendable (String) -> Void) throws {
+        try buildImage(containerfile: containerfile, context: context, tag: tag)
+    }
 }
 
 public enum AgentEnvironment {
@@ -166,8 +176,9 @@ public enum AgentEnvironment {
         "GEMINI_API_KEY",
     ]
 
-    public static func present(in env: [String: String] = ProcessInfo.processInfo.environment) -> [String] {
-        passthrough.filter { env[$0].map { !$0.isEmpty } ?? false }
+    public static func present(in env: [String: String] = ProcessInfo.processInfo.environment,
+                               names: [String] = passthrough) -> [String] {
+        names.filter { env[$0].map { !$0.isEmpty } ?? false }
     }
 }
 
@@ -303,5 +314,20 @@ public struct AppleContainerBackend: SandboxBackend {
             "build", "--tag", tag, "--file", containerfile.path, context.path,
         ])
         if status != 0 { throw MudroomError.commandFailed("container build", status, "") }
+    }
+
+    public func buildImage(containerfile: URL, context: URL, tag: String, labels: [String: String],
+                           onLine: @escaping @Sendable (String) -> Void) throws {
+        try checkAvailable()
+        var args = ["build", "--progress", "plain", "--tag", tag]
+        for k in labels.keys.sorted() { args += ["--label", "\(k)=\(labels[k]!)"] }
+        args += ["--file", containerfile.path, context.path]
+        let r = try ProcessRunner.stream(executable!, args, onLine: onLine)
+        if r.status != 0 { throw MudroomError.commandFailed("container build", r.status, r.tail.suffix(12).joined(separator: "\n")) }
+    }
+
+    public func imageLabels(_ tag: String) -> [String: String]? {
+        guard let exe = executable, let out = try? ProcessRunner.capture(exe, ["image", "inspect", tag]), out.status == 0 else { return nil }
+        return AgentBaseImage.parseLabels(Data(out.stdout.utf8))
     }
 }

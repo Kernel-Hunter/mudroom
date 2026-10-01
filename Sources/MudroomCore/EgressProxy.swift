@@ -185,11 +185,17 @@ public final class EgressProxy: @unchecked Sendable {
         public var headerTimeout: TimeInterval
         /// Open connections at most; more are closed straight away.
         public var maxConnections: Int
+        /// Services on this machine the VM may use, by the port it asks for
+        /// on `NetworkDefaults.hostServiceName` -> the port on 127.0.0.1.
+        /// The proxy picks the destination itself, so no other local port
+        /// (and no other address) becomes reachable. Empty = none.
+        public var hostServices: [UInt16: UInt16]
 
         public init(allowlist: Allowlist, logURL: URL? = nil, bindHost: String? = nil, port: UInt16 = 0,
                     clientSubnets: [IPv4Subnet] = [], blockLocalDestinations: Bool = true,
                     blockedSubnets: [IPv4Subnet] = [], connectTimeout: Int = 15,
-                    headerTimeout: TimeInterval = 10, maxConnections: Int = 256) {
+                    headerTimeout: TimeInterval = 10, maxConnections: Int = 256,
+                    hostServices: [UInt16: UInt16] = [:]) {
             self.allowlist = allowlist
             self.logURL = logURL
             self.bindHost = bindHost
@@ -200,6 +206,7 @@ public final class EgressProxy: @unchecked Sendable {
             self.connectTimeout = connectTimeout
             self.headerTimeout = headerTimeout
             self.maxConnections = maxConnections
+            self.hostServices = hostServices
         }
     }
 
@@ -503,6 +510,22 @@ final class ProxyExchange: @unchecked Sendable {
         host = req.host.canonical
         port = req.port
         destination = req.host
+        if case .name(NetworkDefaults.hostServiceName) = req.host {
+            // A service on this Mac (local models): the proxy connects to
+            // loopback itself, and only on the ports set up for it.
+            guard let target = proxy.configuration.hostServices[UInt16(clamping: req.port)] else {
+                let what = proxy.configuration.hostServices.isEmpty
+                    ? "turn on Local models for this project to reach Ollama or LM Studio on the Mac"
+                    : "only " + proxy.configuration.hostServices.keys.sorted().map(String.init).joined(separator: " and ") + " are open on the Mac"
+                return reject(403, what)
+            }
+            allowed = true
+            var local = req
+            local.host = .name("localhost")
+            local.port = Int(target)
+            return connectUpstream(then: req.isConnect ? rest : local.upstreamHead() + rest,
+                                   fixed: (.v4(0x7F00_0001), target))
+        }
         guard proxy.configuration.allowlist.allows(req.host) else {
             return reject(403, "not on this project's allowlist")
         }
@@ -510,7 +533,15 @@ final class ProxyExchange: @unchecked Sendable {
         connectUpstream(then: req.isConnect ? rest : req.upstreamHead() + rest)
     }
 
-    private func connectUpstream(then initial: Data) {
+    private func connectUpstream(then initial: Data, fixed: (IPAddress, UInt16)? = nil) {
+        if let (a, p) = fixed {
+            switch Sock.connect(a, port: p, timeout: TimeInterval(proxy.configuration.connectTimeout), cancelled: { isAborted }) {
+            case .success(let c):
+                return connected(c, initial: initial)
+            case .failure(let e):
+                return reject(502, "nothing answers on port \(p) on the Mac (\(Sock.errorText(e.code)))")
+            }
+        }
         let addresses: [IPAddress]
         switch destination {
         case .ip(let a)?:
@@ -552,6 +583,10 @@ final class ProxyExchange: @unchecked Sendable {
             if isAborted { failure = "proxy stopped"; return }
             return reject(502, "upstream: \(Sock.errorText(lastError))")
         }
+        connected(fd, initial: initial)
+    }
+
+    private func connected(_ fd: Int32, initial: Data) {
         let stillOpen: Bool = fdLock.withLock {
             upstream = fd
             return !aborted

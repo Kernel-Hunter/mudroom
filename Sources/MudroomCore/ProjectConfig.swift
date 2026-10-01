@@ -20,10 +20,14 @@ public struct ProjectConfig: Codable, Sendable, Equatable {
     /// timer off (a snapshot is still taken when the agent exits).
     public var snapshotMinutes: Int
     public var snapshotLimit: Int
+    /// Let the VM use Ollama (11434) and LM Studio (1234) on this Mac,
+    /// through the proxy, as http://host.mudroom.internal:<port>. Locked
+    /// mode only.
+    public var localModels: Bool
 
     public init(projectPath: String, networkMode: NetworkMode = .locked, allowedHosts: [HostPattern] = [],
                 includeAgentHosts: Bool = true, includePackageRegistries: Bool = false,
-                snapshotMinutes: Int = 5, snapshotLimit: Int = 24) {
+                snapshotMinutes: Int = 5, snapshotLimit: Int = 24, localModels: Bool = false) {
         self.projectPath = projectPath
         self.networkMode = networkMode
         self.allowedHosts = allowedHosts
@@ -31,6 +35,7 @@ public struct ProjectConfig: Codable, Sendable, Equatable {
         self.includePackageRegistries = includePackageRegistries
         self.snapshotMinutes = snapshotMinutes
         self.snapshotLimit = snapshotLimit
+        self.localModels = localModels
     }
 
     // Missing keys fall back to defaults, so older files keep loading.
@@ -43,12 +48,18 @@ public struct ProjectConfig: Codable, Sendable, Equatable {
         includePackageRegistries = try c.decodeIfPresent(Bool.self, forKey: .includePackageRegistries) ?? false
         snapshotMinutes = try c.decodeIfPresent(Int.self, forKey: .snapshotMinutes) ?? 5
         snapshotLimit = try c.decodeIfPresent(Int.self, forKey: .snapshotLimit) ?? 24
+        localModels = try c.decodeIfPresent(Bool.self, forKey: .localModels) ?? false
     }
 
-    /// The hosts a session of `agent` (a preset id) may reach.
-    public func allowlist(agent: String?) -> Allowlist {
+    /// The hosts a session of `agent` (a preset id) may reach. `keys` are
+    /// the API key variables set for it; their providers' hosts are added
+    /// for agents that use many providers.
+    public func allowlist(agent: String?, keys: [String] = []) -> Allowlist {
         var hosts: [String] = []
-        if includeAgentHosts { hosts += NetworkDefaults.hosts(forAgent: agent) }
+        if includeAgentHosts {
+            hosts += NetworkDefaults.hosts(forAgent: agent)
+            hosts += NetworkDefaults.keyHosts(forAgent: agent, keys: keys)
+        }
         if includePackageRegistries { hosts += NetworkDefaults.packageRegistries }
         return Allowlist(Allowlist(strings: hosts).patterns + allowedHosts)
     }

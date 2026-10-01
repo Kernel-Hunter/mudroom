@@ -193,6 +193,28 @@ public struct DockerBackend: SandboxBackend {
         if status != 0 { throw MudroomError.commandFailed("\(name) build", status, "") }
     }
 
+    public func buildImage(containerfile: URL, context: URL, tag: String, labels: [String: String],
+                           onLine: @escaping @Sendable (String) -> Void) throws {
+        try checkAvailable()
+        var args = ["build"]
+        if flavor == .docker { args += ["--progress", "plain"] }
+        args += ["--tag", tag]
+        for k in labels.keys.sorted() { args += ["--label", "\(k)=\(labels[k]!)"] }
+        args += ["--file", containerfile.path, context.path]
+        let r = try ProcessRunner.stream(executable!, args, onLine: onLine)
+        if r.status != 0 { throw MudroomError.commandFailed("\(name) build", r.status, r.tail.suffix(12).joined(separator: "\n")) }
+    }
+
+    public func imageLabels(_ tag: String) -> [String: String]? {
+        guard let exe = executable,
+              let out = try? ProcessRunner.capture(exe, ["image", "inspect", "--format", "{{json .Config.Labels}}", tag]),
+              out.status == 0 else { return nil }
+        let text = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text == "null" || text.isEmpty { return [:] }
+        guard let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any] else { return [:] }
+        return obj.compactMapValues { $0 as? String }
+    }
+
     // MARK: Networks
 
     /// Docker option that leaves the internal bridge without an address on

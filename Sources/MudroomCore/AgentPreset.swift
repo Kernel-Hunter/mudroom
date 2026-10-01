@@ -32,7 +32,16 @@ public struct AgentPreset: Sendable, Equatable, Identifiable, Hashable {
     public static let gemini = AgentPreset(
         id: "gemini", name: "Gemini CLI", command: ["gemini", "--yolo"], credential: "GEMINI_API_KEY")
 
-    public static let all: [AgentPreset] = [.claude, .codex, .gemini]
+    /// Aider: changes stay uncommitted (the review is the commit), no
+    /// update checks, analytics or .gitignore edits.
+    public static let aider = AgentPreset(
+        id: "aider", name: "Aider",
+        command: ["aider", "--yes-always", "--no-auto-commits", "--no-gitignore", "--no-check-update",
+                  "--analytics-disable", "--no-show-release-notes"],
+        credential: nil)
+    public static let opencode = AgentPreset(id: "opencode", name: "opencode", command: ["opencode"], credential: nil)
+
+    public static let all: [AgentPreset] = [.claude, .codex, .gemini, .opencode, .aider]
 
     /// Splits a custom command line on whitespace, honoring simple quotes.
     public static func parseCommand(_ line: String) -> [String] {

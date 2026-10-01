@@ -27,6 +27,8 @@ public struct RunOptions: Sendable {
     public var snapshots: Bool
     /// Where a stored agent token is looked up (`mudroom agent token`).
     public var tokenStore: AgentTokenStore?
+    /// Check that the VM reaches the proxy before starting (locked mode).
+    public var probeNetwork: Bool = false
 
     public init(tty: Bool, cpus: Int? = nil, memory: String? = nil,
                 environmentNames: [String] = AgentEnvironment.present(), networkMode: NetworkMode? = nil,
@@ -109,13 +111,15 @@ public final class NetworkSetup: @unchecked Sendable {
     public let environment: [String: String]
     private let teardown = LockedBox<(@Sendable () -> Void)?>(nil)
 
-    public init(mode: NetworkMode, allowlist: Allowlist, backend: SandboxBackend, logURL: URL?) throws {
+    public init(mode: NetworkMode, allowlist: Allowlist, backend: SandboxBackend, logURL: URL?,
+                hostServices: [UInt16: UInt16] = [:]) throws {
         plan = try NetworkPlan.make(mode: mode, allowlist: allowlist, backend: backend)
         var record = plan.record
         if mode == .locked, plan.proxyHost != nil {
             let listen = try backend.proxyListen(for: plan)
             let p = EgressProxy(.init(allowlist: plan.allowlist, logURL: logURL, bindHost: listen.bindHost,
-                                      clientSubnets: listen.clientSubnets, blockedSubnets: listen.blockedSubnets))
+                                      clientSubnets: listen.clientSubnets, blockedSubnets: listen.blockedSubnets,
+                                      hostServices: hostServices))
             do {
                 try p.start()
             } catch {
@@ -194,11 +198,33 @@ public struct SessionRunner {
         let preset = AgentPreset.matching(agent: s.agent, command: s.command)
         let config = try ProjectConfigStore(store: store).load(s.projectPath)
         let mode = options.networkMode ?? config.networkMode
-        let allowlist = Allowlist(config.allowlist(agent: preset?.id).patterns + options.extraHosts)
-        let net = try NetworkSetup(mode: mode, allowlist: allowlist, backend: backend, logURL: handle.networkLog)
+        // Shell variables for agents that use many providers; the usual four
+        // are passed to every agent as before.
+        var passNames = options.environmentNames
+        if preset?.isMultiProvider ?? true {
+            passNames += AgentEnvironment.present(in: ProcessInfo.processInfo.environment, names: APIKeys.providers.map(\.variable))
+                .filter { !passNames.contains($0) }
+        }
+        let secrets = SessionSecrets.resolve(preset: preset, store: options.tokenStore, passthrough: passNames)
+        let keyNames = Set(passNames + secrets.keys)
+        let allowlist = Allowlist(config.allowlist(agent: preset?.id, keys: keyNames.sorted()).patterns + options.extraHosts)
+        let localModels = config.localModels && mode == .locked
+        if config.localModels && mode != .locked {
+            log("local models: only available in locked mode (they go through Mudroom's proxy)")
+        }
+        if options.probeNetwork && mode == .locked {
+            let probe = NetworkProbe.check(backend: backend, store: store, image: s.image)
+            if !probe.isOK {
+                if probe.needsRepair { throw MudroomError.networkUnreachable(probe.summary) }
+                log("network check: \(probe.summary)")
+            }
+        }
+        let net = try NetworkSetup(mode: mode, allowlist: allowlist, backend: backend, logURL: handle.networkLog,
+                                   hostServices: localModels ? Dictionary(uniqueKeysWithValues: NetworkDefaults.localModelPorts.keys.map { ($0, $0) }) : [:])
         defer { net.stop() }
         let record = net.record
         net.summary.forEach(log)
+        if localModels { log("local models: Ollama and LM Studio on this Mac at http://\(NetworkDefaults.hostServiceName):11434 and :1234") }
 
         let runsSession = options.commandOverride == nil
         // Held by this process and inherited by the sandbox process, so the
@@ -222,12 +248,11 @@ public struct SessionRunner {
             home = h
         }
         env.merge(net.environment) { _, new in new }
-        var secrets: [String: String] = [:]
-        if let id = preset?.id, let name = AgentToken.variable(for: id), !options.environmentNames.contains(name),
-           let token = try? options.tokenStore?.read(id) {
-            secrets[name] = token
-            log("agent token: \(name) from \(options.tokenStore?.location ?? "the token store")")
+        if localModels { env.merge(NetworkDefaults.localModelEnvironment) { _, new in new } }
+        if !secrets.isEmpty {
+            log("from \(options.tokenStore?.location ?? "the token store"): \(secrets.keys.sorted().joined(separator: ", "))")
         }
+        if home != nil { prepareAgentCopy(handle: handle, preset: preset, secrets: secrets, passNames: passNames) }
         var handoff: AuthLinkHandoff?
         if options.tty, let h = try? AuthLinkHandoff(directory: handle.directory.appendingPathComponent("handoff")) {
             mounts.append(h.mount)
@@ -238,7 +263,7 @@ public struct SessionRunner {
         let spec = SandboxSpec(
             name: "mudroom-\(s.id)", image: s.image, workspace: handle.work,
             command: options.commandOverride ?? s.command,
-            environmentNames: options.environmentNames, interactive: true, tty: options.tty,
+            environmentNames: passNames, interactive: true, tty: options.tty,
             cpus: options.cpus, memory: options.memory, mounts: mounts, environment: env, network: net.plan.vmNetwork)
         var runSpec = spec
         runSpec.secretEnvironment = secrets
@@ -292,5 +317,42 @@ public struct SessionRunner {
         return Result(status: status, network: record, connections: entries.count,
                       blocked: Array(Set(entries.filter { !$0.allowed }.map(\.host))).sorted(),
                       finalSnapshot: final, snapshotCount: SnapshotStore(handle: handle).list().count)
+    }
+
+    /// First-run answers in the session's agent directory, so a signed-in
+    /// agent starts without questions: Claude Code's API key approval (it
+    /// remembers the key by its last 20 characters, as Claude Code itself
+    /// does) and Gemini CLI's sign-in method.
+    func prepareAgentCopy(handle: SessionHandle, preset: AgentPreset?, secrets: [String: String], passNames: [String]) {
+        let dir = handle.agentHomeCopy
+        switch preset?.id {
+        case "claude":
+            let key = secrets["ANTHROPIC_API_KEY"] ?? (passNames.contains("ANTHROPIC_API_KEY") ? ProcessInfo.processInfo.environment["ANTHROPIC_API_KEY"] : nil)
+            guard let key, key.count > 20 else { return }
+            AgentHome.updateJSON(dir.appendingPathComponent(".claude.json")) { c in
+                var responses = c["customApiKeyResponses"] as? [String: Any] ?? [:]
+                var approved = responses["approved"] as? [String] ?? []
+                let tail = String(key.suffix(20))
+                if !approved.contains(tail) { approved.append(tail) }
+                responses["approved"] = approved
+                c["customApiKeyResponses"] = responses
+            }
+        case "gemini":
+            let hasOAuth = FileManager.default.fileExists(atPath: dir.appendingPathComponent("oauth_creds.json").path)
+            let hasKey = secrets["GEMINI_API_KEY"] != nil || passNames.contains("GEMINI_API_KEY")
+            guard hasOAuth || hasKey else { return }
+            AgentHome.updateJSON(dir.appendingPathComponent("settings.json")) { c in
+                var security = c["security"] as? [String: Any] ?? [:]
+                var auth = security["auth"] as? [String: Any] ?? [:]
+                guard auth["selectedType"] == nil else { return }
+                let type = hasOAuth ? "oauth-personal" : "gemini-api-key"
+                auth["selectedType"] = type
+                security["auth"] = auth
+                c["security"] = security
+                if c["selectedAuthType"] == nil { c["selectedAuthType"] = type }
+            }
+        default:
+            break
+        }
     }
 }

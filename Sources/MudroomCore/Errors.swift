@@ -16,6 +16,8 @@ public enum MudroomError: Error, CustomStringConvertible, Equatable {
     case commandFailed(String, Int32, String)
     case nothingToUndo(String)
     case invalid(String)
+    /// The VM can't reach Mudroom's proxy; `container system` needs a restart.
+    case networkUnreachable(String)
 
     public var description: String {
         switch self {
@@ -35,6 +37,8 @@ public enum MudroomError: Error, CustomStringConvertible, Equatable {
             "session \(id) has no apply to undo"
         case .invalid(let why):
             why
+        case .networkUnreachable(let why):
+            "\(why). Repair it with `mudroom setup --repair-network` (restarts the container system) or the Repair network button in the app."
         }
     }
 }

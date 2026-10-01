@@ -152,9 +152,37 @@ public enum NetworkDefaults {
         case "gemini":
             ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com",
              "oauth2.googleapis.com", "www.googleapis.com"]
+        // Its model catalog; providers come from the keys that are set.
+        case "opencode":
+            ["models.dev"]
         default:
             []
         }
+    }
+
+    /// Hosts for the API keys that are set. Agents tied to one provider
+    /// already have theirs; agents that work with many (and custom
+    /// commands) get each provider whose key is set.
+    public static func keyHosts(forAgent id: String?, keys: some Sequence<String>) -> [String] {
+        let preset = id.flatMap { AgentPreset.find($0) }
+        guard preset?.isMultiProvider ?? true else { return [] }
+        return APIKeys.hosts(for: keys)
+    }
+
+    /// The name a VM uses for services on the Mac (local models). The proxy
+    /// answers for it and connects to 127.0.0.1 itself, only on the ports
+    /// in `localModelPorts`.
+    public static let hostServiceName = "host.mudroom.internal"
+    /// Ollama and LM Studio.
+    public static let localModelPorts: [UInt16: String] = [11434: "Ollama", 1234: "LM Studio"]
+
+    /// Variables pointing agents at local models through the proxy.
+    public static var localModelEnvironment: [String: String] {
+        let ollama = "http://\(hostServiceName):11434"
+        let lmstudio = "http://\(hostServiceName):1234/v1"
+        return ["OLLAMA_HOST": ollama, "OLLAMA_API_BASE": ollama,
+                "LM_STUDIO_API_BASE": lmstudio, "LMSTUDIO_BASE_URL": lmstudio,
+                "LM_STUDIO_API_KEY": "lm-studio"]
     }
 
     /// npm, PyPI and GitHub (clone, release downloads, raw files).

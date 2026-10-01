@@ -82,6 +82,13 @@ extension AgentPreset {
         // No auto-updater, telemetry or error reporting: fewer hosts to allow.
         case "claude": ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"]
         case "gemini": ["NO_BROWSER": "true"]
+        // History files go to the home directory, not the project copy.
+        case "aider": ["AIDER_CHAT_HISTORY_FILE": "/home/node/.aider.chat.history.md",
+                       "AIDER_INPUT_HISTORY_FILE": "/home/node/.aider.input.history"]
+        // No self-update, no LSP downloads, and tools run without asking
+        // (the review happens afterwards).
+        case "opencode": ["OPENCODE_DISABLE_AUTOUPDATE": "1", "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
+                          "OPENCODE_CONFIG_CONTENT": #"{"autoupdate":false,"permission":{"edit":"allow","bash":"allow","webfetch":"allow"}}"#]
         default: [:]
         }
     }

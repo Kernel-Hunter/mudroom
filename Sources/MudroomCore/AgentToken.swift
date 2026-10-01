@@ -19,6 +19,16 @@ public protocol AgentTokenStore: Sendable {
     func delete(_ agent: String) throws -> Bool
     /// Where it is kept, for messages.
     var location: String { get }
+    /// Every stored name (agent ids and `env.NAME` API keys). Values are
+    /// not read, so on macOS this never asks for Keychain access.
+    func accounts() throws -> [String]
+    /// True if something is stored under this name, without reading it.
+    func contains(_ agent: String) -> Bool
+}
+
+extension AgentTokenStore {
+    public func accounts() throws -> [String] { [] }
+    public func contains(_ agent: String) -> Bool { ((try? accounts()) ?? []).contains(agent) }
 }
 
 public enum AgentToken {
@@ -102,6 +112,12 @@ public struct FileTokenStore: AgentTokenStore {
         }
     }
 
+    public func accounts() throws -> [String] {
+        let dir = root.appendingPathComponent("agents", isDirectory: true)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        return names.filter { FileManager.default.fileExists(atPath: url($0).path) }.sorted()
+    }
+
     public func delete(_ agent: String) throws -> Bool {
         let u = url(agent)
         guard FileManager.default.fileExists(atPath: u.path) else { return false }
@@ -143,9 +159,29 @@ public struct KeychainTokenStore: AgentTokenStore {
         guard status == errSecItemNotFound else { throw Self.error("update", status) }
         var add = query(agent)
         add[kSecValueData as String] = data
-        add[kSecAttrLabel as String] = "Mudroom \(agent) token"
+        add[kSecAttrLabel as String] = agent.hasPrefix(APIKeys.prefix) ? "Mudroom \(agent.dropFirst(APIKeys.prefix.count))" : "Mudroom \(agent) token"
         let s2 = SecItemAdd(add as CFDictionary, nil)
         guard s2 == errSecSuccess else { throw Self.error("add", s2) }
+    }
+
+    public func accounts() throws -> [String] {
+        let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrService as String: AgentToken.keychainService,
+                                kSecReturnAttributes as String: true,
+                                kSecMatchLimit as String: kSecMatchLimitAll]
+        var out: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess, let items = out as? [[String: Any]] else { throw Self.error("list", status) }
+        return items.compactMap { $0[kSecAttrAccount as String] as? String }.sorted()
+    }
+
+    public func contains(_ agent: String) -> Bool {
+        var q = query(agent)
+        q[kSecReturnAttributes as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var out: CFTypeRef?
+        return SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess
     }
 
     public func delete(_ agent: String) throws -> Bool {
