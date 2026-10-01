@@ -59,7 +59,7 @@ struct NetworkCommand: ParsableCommand {
         Mudroom's proxy, which allows the agent's API hosts plus anything you add. \
         Open gives normal access, offline none.
         """,
-        subcommands: [Show.self, Log.self, Allow.self, Deny.self, Mode.self, Registries.self, Check.self])
+        subcommands: [Show.self, Log.self, Allow.self, Deny.self, Mode.self, Registries.self, LocalModels.self, Check.self, Probe.self])
 
     struct ProjectOption: ParsableArguments {
         @Option(name: .customLong("project"), help: "Project directory (default: the current directory).")
@@ -89,10 +89,12 @@ struct NetworkCommand: ParsableCommand {
                 print("project   \(path)")
                 print("config    \(NetworkCommand.configStore().url(for: path).path)")
                 print("mode      \(config.networkMode.rawValue)")
-                print("agent hosts \(config.includeAgentHosts ? "on" : "off"), package registries \(config.includePackageRegistries ? "on" : "off")")
+                print("agent hosts \(config.includeAgentHosts ? "on" : "off"), package registries \(config.includePackageRegistries ? "on" : "off"), local models \(config.localModels ? "on" : "off")")
                 print("snapshots every \(config.snapshotMinutes) min, keep \(config.snapshotLimit)")
                 print("\nallowed for \(agent):")
-                for p in config.allowlist(agent: AgentPreset.find(agent)?.id ?? agent).patterns {
+                let tokens = AgentToken.defaultStore(store())
+                let keys = APIKeys.storedNames(tokens) + AgentEnvironment.present(names: APIKeys.providers.map(\.variable))
+                for p in config.allowlist(agent: AgentPreset.find(agent)?.id ?? agent, keys: keys).patterns {
                     let origin = config.allowedHosts.contains(p) ? "project" : "default"
                     print("  \(p.value.padding(toLength: 40, withPad: " ", startingAt: 0)) \(origin)")
                 }
@@ -213,6 +215,32 @@ struct NetworkCommand: ParsableCommand {
         }
     }
 
+    struct LocalModels: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "local-models",
+            abstract: "Let a project's VM use Ollama and LM Studio on this machine (on/off).",
+            discussion: """
+            Locked mode only. The VM reaches them as http://\(NetworkDefaults.hostServiceName):11434 (Ollama) and \
+            :1234 (LM Studio) through Mudroom's proxy, which connects to 127.0.0.1 on those two ports and no \
+            others. Sessions get OLLAMA_HOST, OLLAMA_API_BASE and LM_STUDIO_API_BASE pointing there.
+            """)
+        @Argument var state: String
+        @OptionGroup var where_: ProjectOption
+
+        func validate() throws {
+            guard ["on", "off"].contains(state) else { throw ValidationError("use on or off") }
+        }
+
+        func run() throws {
+            do {
+                let path = try where_.path()
+                let c = try NetworkCommand.configStore().update(path) { $0.localModels = state == "on" }
+                print("\(path): local models \(state)")
+                if c.localModels && c.networkMode != .locked { print("note: this project's network is \(c.networkMode.rawValue); local models only work in locked mode") }
+            } catch { fail(error) }
+        }
+    }
+
     struct Check: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Start a sandbox with a project's network settings and try to get out.",
@@ -267,7 +295,7 @@ struct NetworkCommand: ParsableCommand {
 struct Agent: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Persistent agent logins, kept in Mudroom's own directory (never your real ~/.claude).",
-        subcommands: [Login.self, Token.self, Status.self])
+        subcommands: [Login.self, Import.self, Token.self, Status.self])
 
     struct Login: ParsableCommand {
         static let configuration = CommandConfiguration(
@@ -289,19 +317,11 @@ struct Agent: ParsableCommand {
             let tty = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
             // Most robust for Claude: a long-lived token made by the claude CLI
             // on this machine, which opens the browser itself.
-            if preset.id == "claude", !inVM, tty, let claude = ProcessRunner.which("claude") {
-                print("The claude CLI is installed here. Sign in with it and store a long-lived token for sessions? [Y/n] ", terminator: "")
-                fflush(nil)
-                let answer = (readLine() ?? "").trimmingCharacters(in: .whitespaces).lowercased()
-                if answer.isEmpty || answer == "y" || answer == "yes" {
-                    print("Running `claude setup-token`. When it prints the token, copy it.")
-                    fflush(nil)
-                    let rc = (try? ProcessRunner.runAttached(claude, ["setup-token"])) ?? 1
-                    if rc == 0 {
-                        do { try storeToken(for: preset.id) } catch { fail(error) }
-                        return
-                    }
-                    print("claude setup-token didn't finish (status \(rc)); signing in inside the sandbox instead.")
+            if preset.id == "claude", !inVM, tty, let claude = HostCLI.findClaude() {
+                // The token is read from claude's output; nothing to copy or paste.
+                if confirm("The claude CLI is installed here (\(claude)). Sign in with it?", yes: false) {
+                    if signInClaudeWithHostCLI(claude) { return }
+                    print("Signing in inside the sandbox instead.")
                 }
             }
             print(AuthLinkHandoff.pasteNote)
@@ -365,7 +385,7 @@ extension Agent {
 func storeToken(for agent: String) throws {
     let tty = isatty(STDIN_FILENO) == 1
     if tty {
-        FileHandle.standardError.write(Data("Paste the token, then press Enter. \(AuthLinkHandoff.pasteNote.replacingOccurrences(of: "The code", with: "The token"))\n> ".utf8))
+        FileHandle.standardError.write(Data("Paste the token, then press Enter (it shows as dots).\n> ".utf8))
     }
     let raw = tty ? readSecretFromTerminal() : String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
     if tty { FileHandle.standardError.write(Data("\n".utf8)) }
@@ -395,7 +415,10 @@ func readSecretFromTerminal() -> String {
         guard read(STDIN_FILENO, &b, 1) == 1 else { break }
         if b == 3 { return "" } // Ctrl-C
         if b == 0x7f || b == 8 {
-            if !bytes.isEmpty { bytes.removeLast() }
+            if !bytes.isEmpty {
+                bytes.removeLast()
+                FileHandle.standardError.write(Data("\u{8} \u{8}".utf8))
+            }
             continue
         }
         if b == 0x0d || b == 0x0a {
@@ -405,6 +428,8 @@ func readSecretFromTerminal() -> String {
             break
         }
         bytes.append(b)
+        // A dot per character, so a paste visibly arrived (the value isn't shown).
+        if b >= 0x20 { FileHandle.standardError.write(Data("•".utf8)) }
     }
     return String(decoding: bytes, as: UTF8.self)
 }

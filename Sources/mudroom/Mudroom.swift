@@ -20,8 +20,8 @@ struct Mudroom: ParsableCommand {
         your real folder until you review the diff and apply it.
         """,
         version: mudroomVersion,
-        subcommands: [Run.self, New.self, Start.self, Diff.self, Review.self, Hunks.self, Apply.self, Undo.self, Snapshots.self,
-                      NetworkCommand.self, Agent.self, List.self, Discard.self, Image.self]
+        subcommands: [SetupCommand.self, Run.self, New.self, Start.self, Diff.self, Review.self, Hunks.self, Apply.self, Undo.self,
+                      Snapshots.self, NetworkCommand.self, Agent.self, Keys.self, List.self, Discard.self, Image.self]
     )
 }
 
@@ -58,9 +58,11 @@ struct RunFlags: ParsableArguments {
             guard let p = HostPattern(raw) else { throw ValidationError("not a host name or *.suffix pattern: \(raw)") }
             hosts.append(p)
         }
-        return RunOptions(tty: tty, cpus: cpus, memory: memory, networkMode: network, extraHosts: hosts,
-                          snapshotMinutes: snapshotEvery, snapshotLimit: snapshotLimit,
-                          tokenStore: AgentToken.defaultStore(store()))
+        var o = RunOptions(tty: tty, cpus: cpus, memory: memory, networkMode: network, extraHosts: hosts,
+                           snapshotMinutes: snapshotEvery, snapshotLimit: snapshotLimit,
+                           tokenStore: AgentToken.defaultStore(store()))
+        o.probeNetwork = ProcessInfo.processInfo.environment["MUDROOM_SKIP_NETWORK_PROBE"] != "1"
+        return o
     }
 }
 
@@ -143,7 +145,20 @@ func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, flags: Run
             fflush(nil)
         }
         fflush(nil)
-        result = try runner.run(&handle, options: options)
+        do {
+            result = try runner.run(&handle, options: options)
+        } catch MudroomError.networkUnreachable(let why) {
+            // Offer the fix instead of starting a session that can't reach its API.
+            print("\nThe VM network isn't working: \(why).")
+            guard backend.name == "apple-container",
+                  confirm("Repair it now? This restarts Apple's container system (about 10 seconds).", yes: false) else {
+                throw MudroomError.networkUnreachable(why)
+            }
+            let r = repairAndProbe(backend)
+            print(r.isOK ? "repaired: \(r.summary)" : "still failing: \(r.summary)")
+            guard r.isOK else { throw MudroomError.networkUnreachable(r.summary) }
+            result = try runner.run(&handle, options: options)
+        }
     } catch { fail(error) }
 
     let id = handle.session.id
@@ -474,13 +489,12 @@ struct Image: ParsableCommand {
                     let url = URL(fileURLWithPath: file)
                     try backend.buildImage(containerfile: url, context: url.deletingLastPathComponent(), tag: tag)
                 } else {
-                    let dir = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("mudroom-image-\(UUID().uuidString)", isDirectory: true)
-                    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                    defer { try? FileManager.default.removeItem(at: dir) }
-                    let containerfile = dir.appendingPathComponent("Containerfile")
-                    try AgentBaseImage.containerfile.write(to: containerfile, atomically: true, encoding: .utf8)
-                    try backend.buildImage(containerfile: containerfile, context: dir, tag: tag)
+                    // Labeled with the Containerfile's hash, so setup can tell when it is outdated.
+                    print("building \(tag) from the built-in Containerfile (a few minutes the first time)")
+                    try AgentBaseImage.build(backend: backend, tag: tag) { line in
+                        print(line)
+                        fflush(nil)
+                    }
                 }
                 print("built \(tag) for \(backend.name)")
             } catch { fail(error) }
