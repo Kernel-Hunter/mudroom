@@ -243,21 +243,59 @@ so the agent can't change them.
 They are passed by name (`container run --env NAME`, `docker run --env NAME`),
 so the values don't show up in the process list.
 
-To use a subscription login instead, sign in once inside a VM:
+To use a subscription instead, there are two ways in.
+
+**A stored token (the most reliable for Claude Code).** If the `claude` CLI is
+installed on your Mac, `claude setup-token` signs in through your browser and
+prints a long-lived token. Hand it to Mudroom:
 
 ```sh
-mudroom agent login claude      # runs `claude auth login`; paste the code back
+claude setup-token              # copy the sk-ant-oat01-... token it prints
+mudroom agent token claude      # paste it; nothing is echoed
+mudroom agent token claude --clear
+```
+
+The token is read without echo and kept in the macOS Keychain (service
+`io.github.kernel-hunter.mudroom`, written with `SecItemAdd`, never through a
+command line). On Linux it goes to `~/.local/share/mudroom/agents/<agent>/token`,
+mode 0600. Sessions get it as `CLAUDE_CODE_OAUTH_TOKEN`, passed by name like
+the variables above, so it is never in a process's arguments. A paste that the
+terminal wrapped over several lines is put back together. `mudroom agent login
+claude` offers to do all of this for you when `claude` is installed.
+
+**Signing in inside a VM.**
+
+```sh
+mudroom agent login claude      # `claude auth login` in the sandbox (--in-vm skips the token offer)
 mudroom agent login codex       # `codex login --device-auth`
 mudroom agent login gemini      # Gemini CLI's sign-in screen, NO_BROWSER mode
-mudroom agent status
+mudroom agent status            # signed in / token stored, per agent
 ```
+
+Copying the sign-in link out of the terminal is fragile: it wraps over several
+lines, and losing the end gives errors such as "Invalid
+code_challenge_method". Mudroom doesn't rely on that. Each run sets `BROWSER`
+in the sandbox to a small script on a mounted folder, so when the agent tries
+to open the link, Mudroom gets it on the host. It checks that the link is an
+https page on a known sign-in host (claude.ai, claude.com,
+platform.claude.com, console.anthropic.com, auth.openai.com, chatgpt.com,
+accounts.google.com), opens it in your browser, copies it to the clipboard and
+prints it on one line. For Claude Code, whose link points back to a port
+inside the sandbox, the redirect is swapped for Claude's own "copy this code"
+page; the rest of the request (PKCE challenge, state) is unchanged. After
+signing in, paste the code back. The code won't appear when you paste it.
+Paste with ⌘V (Ctrl+Shift+V on Linux), then press Enter.
 
 Each agent gets its own config directory,
 `~/Library/Application Support/Mudroom/agents/<agent>/home` (Linux:
-`~/.local/share/mudroom/agents/<agent>/home`), mounted at
-`/home/node/.claude`, `/home/node/.codex` or `/home/node/.gemini` in every
-session for that agent. Your real `~/.claude` (and the others) is never
-mounted.
+`~/.local/share/mudroom/agents/<agent>/home`). Your real `~/.claude` (and the
+others) is never mounted. A session doesn't mount this directory either: it
+gets a copy, `sessions/<id>/agent-home`, at `/home/node/.claude`,
+`/home/node/.codex` or `/home/node/.gemini`. When the session ends, only the
+sign-in is copied back (`.credentials.json` and the account fields of
+`.claude.json` for Claude Code, `auth.json` for Codex, `oauth_creds.json` and
+`google_accounts.json` for Gemini), so a login made in a session sticks, while
+settings, hooks or MCP servers a session adds stay in that session.
 
 ### What `diff` shows
 
@@ -272,10 +310,31 @@ T  config  (file -> symlink)
 git metadata changed (12 entries under .git/)
 ```
 
-Text files get a unified diff (via `git diff --no-index`). Binary files show
-`binary changed (size a -> b)`. Changes inside `.git/` are collapsed into one
-line unless you pass `--include-git`; `apply` skips them by default for the
-same reason.
+Text files get a unified diff from Mudroom's own line diff. Binary files show
+`binary changed (size a -> b)`. Changes inside any `.git` directory (also
+nested ones, and `.GIT` on case-insensitive disks) are collapsed into one line
+unless you pass `--include-git`; `apply` skips them by default for the same
+reason.
+
+Some lines get a marker:
+
+```
+?  secret.pem  (unreadable: permission denied; not applied)
+M  scripts/run  ! setuid/setgid bit, dropped on apply
+A  .husky/pre-commit  ! a git hook script that runs on the host
+```
+
+`?` is an entry Mudroom couldn't read (permissions, a socket or a FIFO). It is
+listed so it isn't silently missing, and it is never applied. Files that your
+tools may run on your side, such as `.envrc`, `.gitattributes`,
+`.gitmodules`, `.pre-commit-config.yaml`, `.npmrc`, `.vscode/tasks.json` and
+scripts under `.husky/` or `.githooks/`, are marked and start unselected in
+the review. setuid and setgid bits are dropped when a file is applied.
+
+Files are compared by content hash, never by timestamp, so an agent can't hide
+an edit by resetting mtime. The agent's tree is read through file descriptors
+that never follow symlinks and never block on FIFOs, so a swapped path can't
+point Mudroom at a file outside the session.
 
 Files are compared by content hash, never by timestamp, so an agent can't hide
 an edit by resetting mtime.
@@ -299,6 +358,18 @@ applies. Other rules:
   line endings and a missing final newline as they were, and writes through
   the same checks. A file that already has some hunks from an earlier apply is
   not a conflict; the new hunks are added to it.
+
+- Apply writes what you reviewed. `diff`, `hunks`, `review` and the app
+  record the content hash of each file they show you. If the agent's copy
+  changed after that, apply refuses that file and asks you to look again.
+  Staged copies are hashed again after copying.
+- Apply and undo refuse to run while the session's agent is still running,
+  checked through a lock the sandbox process holds and by asking the backend.
+- Each apply writes a journal before touching anything, so an apply that is
+  killed halfway can still be undone. Two applies to the same project wait for
+  each other.
+- Renames that only change case (`readme.md` to `README.md`) work on
+  case-insensitive disks, and file names close to the 255-byte limit work too.
 
 Snapshots don't change this: apply always compares the session's base with
 the agent's final copy, whatever point the timeline shows.
@@ -330,8 +401,22 @@ The allowlist is the agent's own hosts plus whatever you add:
 Telemetry and error-reporting hosts are left out; Claude Code runs with
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` so it doesn't try them. Patterns
 are exact hosts or `*.suffix`, which matches subdomains but not the bare
-domain. The proxy also refuses an allowed name that resolves to a loopback,
-link-local or VM-network address.
+domain.
+
+The proxy is strict about what it accepts:
+
+- A host must be a plain DNS name (letters, digits, hyphens, dots) or an IP
+  literal. Anything else is refused: NUL bytes, `%`, spaces, user info,
+  trailing junk, and numeric forms like `0x7f.1` or `2130706433`. The name it
+  checks is the name it connects to.
+- After DNS, the address is checked too. An allowed name that resolves to a
+  loopback, private (10/8, 172.16/12, 192.168/16, fc00::/7), link-local, CGNAT,
+  multicast, VM-network or one of the Mac's own addresses is refused, unless
+  that exact address is on the allowlist.
+- For plain HTTP, the `Host` header is rewritten to the host that was checked.
+- A client gets 10 seconds to send its request head (then 408), the head can
+  be at most 32 KB (then 400), and at most 256 connections are open at once
+  (then 503).
 
 ### What the isolation actually does
 
@@ -445,9 +530,13 @@ address; `mudroom network check` will tell you.
     work/          clone the agent edits, mounted at /workspace in the sandbox
     snapshots/     <n>-<time>/ clones of work/ taken while the agent ran
     network.jsonl  one line per proxied or refused connection
-    rollback/      one bundle per apply: manifest.json + copies of overwritten files
+    agent-home/    this session's copy of the agent's config directory
+    reviewed.json  content hashes of what you last reviewed
+    runner.lock    held while the agent runs
+    rollback/      one bundle per apply: manifest.json, journal.jsonl, copies of overwritten files
   projects/<hash>.json   per-project network mode, allowlist, snapshot interval
   agents/<agent>/home/   the agent's persistent config directory
+  agents/<agent>/token   stored token on Linux (macOS: the Keychain)
 ```
 
 `diff` compares `base/` with `work/`. `apply` copies from `work/` to the
@@ -485,10 +574,9 @@ so it runs the same on macOS and Linux.
 - Tools that ignore proxy variables simply fail in locked mode. That is the
   point, but some installers (and anything that opens raw sockets) will need
   the project switched to open for that run.
-- The agent's config directory persists and is shared by every session of
-  that agent. A session can change it (settings, hooks, MCP servers), and the
-  change carries into later sessions for other projects too. It is still
-  separate from your real `~/.claude`.
+- A sign-in made in a session is carried back to the agent's shared config
+  directory and used by later sessions. Everything else a session changes in
+  its copy (settings, hooks, MCP servers) is dropped.
 - Snapshots skip unchanged trees by comparing file size, mode and mtime. An
   edit that keeps both size and mtime the same doesn't trigger a snapshot on
   its own. The review diff always compares content.
