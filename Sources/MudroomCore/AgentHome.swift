@@ -145,7 +145,8 @@ extension AgentHome {
 
     /// Carries credentials (and Claude's account keys) from a session's
     /// copy back to the shared directory. Files are read without
-    /// following symlinks and must be JSON objects.
+    /// following symlinks and must be JSON objects. Returns the files that
+    /// changed the sign-in.
     @discardableResult
     public func syncBack(from handle: SessionHandle) -> [String] {
         let copy = handle.agentHomeCopy
@@ -163,14 +164,18 @@ extension AgentHome {
             let dest = hostDirectory.appendingPathComponent(".claude.json")
             var ours = ((try? Data(contentsOf: dest)).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:]
             var changed = false
+            var accountChanged = false
             for key in Self.claudeAccountKeys {
                 guard let v = theirs[key] else { continue }
                 if let old = ours[key], NSDictionary(dictionary: [key: old]).isEqual(to: [key: v]) { continue }
                 ours[key] = v
                 changed = true
+                if key == "oauthAccount" { accountChanged = true }
             }
+            // Claude Code writes userID, theme and onboarding fields on every
+            // first start; those are kept but are not a sign-in.
             if changed, let out = try? JSONSerialization.data(withJSONObject: ours, options: [.prettyPrinted, .sortedKeys]),
-               (try? Self.writePrivate(out, to: dest)) != nil {
+               (try? Self.writePrivate(out, to: dest)) != nil, accountChanged {
                 updated.append(".claude.json")
             }
         }

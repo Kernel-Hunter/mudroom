@@ -97,6 +97,12 @@ struct AgentAuthTests {
         #expect(!exists(home.hostDirectory.appendingPathComponent("settings.json")))
         let shared = try read(home.hostDirectory.appendingPathComponent(".claude.json"))
         #expect(shared.contains("oauthAccount") && !shared.contains("evil"))
+        // A session that only wrote Claude's first-start fields didn't sign in.
+        let f3 = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
+        _ = try home.sessionCopy(for: f3.handle)
+        try write(#"{"theme":"light","userID":"u1","oauthAccount":{"email":"a@b"}}"#,
+                  to: f3.handle.agentHomeCopy.appendingPathComponent(".claude.json"))
+        #expect(home.syncBack(from: f3.handle).isEmpty)
         // A symlinked credentials file in the copy is not followed.
         let f2 = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
         _ = try home.sessionCopy(for: f2.handle)
