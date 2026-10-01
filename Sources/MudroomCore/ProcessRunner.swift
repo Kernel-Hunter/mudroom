@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 public struct CapturedOutput: Sendable {
@@ -19,8 +25,8 @@ public enum ProcessRunner {
         let tmp = FileManager.default.temporaryDirectory
         let outURL = tmp.appendingPathComponent("mudroom-out-\(UUID().uuidString)")
         let errURL = tmp.appendingPathComponent("mudroom-err-\(UUID().uuidString)")
-        FileManager.default.createFile(atPath: outURL.path, contents: nil)
-        FileManager.default.createFile(atPath: errURL.path, contents: nil)
+        _ = FileManager.default.createFile(atPath: outURL.path, contents: nil)
+        _ = FileManager.default.createFile(atPath: errURL.path, contents: nil)
         defer {
             try? FileManager.default.removeItem(at: outURL)
             try? FileManager.default.removeItem(at: errURL)
@@ -61,7 +67,11 @@ public enum ProcessRunner {
         }
 
         // The child gets default signal handling back.
-        var attrs = posix_spawnattr_t(bitPattern: 0)
+        #if canImport(Darwin)
+        var attrs: posix_spawnattr_t? = nil
+        #else
+        var attrs = posix_spawnattr_t()
+        #endif
         posix_spawnattr_init(&attrs)
         defer { posix_spawnattr_destroy(&attrs) }
         var defaults = sigset_t()
@@ -71,8 +81,14 @@ public enum ProcessRunner {
         posix_spawnattr_setsigdefault(&attrs, &defaults)
         posix_spawnattr_setflags(&attrs, Int16(POSIX_SPAWN_SETSIGDEF))
 
+        // Built from ProcessInfo rather than `environ`, which Swift 6 treats
+        // as unsafe shared state on Linux.
+        var cEnv: [UnsafeMutablePointer<CChar>?] = ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") }
+        cEnv.append(nil)
+        defer { cEnv.forEach { free($0) } }
+
         var pid: pid_t = 0
-        let rc = posix_spawnp(&pid, executable, nil, &attrs, cArgs, environ)
+        let rc = posix_spawnp(&pid, executable, nil, &attrs, cArgs, cEnv)
         guard rc == 0 else { throw MudroomError.posix("posix_spawn", executable, rc) }
 
         var status: Int32 = 0

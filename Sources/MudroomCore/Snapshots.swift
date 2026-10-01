@@ -1,5 +1,15 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 /// A point-in-time copy of a session's work/ tree:
@@ -126,7 +136,12 @@ public struct SnapshotStore: Sendable {
             let type = st.st_mode & S_IFMT
             var line = "\(path)\u{0}\(st.st_mode)\u{0}"
             if type == S_IFREG {
-                line += "\(st.st_size)\u{0}\(st.st_mtimespec.tv_sec).\(st.st_mtimespec.tv_nsec)"
+                #if canImport(Darwin)
+                let mtime = st.st_mtimespec
+                #else
+                let mtime = st.st_mtim
+                #endif
+                line += "\(st.st_size)\u{0}\(mtime.tv_sec).\(mtime.tv_nsec)"
             } else if type == S_IFLNK {
                 line += (try? FileNode.readLink(url)) ?? ""
             }

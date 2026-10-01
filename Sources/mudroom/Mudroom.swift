@@ -1,5 +1,11 @@
 import ArgumentParser
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 import MudroomCore
 
@@ -22,7 +28,7 @@ func store() -> SessionStore { SessionStore.defaultStore() }
 
 func fail(_ error: Error) -> Never {
     FileHandle.standardError.write(Data("mudroom: \(error)\n".utf8))
-    Darwin.exit(1)
+    exit(1)
 }
 
 /// Options shared by `run` and `start`.
@@ -70,7 +76,7 @@ struct Run: ParsableCommand {
 
     @OptionGroup var flags: RunFlags
 
-    @Flag(help: "Copy instead of APFS clone (for testing).")
+    @Flag(help: "Copy instead of a copy-on-write clone (for testing).")
     var noClone = false
 
     @Argument(parsing: .postTerminator, help: "Command to run inside the VM (after --). Defaults to the image's command.")
@@ -87,7 +93,7 @@ struct Run: ParsableCommand {
         } catch { fail(error) }
 
         let s = handle.session
-        print("session \(s.id)  (\(s.cloneMethod == .clonefile ? "APFS clone" : "copied"))")
+        print("session \(s.id)  (\(s.cloneMethod.label))")
         print("project \(s.projectPath) stays untouched; the agent sees a copy at /workspace")
 
         try runAgent(&handle, backend: backend, flags: flags)
@@ -105,9 +111,9 @@ func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, flags: Run
     do {
         let runner = SessionRunner(backend: backend, store: store()) { line in
             print(line)
-            fflush(stdout)
+            fflush(nil)
         }
-        fflush(stdout)
+        fflush(nil)
         result = try runner.run(&handle, options: options)
     } catch { fail(error) }
 

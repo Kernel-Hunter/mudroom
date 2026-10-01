@@ -1,5 +1,11 @@
 import ArgumentParser
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 import MudroomCore
 
@@ -230,7 +236,7 @@ struct NetworkCommand: ParsableCommand {
                 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mudroom-check-\(UUID().uuidString)")
                 defer { try? FileManager.default.removeItem(at: scratch) }
                 print("checking \(m.rawValue) network in a VM...")
-                fflush(stdout)
+                fflush(nil)
                 let report = try NetworkCheck.run(mode: m, allowlist: config.allowlist(agent: AgentPreset.find(agent)?.id),
                                                   backend: AppleContainerBackend(), blocked: blocked, scratch: scratch)
                 print("mode \(report.network.mode.rawValue) (\(report.network.enforcement.title))\(report.network.proxy.map { ", proxy \($0)" } ?? "")\n")
@@ -276,7 +282,7 @@ struct Agent: ParsableCommand {
             do {
                 status = try AgentLogin.run(preset, store: store(), backend: AppleContainerBackend(), image: image, tty: tty) {
                     print($0)
-                    fflush(stdout)
+                    fflush(nil)
                 }
             } catch { fail(error) }
             if status != 0 { throw ExitCode(status) }

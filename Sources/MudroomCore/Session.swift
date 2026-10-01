@@ -1,3 +1,10 @@
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 public enum SessionStatus: String, Codable, Sendable {
@@ -140,8 +147,16 @@ public struct SessionStore: Sendable {
         if let override = ProcessInfo.processInfo.environment["MUDROOM_HOME"], !override.isEmpty {
             return SessionStore(root: URL(fileURLWithPath: override, isDirectory: true))
         }
+        #if os(macOS)
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return SessionStore(root: support.appendingPathComponent("Mudroom", isDirectory: true))
+        #else
+        // $XDG_DATA_HOME/mudroom, or ~/.local/share/mudroom.
+        let env = ProcessInfo.processInfo.environment
+        let data = env["XDG_DATA_HOME"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share", isDirectory: true)
+        return SessionStore(root: data.appendingPathComponent("mudroom", isDirectory: true))
+        #endif
     }
 
     static func newID(now: Date = Date()) -> String {
@@ -175,7 +190,7 @@ public struct SessionStore: Sendable {
         do {
             let m1 = try Cloner.cloneTree(from: project, to: handle.base, allowClonefile: allowClonefile)
             let m2 = try Cloner.cloneTree(from: project, to: handle.work, allowClonefile: allowClonefile)
-            handle.session.cloneMethod = (m1 == .clonefile && m2 == .clonefile) ? .clonefile : .copy
+            handle.session.cloneMethod = m1 == m2 ? m1 : .copy
             try handle.save()
         } catch {
             try? FileManager.default.removeItem(at: dir)

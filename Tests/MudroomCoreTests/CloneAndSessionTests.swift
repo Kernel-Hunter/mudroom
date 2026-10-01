@@ -1,4 +1,10 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 import Testing
 @testable import MudroomCore
@@ -12,10 +18,16 @@ struct CloneAndSessionTests {
         symlink("README.md", root.appendingPathComponent("link").path)
     }
 
-    @Test("clonefile produces identical, independent base and work trees")
+    @Test("cloning produces identical, independent base and work trees")
     func cloneTree() throws {
         let f = try Fixture(populate: populate)
+        #if os(macOS)
+        // The temp dir is on APFS.
         #expect(f.handle.session.cloneMethod == .clonefile)
+        #else
+        // A reflink on btrfs/XFS, a plain copy on ext4 or overlayfs.
+        #expect(f.handle.session.cloneMethod != .clonefile)
+        #endif
         let original = try TreeSnapshot.scan(f.project).nodes
         #expect(try TreeSnapshot.scan(f.handle.base).nodes == original)
         #expect(try TreeSnapshot.scan(f.work).nodes == original)
