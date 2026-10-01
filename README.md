@@ -277,7 +277,10 @@ session instead).
 `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY` and
 `GEMINI_API_KEY` are also forwarded into the VM when they are set in your
 shell. Everything is passed by name (`container run --env NAME`, `docker run
---env NAME`), so values don't show up in the process list.
+--env NAME`), so values don't show up in the process list. The runtime does
+keep them in the container's configuration while the session runs (Apple's
+`container`: `~/Library/Application Support/com.apple.container/containers/`;
+Docker: `docker inspect`); that goes away when the session ends.
 
 **Claude Code: your Claude account.** If the `claude` CLI is installed on your
 Mac (Mudroom looks on your PATH, then in `~/.local/bin`, `/opt/homebrew/bin`
@@ -674,7 +677,9 @@ address; `mudroom network check` will tell you.
 
 `diff` compares `base/` with `work/`. `apply` copies from `work/` to the
 project after checking the project against `base/`. Set `MUDROOM_HOME` to keep
-all of this somewhere else. If the project is on a different volume or a
+all of this somewhere else. Keychain items don't move with it; add
+`MUDROOM_TOKEN_STORE=file` to keep tokens and keys as 0600 files under
+`MUDROOM_HOME` too (handy for a test setup). If the project is on a different volume or a
 disk that can't clone (not APFS, btrfs or XFS), clones fall back to plain
 copies that keep modes, symlinks and timestamps.
 
