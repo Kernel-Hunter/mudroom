@@ -183,7 +183,12 @@ struct ReviewSnapshot: Sendable {
     static func permString(_ mode: UInt16?) -> String {
         guard let mode else { return "-" }
         let chars = Array("rwxrwxrwx")
-        let bits = (0..<9).map { i in (mode >> (8 - i)) & 1 == 1 ? String(chars[i]) : "-" }.joined()
+        // Spelled out: the one-line version is too slow to type-check on CI's compiler.
+        var bits = ""
+        for i in 0..<9 {
+            let set: Bool = (mode >> UInt16(8 - i)) & 1 == 1
+            bits += set ? String(chars[i]) : "-"
+        }
         return "\(String(mode, radix: 8)) (\(bits))"
     }
 }
