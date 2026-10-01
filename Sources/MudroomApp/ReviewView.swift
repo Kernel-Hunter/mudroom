@@ -90,8 +90,16 @@ struct FileListColumn: View {
             }
         } else {
             List(selection: $review.focusedPath) {
-                ForEach(ChangeGroup.allCases, id: \.self) { group in
-                    let items = review.files.filter { $0.group == group }
+                if !review.visibleFolders.isEmpty {
+                    Section {
+                        ForEach(review.visibleFolders) { folder in
+                            FolderRow(review: review, folder: folder).tag("folder:" + folder.path)
+                        }
+                    } header: {
+                        Text("Large folders")
+                    }
+                }
+                ForEach(review.visibleGroups, id: \.0) { group, items in
                     if !items.isEmpty {
                         Section {
                             ForEach(items) { f in
@@ -165,9 +173,9 @@ struct SessionHeader: View {
                     Text(s.agentLabel)
                     Text("·")
                     Text(s.created.relative)
-                    if !files.isEmpty {
+                    if let snap = review.baseSnapshot, !files.isEmpty {
                         Text("·")
-                        DiffStat(added: files.reduce(0) { $0 + $1.added }, removed: files.reduce(0) { $0 + $1.removed })
+                        DiffStat(added: snap.totalAdded, removed: snap.totalRemoved)
                     }
                 }
                 .font(.system(size: 11))
@@ -208,6 +216,11 @@ struct FileRow: View {
                 }
             }
             Spacer(minLength: 4)
+            if let warning = entry.warning, entry.conflict == nil {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .foregroundStyle(.yellow)
+                    .help("Check before applying: this file \(warning). Not selected by default.")
+            }
             if entry.conflict != nil {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
@@ -227,7 +240,7 @@ struct FileRow: View {
 
     @ViewBuilder var detail: some View {
         switch entry.content {
-        case .text:
+        case .text, .lines:
             DiffStat(added: entry.added, removed: entry.removed)
         case .binary:
             Text("binary").font(.system(size: 10)).foregroundStyle(.secondary)
@@ -239,5 +252,27 @@ struct FileRow: View {
                     .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(.purple)
             }
         }
+    }
+}
+
+/// One row standing for a folder with hundreds of changes.
+struct FolderRow: View {
+    let review: ReviewModel
+    let folder: FolderSummary
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if !review.isTimelineView {
+                CheckBox(state: review.folderState(folder), disabled: false) { review.toggleFolderSelection(folder) }
+            }
+            Image(systemName: "folder.fill").foregroundStyle(.secondary).frame(width: 16)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(folder.path + "/").font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.head)
+                Text("\(folder.rows.count.formatted()) files: \(folder.title)")
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+        }
+        .padding(.vertical, 2)
     }
 }

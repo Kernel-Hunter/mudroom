@@ -152,6 +152,7 @@ extension FileEntry {
         switch change.kind {
         case .symlinkChanged: "L"
         case .typeChanged: "T"
+        case .unreadable: "?"
         default: group.letter
         }
     }

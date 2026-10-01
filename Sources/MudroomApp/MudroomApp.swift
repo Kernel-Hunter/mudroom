@@ -206,6 +206,8 @@ struct RootView: View {
                     NetworkDetailView(review: review)
                 } else if let review = app.review, let entry = review.focused {
                     FileDetailView(review: review, entry: entry)
+                } else if let review = app.review, let folder = review.focusedFolder {
+                    FolderDetailView(review: review, folder: folder)
                 } else if let review = app.review, !review.files.isEmpty {
                     ContentUnavailableView("No File Selected", systemImage: "doc.text",
                                            description: Text("Pick a file to see its changes."))

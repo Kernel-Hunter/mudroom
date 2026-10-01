@@ -47,12 +47,23 @@ final class ReviewModel {
     private(set) var projectConfig: ProjectConfig?
     var focusedHostRow: String?
 
-    /// Files whose checkbox is on (for non-partial files).
-    var selectedFiles: Set<String> = []
-    /// Selected hunk ids for files that allow partial apply.
-    var selectedHunks: [String: Set<Int>] = [:]
-    /// The file shown in the right pane.
+    /// Ticked files and hunks. Every change goes through `selectionDidChange`.
+    var selection = ReviewSelection() {
+        didSet { selectionCache = nil }
+    }
+    @ObservationIgnored private var selectionCache: ReviewSelection.Pending?
+    /// The file (or "folder:<path>" summary row) shown in the right pane.
     var focusedPath: String?
+    /// Collapsed folders the user opened.
+    var expandedFolders: Set<String> = [] {
+        didSet { rebuildRows() }
+    }
+    /// What the file list shows, by group; folders first.
+    private(set) var visibleFolders: [FolderSummary] = []
+    private(set) var visibleGroups: [(ChangeGroup, [FileEntry])] = []
+    /// Lines of added/deleted files, loaded when one is focused.
+    private(set) var detailHunks: [String: [Hunk]] = [:]
+    @ObservationIgnored private var detailLoading: Set<String> = []
 
     /// Result of the last apply/undo, shown as a banner.
     var lastResult: ResultBanner?
@@ -83,7 +94,11 @@ final class ReviewModel {
     var files: [FileEntry] { snapshot?.files ?? [] }
     /// base -> work files, whatever the timeline shows.
     var baseFiles: [FileEntry] { baseSnapshot?.files ?? [] }
-    var focused: FileEntry? { files.first { $0.path == focusedPath } }
+    var focused: FileEntry? { snapshot?.entry(focusedPath) }
+    var focusedFolder: FolderSummary? {
+        guard let p = focusedPath, p.hasPrefix("folder:") else { return nil }
+        return snapshot?.folders.first { "folder:" + $0.path == p }
+    }
     var conflicts: [FileEntry] { files.filter { $0.conflict != nil } }
     var isRunning: Bool { handle.isRunnerAlive }
 
@@ -136,9 +151,10 @@ final class ReviewModel {
     func reload(keepSelection: Bool = true) {
         loadNetwork()
         guard handle.hasClones else {
-            snapshot = ReviewSnapshot(files: [], hiddenDeletedDirectories: [], gitMetadataChanges: 0, canUndo: false)
+            snapshot = .empty
             baseSnapshot = snapshot
             timeline = []
+            rebuildRows()
             return
         }
         timeline = SnapshotStore(handle: handle).list()
@@ -163,9 +179,9 @@ final class ReviewModel {
                 switch result {
                 case .success(let snap):
                     snapshot = snap
-                    if focusedPath == nil || !snap.files.contains(where: { $0.path == focusedPath }) {
-                        focusedPath = snap.files.first?.path
-                    }
+                    detailHunks = [:]
+                    if snap.entry(focusedPath) == nil { focusedPath = snap.files.first?.path }
+                    rebuildRows()
                     loadError = nil
                 case .failure(let error):
                     loadError = "\(error)"
@@ -193,29 +209,61 @@ final class ReviewModel {
         let previous = baseSnapshot
         snapshot = snap
         baseSnapshot = snap
-        let known = Set(previous?.files.map(\.path) ?? [])
+        detailHunks = [:]
+        var sel = selection
         // New files (and everything on first load) start selected, unless
-        // they can't be applied.
-        for f in snap.files where !keepSelection || !known.contains(f.path) {
-            if f.allowsPartial {
-                selectedHunks[f.path] = f.canApply ? Set(f.hunks.map(\.id)).subtracting(f.appliedHunks) : []
-            } else if f.canApply {
-                selectedFiles.insert(f.path)
-            }
+        // they can't be applied or are flagged (host-run files, setuid).
+        for f in snap.files where !keepSelection || previous?.entry(f.path) == nil {
+            sel.setDefault(f)
         }
         // Drop selections that can no longer be applied.
-        for f in snap.files where !f.canApply {
-            selectedFiles.remove(f.path)
-            if f.allowsPartial { selectedHunks[f.path] = [] }
+        for f in snap.files {
+            if !f.canApply { sel.set(f, false) }
+            if f.allowsPartial { sel.hunks[f.path] = (sel.hunks[f.path] ?? []).subtracting(f.appliedHunks) }
         }
-        for f in snap.files where f.allowsPartial {
-            selectedHunks[f.path] = (selectedHunks[f.path] ?? []).subtracting(f.appliedHunks)
-        }
-        if focusedPath == nil || !snap.files.contains(where: { $0.path == focusedPath }) {
+        selection = sel
+        if snap.entry(focusedPath) == nil && focusedFolder == nil {
             // `-MudroomFocus <path>` on the command line picks the first file shown
             // (used for screenshots and demos).
             let preferred = UserDefaults.standard.string(forKey: "MudroomFocus")
-            focusedPath = snap.files.first { $0.path == preferred }?.path ?? snap.files.first?.path
+            focusedPath = snap.entry(preferred)?.path ?? snap.files.first?.path
+        }
+        rebuildRows()
+    }
+
+    /// Recomputes the list's sections (after a load or folder toggle).
+    private func rebuildRows() {
+        guard let snap = snapshot else {
+            visibleFolders = []
+            visibleGroups = []
+            return
+        }
+        let collapsed = snap.folders.filter { !expandedFolders.contains($0.path) }
+        var hidden = Set<Int>()
+        for f in collapsed { hidden.formUnion(f.rows) }
+        var groups: [ChangeGroup: [FileEntry]] = [:]
+        for (i, f) in snap.files.enumerated() where !hidden.contains(i) { groups[f.group, default: []].append(f) }
+        visibleFolders = collapsed
+        visibleGroups = ChangeGroup.allCases.compactMap { g in groups[g].map { (g, $0) } }
+    }
+
+    func toggleFolder(_ path: String) {
+        if expandedFolders.contains(path) { expandedFolders.remove(path) } else { expandedFolders.insert(path) }
+    }
+
+    /// Loads the lines of an added or deleted file for the detail pane.
+    func loadDetail(_ entry: FileEntry) {
+        guard case .lines = entry.content, detailHunks[entry.path] == nil, !detailLoading.contains(entry.path) else { return }
+        detailLoading.insert(entry.path)
+        let h = handle
+        let from = compareSnapshot?.directory ?? h.base
+        Task {
+            let hunks = await Task.detached(priority: .userInitiated) {
+                (try? ReviewSnapshot.detail(entry, before: from, after: h.work)) ?? []
+            }.value
+            detailLoading.remove(entry.path)
+            if detailHunks.count > 200 { detailHunks = [:] }
+            detailHunks[entry.path] = hunks
         }
     }
 
@@ -223,83 +271,71 @@ final class ReviewModel {
 
     func checkState(_ f: FileEntry) -> CheckState {
         if f.allowsPartial {
-            let open = Set(f.hunks.map(\.id)).subtracting(f.appliedHunks)
-            let sel = (selectedHunks[f.path] ?? []).intersection(open)
+            let open = f.openHunks
+            let sel = (selection.hunks[f.path] ?? []).intersection(open)
             if sel.isEmpty { return .off }
             return sel == open ? .on : .mixed
         }
-        return selectedFiles.contains(f.path) ? .on : .off
+        return selection.files.contains(f.path) ? .on : .off
+    }
+
+    func folderState(_ folder: FolderSummary) -> CheckState {
+        guard let snap = baseSnapshot else { return .off }
+        var on = 0, total = 0
+        for i in folder.rows where i < snap.files.count && snap.files[i].canApply {
+            total += 1
+            if selection.isSelected(snap.files[i]) { on += 1 }
+        }
+        return on == 0 ? .off : on == total ? .on : .mixed
+    }
+
+    func toggleFolderSelection(_ folder: FolderSummary) {
+        guard let snap = baseSnapshot else { return }
+        let on = folderState(folder) != .on
+        var sel = selection
+        for i in folder.rows where i < snap.files.count { sel.set(snap.files[i], on) }
+        selection = sel
     }
 
     func toggle(_ path: String) {
-        guard let f = files.first(where: { $0.path == path }), f.canApply else { return }
-        if f.allowsPartial {
-            let open = Set(f.hunks.map(\.id)).subtracting(f.appliedHunks)
-            selectedHunks[path] = checkState(f) == .on ? [] : open
-        } else if selectedFiles.contains(path) {
-            selectedFiles.remove(path)
-        } else {
-            selectedFiles.insert(path)
-        }
+        guard let f = snapshot?.entry(path), f.canApply else { return }
+        selection.set(f, checkState(f) != .on)
     }
 
     func toggleFocused() {
-        if let focusedPath { toggle(focusedPath) }
+        if let folder = focusedFolder { toggleFolderSelection(folder) } else if let focusedPath { toggle(focusedPath) }
     }
 
     func isHunkSelected(_ path: String, _ id: Int) -> Bool {
-        selectedHunks[path]?.contains(id) ?? false
+        selection.hunks[path]?.contains(id) ?? false
     }
 
     func toggleHunk(_ path: String, _ id: Int) {
-        guard let f = files.first(where: { $0.path == path }), f.canApply, !f.appliedHunks.contains(id) else { return }
-        var s = selectedHunks[path] ?? []
+        guard let f = snapshot?.entry(path), f.canApply, !f.appliedHunks.contains(id) else { return }
+        var s = selection.hunks[path] ?? []
         if s.contains(id) { s.remove(id) } else { s.insert(id) }
-        selectedHunks[path] = s
+        selection.hunks[path] = s
     }
 
     func setAll(_ on: Bool) {
-        for f in baseFiles where f.canApply {
-            if f.allowsPartial {
-                selectedHunks[f.path] = on ? Set(f.hunks.map(\.id)).subtracting(f.appliedHunks) : []
-            } else if on {
-                selectedFiles.insert(f.path)
-            } else {
-                selectedFiles.remove(f.path)
-            }
-        }
+        var sel = selection
+        for f in baseFiles where f.canApply { sel.set(f, on) }
+        selection = sel
     }
 
     /// Paths and hunk selections the "Apply Selected" button would send.
-    var pendingSelection: (paths: [String], hunks: [String: Set<Int>]) {
-        var paths: [String] = []
-        var hunks: [String: Set<Int>] = [:]
-        for f in baseFiles where f.canApply {
-            if f.allowsPartial {
-                let open = Set(f.hunks.map(\.id)).subtracting(f.appliedHunks)
-                let want = (selectedHunks[f.path] ?? []).intersection(open)
-                if want.isEmpty { continue }
-                if want == open { paths.append(f.path) } else { hunks[f.path] = want }
-            } else if selectedFiles.contains(f.path) {
-                paths.append(f.path)
-            }
-        }
-        // A deleted folder goes too when everything under it is selected.
-        for dir in baseSnapshot?.hiddenDeletedDirectories ?? [] {
-            let under = baseFiles.filter { $0.path.hasPrefix(dir + "/") }
-            if !under.isEmpty && under.allSatisfy({ paths.contains($0.path) || $0.isApplied }) {
-                paths.append(dir)
-            }
-        }
-        return (paths, hunks)
+    /// Computed once per selection change, not per redraw.
+    var pendingSelection: ReviewSelection.Pending {
+        _ = selection // observed
+        if let c = selectionCache { return c }
+        let p = selection.pending(baseSnapshot ?? .empty)
+        selectionCache = p
+        return p
     }
 
-    var selectedCount: Int {
-        let s = pendingSelection
-        return s.paths.filter { p in baseFiles.contains { $0.path == p } }.count + s.hunks.count
-    }
+    var selectedCount: Int { pendingSelection.rowCount }
 
-    var applicableCount: Int { baseFiles.filter(\.canApply).count }
+    var applicableCount: Int { baseFiles.reduce(0) { $0 + ($1.canApply ? 1 : 0) } }
 
     // MARK: Actions
 
@@ -307,12 +343,13 @@ final class ReviewModel {
 
     func applySelected() {
         let s = pendingSelection
-        guard !(s.paths.isEmpty && s.hunks.isEmpty) else { return }
-        perform(verb: "Applied") { try Applier(handle: $0).apply(paths: s.paths, hunks: s.hunks) }
+        guard !s.isEmpty, let reviewed = baseSnapshot?.reviewed else { return }
+        perform(verb: "Applied") { try Applier(handle: $0).apply(paths: s.paths, hunks: s.hunks, reviewed: reviewed) }
     }
 
     func applyAll() {
-        perform(verb: "Applied") { try Applier(handle: $0).apply(paths: nil) }
+        guard let reviewed = baseSnapshot?.reviewed else { return }
+        perform(verb: "Applied") { try Applier(handle: $0).apply(paths: nil, reviewed: reviewed) }
     }
 
     private func perform(verb: String, _ body: @escaping @Sendable (SessionHandle) throws -> ApplyReport) {
@@ -323,6 +360,7 @@ final class ReviewModel {
             let result = await Task.detached { () -> Result<ApplyReport, Error> in
                 Result {
                     var h = h0
+                    try SessionGuard.ensureIdle(h)
                     let report = try body(h)
                     if report.wroteAnything { try h.setStatus(.applied) }
                     return report
@@ -363,6 +401,7 @@ final class ReviewModel {
             let result = await Task.detached { () -> Result<UndoReport, Error> in
                 Result {
                     var h = h0
+                    try SessionGuard.ensureIdle(h)
                     let applier = Applier(handle: h)
                     let report = try applier.undo()
                     if !applier.canUndo { try h.setStatus(.undone) }
@@ -377,6 +416,7 @@ final class ReviewModel {
                 handle = h
                 let c = report.conflicts.count
                 lastResult = .init(style: c == 0 ? .info : .warning,
+                                   // Conflicted paths stay in the bundle: undo again once they're back.
                                    title: "Undid last apply",
                                    detail: c == 0 ? "Restored \(report.restored.count) \(report.restored.count == 1 ? "path" : "paths") in your project."
                                        : "\(c) \(c == 1 ? "path was" : "paths were") changed after the apply and kept as is.",

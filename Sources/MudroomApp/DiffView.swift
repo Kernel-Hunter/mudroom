@@ -14,6 +14,13 @@ struct FileDetailView: View {
         VStack(spacing: 0) {
             header
             Divider()
+            if let warning = entry.warning, entry.conflict == nil, !entry.readOnly {
+                Banner(style: .warning, title: "Check this file before applying",
+                       detail: "It \(warning). It isn't selected by default.")
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                Divider()
+            }
             if let conflict = entry.conflict {
                 Banner(style: .warning,
                        title: FileEntry.conflictTitle(conflict),
@@ -45,7 +52,7 @@ struct FileDetailView: View {
             }
             Spacer()
             DiffStat(added: entry.added, removed: entry.removed)
-            if case .text = entry.content {
+            if entry.hunks.count > 0 || entry.added + entry.removed > 0 {
                 Picker("Layout", selection: $layout) {
                     ForEach(DiffLayout.allCases) { Text($0.rawValue).tag($0) }
                 }
@@ -66,6 +73,15 @@ struct FileDetailView: View {
                 placeholder("doc", "Empty file", "The file has no content.")
             } else {
                 DiffScroll(review: review, entry: entry, hunks: hunks, partial: partial, layout: layout)
+            }
+        case .lines(let a, let r):
+            if a + r == 0 {
+                placeholder("doc", "Empty file", "The file has no content.")
+            } else if let hunks = review.detailHunks[entry.path] {
+                DiffScroll(review: review, entry: entry, hunks: hunks, partial: false, layout: layout)
+            } else {
+                ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .task(id: entry.path) { review.loadDetail(entry) }
             }
         case .binary(let before, let after):
             placeholder("doc.zipper", "Binary file",
@@ -313,5 +329,26 @@ extension FileEntry {
         }
         if reason.contains("is not a plain directory") { return "A folder on this path is a symlink in your project" }
         return reason
+    }
+}
+
+/// Right pane for a collapsed folder: what's in it, and a way to list it.
+struct FolderDetailView: View {
+    @Bindable var review: ReviewModel
+    let folder: FolderSummary
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "folder").font(.system(size: 34, weight: .light)).foregroundStyle(.secondary)
+            Text(folder.path + "/").font(.headline)
+            Text("\(folder.rows.count.formatted()) changed files: \(folder.title)")
+                .foregroundStyle(.secondary)
+            Text("Shown as one row to keep the list fast. Its checkbox selects or clears all of them.")
+                .font(.system(size: 12)).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Button("List All Files") { review.toggleFolder(folder.path) }
+        }
+        .padding(30)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.diffBackground)
     }
 }
