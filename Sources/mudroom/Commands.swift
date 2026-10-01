@@ -339,13 +339,14 @@ struct Agent: ParsableCommand {
     }
 
     struct Status: ParsableCommand {
-        static let configuration = CommandConfiguration(abstract: "Show each agent's config directory.")
+        static let configuration = CommandConfiguration(abstract: "Show whether each agent is signed in, and its config directory.")
         func run() throws {
             for p in AgentPreset.all {
                 guard let h = AgentHome(store: store(), agent: p.id) else { continue }
-                let state = h.hasCredentials ? "signed in" : h.isPopulated ? "has config, no sign-in" : "empty (run `mudroom agent login \(p.id)`)"
-                let token = ((try? AgentToken.defaultStore(store()).read(p.id)) ?? nil) != nil ? ", token stored" : ""
-                print("\(p.id.padding(toLength: 7, withPad: " ", startingAt: 0)) \(h.hostDirectory.path) -> \(h.guestPath)  \(state)\(token)")
+                // Names only: no stored value is read.
+                let st = SignInStatus.check(p, store: store(), tokens: AgentToken.defaultStore(store()))
+                let state = st.method.map { "signed in (\($0))" } ?? SetupCommand().hint(p)
+                print("\(p.id.padding(toLength: 7, withPad: " ", startingAt: 0)) \(state)  \(h.hostDirectory.path) -> \(h.guestPath)")
             }
         }
     }
