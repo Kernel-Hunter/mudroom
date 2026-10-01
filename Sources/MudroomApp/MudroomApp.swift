@@ -65,21 +65,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         default: break
         }
-        if let path = defaults.string(forKey: "MudroomSnapshot") {
+        // Screenshot hooks (scripts/screenshots.sh). They can apply changes,
+        // so they only work when passed on the command line with a separate
+        // MUDROOM_HOME, never from saved preferences.
+        let args = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        let demoStore = ProcessInfo.processInfo.environment["MUDROOM_HOME"].map { !$0.isEmpty } ?? false
+        if demoStore, let path = args["MudroomSnapshot"] as? String {
             let delay = defaults.object(forKey: "MudroomSnapshotDelay") as? Double ?? 3
             // Optional scripted steps before the capture, for docs:
             // -MudroomSnapshotDeselectHunk path:id  -MudroomSnapshotAction applySelected|undo
             DispatchQueue.main.asyncAfter(deadline: .now() + delay - 2.5) {
-                if defaults.string(forKey: "MudroomSnapshotAction") == "newSession" {
+                if args["MudroomSnapshotAction"] as? String == "newSession" {
                     Self.model?.showingNewSession = true
                     return
                 }
                 guard let review = Self.model?.review else { return }
-                if let spec = defaults.string(forKey: "MudroomSnapshotDeselectHunk"),
+                if let spec = args["MudroomSnapshotDeselectHunk"] as? String,
                    let colon = spec.lastIndex(of: ":"), let id = Int(spec[spec.index(after: colon)...]) {
                     review.toggleHunk(String(spec[..<colon]), id)
                 }
-                switch defaults.string(forKey: "MudroomSnapshotAction") {
+                switch args["MudroomSnapshotAction"] as? String {
                 case "applySelected": review.applySelected()
                 case "applyAll": review.applyAll()
                 case "newSession": Self.model?.showingNewSession = true
@@ -226,7 +231,7 @@ struct RootView: View {
         .confirmationDialog("Discard this session?", isPresented: $app.confirmDiscard) {
             Button("Discard Session", role: .destructive) { app.discardSelected() }
         } message: {
-            Text("The agent's copy is deleted and its changes are gone. Anything you already applied stays in your project.")
+            Text("The agent's copy is deleted and its changes are gone. Anything you already applied stays in your project, but can no longer be undone with Mudroom.")
         }
         .alert("Something went wrong", isPresented: .init(get: { app.errorMessage != nil },
                                                            set: { if !$0 { app.errorMessage = nil } })) {
