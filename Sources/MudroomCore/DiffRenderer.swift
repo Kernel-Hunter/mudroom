@@ -112,6 +112,10 @@ public struct DiffRenderer: Sendable {
         var lines = ["diff --git a/\(c.path) b/\(c.path)"]
         if !beforeFile, let m = c.after.mode { lines.append("new file mode 100\(Self.octal(m & 0o777))") }
         if !afterFile, let m = c.before.mode { lines.append("deleted file mode 100\(Self.octal(m & 0o777))") }
+        if beforeFile, afterFile, let a = c.before.mode, let b = c.after.mode, a & 0o7777 != b & 0o7777 {
+            lines.append("old mode 100\(Self.octal(a & 0o777))")
+            lines.append("new mode 100\(Self.octal(b & 0o777))")
+        }
         if hunks.isEmpty {
             lines.append("(empty file)")
             return lines.joined(separator: "\n")

@@ -106,6 +106,8 @@ struct DiffTests {
     func binary() throws {
         let f = try Fixture { root in
             try Data([0, 1, 2, 3]).write(to: root.appendingPathComponent("blob.bin"))
+            try "text\n".write(to: root.appendingPathComponent("t.txt"), atomically: false, encoding: .utf8)
+            chmod(root.appendingPathComponent("t.txt").path, 0o644)
         }
         try Data([0, 1, 2, 3, 4, 5, 6, 7]).write(to: f.work.appendingPathComponent("blob.bin"))
         let out = try DiffRenderer(base: f.handle.base, work: f.work).full(f.diff())
@@ -113,8 +115,11 @@ struct DiffTests {
         #expect(out.contains("binary changed (size 4 bytes -> 8 bytes)"))
 
         try Data([0, 9]).write(to: f.work.appendingPathComponent("new.bin"))
+        try "changed\n".write(to: f.work.appendingPathComponent("t.txt"), atomically: false, encoding: .utf8)
+        chmod(f.work.appendingPathComponent("t.txt").path, 0o600)
         let added = try DiffRenderer(base: f.handle.base, work: f.work).full(f.diff())
         #expect(added.contains("binary added (2 bytes)"))
+        #expect(added.contains("old mode 100644\nnew mode 100600"))
     }
 
     @Test("stat lists paths and a summary")
