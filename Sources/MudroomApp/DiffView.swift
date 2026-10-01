@@ -50,6 +50,12 @@ struct FileDetailView: View {
                     .font(.system(size: 11, weight: .medium)).foregroundStyle(.green)
                     .labelStyle(.titleAndIcon)
             }
+            if entry.change.kind == .modified, let a = entry.change.before.mode, let b = entry.change.after.mode,
+               a & 0o7777 != b & 0o7777 {
+                Text("mode \(DiffRenderer.octal(a & 0o777)) → \(DiffRenderer.octal(b & 0o777))")
+                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(.orange)
+                    .help("The agent also changed this file's permissions. Applying the whole file applies them too.")
+            }
             Spacer()
             DiffStat(added: entry.added, removed: entry.removed)
             if entry.hunks.count > 0 || entry.added + entry.removed > 0 {
