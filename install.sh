@@ -231,27 +231,30 @@ next_steps() {
     if command -v container >/dev/null 2>&1; then
         container_version=$(container --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -n 1)
         say "Found Apple's container CLI${container_version:+ $container_version}. Mudroom needs 1.5 or later."
-        say ""
-        say "Next steps:"
-        say "  container system start      # once per boot; first run offers to download a kernel"
-        say "  mudroom image build         # builds the agent image (a few minutes, once)"
-        say "  open -a Mudroom"
     else
         say "Mudroom runs agents with Apple's container CLI, which isn't installed yet."
-        say ""
-        say "Next steps:"
-        say "  brew install container      # or the installer from github.com/apple/container/releases"
-        say "  container system start      # first run offers to download a kernel"
-        say "  mudroom image build         # builds the agent image (a few minutes, once)"
-        say "  open -a Mudroom"
+        say "Setup installs it for you (brew install container)."
     fi
+    say ""
+    say "Next: open Mudroom and follow the Setup window, or run Setup in a terminal:"
+    say "  open \"$target\""
+    say "  mudroom setup               # runtime, agent image (a few minutes, once), network, sign-in"
     say ""
     say "Uninstall: curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh -s -- --uninstall"
 }
 
 uninstall() {
     removed=0
-    for dir in ${MUDROOM_APP_DIR:+"$MUDROOM_APP_DIR"} /Applications "$HOME/Applications"; do
+    # With MUDROOM_APP_DIR or MUDROOM_BIN_DIR set, only look there, so
+    # removing a test install doesn't also remove the real one.
+    app_dirs='/Applications|'"$HOME/Applications"
+    [ -z "${MUDROOM_APP_DIR:-}" ] || app_dirs=$MUDROOM_APP_DIR
+    bin_dirs='/opt/homebrew/bin|/usr/local/bin|'"$HOME/.local/bin"
+    [ -z "${MUDROOM_BIN_DIR:-}" ] || bin_dirs=$MUDROOM_BIN_DIR
+    old_ifs=$IFS
+    IFS='|'
+    for dir in $app_dirs; do
+        IFS=$old_ifs
         app="$dir/$APP_NAME"
         if is_mudroom_app "$app"; then
             if [ -w "$dir" ]; then
@@ -263,7 +266,9 @@ uninstall() {
             fi
         fi
     done
-    for dir in ${MUDROOM_BIN_DIR:+"$MUDROOM_BIN_DIR"} /opt/homebrew/bin /usr/local/bin "$HOME/.local/bin"; do
+    IFS='|'
+    for dir in $bin_dirs; do
+        IFS=$old_ifs
         link="$dir/mudroom"
         if is_our_link "$link"; then
             step "Removing $link"
@@ -271,6 +276,7 @@ uninstall() {
             removed=1
         fi
     done
+    IFS=$old_ifs
     if [ "$removed" = 0 ]; then
         say "Nothing to remove: no Mudroom.app or mudroom link found."
     fi
