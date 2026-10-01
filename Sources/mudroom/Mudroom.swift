@@ -444,7 +444,9 @@ struct List: ParsableCommand {
         for h in sessions {
             let s = h.session
             let exit = s.exitCode.map { " exit=\($0)" } ?? ""
-            print("\(s.id)  \(s.status.rawValue)\(exit)  \(f.string(from: s.created))  \(s.projectPath)  \(s.command.joined(separator: " "))")
+            // The runner was killed before it could record the end.
+            let status = s.status == .running && !h.isRunnerAlive ? "interrupted" : s.status.rawValue
+            print("\(s.id)  \(status)\(exit)  \(f.string(from: s.created))  \(s.projectPath)  \(s.command.joined(separator: " "))")
         }
     }
 }
