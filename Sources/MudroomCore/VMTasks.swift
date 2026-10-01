@@ -34,7 +34,7 @@ public enum AgentLogin {
     }
 }
 
-/// Boots a VM with a project's network setup and tries to get out: through
+/// Starts a sandbox with a project's network setup and tries to get out: through
 /// the proxy to an allowed and a blocked host, and around it (DNS, direct
 /// TCP to an IP, IPv6, UDP). Shows what the isolation actually does.
 public enum NetworkCheck {
@@ -99,12 +99,12 @@ public enum NetworkCheck {
           [res, ok] = await get(`https://${ALLOWED}/`); add('https-allowed', `HTTPS GET https://${ALLOWED}/ (proxy variables, if set)`, res, ok);
           [res, ok] = await viaProxy(BLOCKED); add('proxy-blocked', `CONNECT ${BLOCKED}:443 via proxy`, res, ok);
           [res, ok] = await get(`https://${BLOCKED}/`); add('https-blocked', `HTTPS GET https://${BLOCKED}/ (proxy variables, if set)`, res, ok);
-          [res, ok] = await lookup(BLOCKED); add('dns', `resolve ${BLOCKED} in the VM`, res, ok);
+          [res, ok] = await lookup(BLOCKED); add('dns', `resolve ${BLOCKED} in the sandbox`, res, ok);
           [res, ok] = await tcp('1.1.1.1', 443); add('direct-ipv4', 'TCP 1.1.1.1:443, ignoring the proxy', res, ok === true);
           [res, ok] = await tcp('2606:4700:4700::1111', 443); add('direct-ipv6', 'TCP [2606:4700:4700::1111]:443, ignoring the proxy', res, ok === true);
           [res, ok] = await udpDNS('8.8.8.8'); add('direct-udp', 'UDP DNS query to 8.8.8.8:53', res, ok);
           if (GATEWAY) { [res, ok] = await tcp(GATEWAY, 7000, 3000);
-            add('mac-services', `TCP ${GATEWAY}:7000 (a port macOS often listens on)`, res, ok === true || ok === 'refused'); }
+            add('mac-services', `TCP ${GATEWAY}:7000 (the network gateway; macOS often listens on 7000)`, res, ok === true || ok === 'refused'); }
           console.log('MUDROOM_CHECK ' + JSON.stringify(out));
         })();
         """

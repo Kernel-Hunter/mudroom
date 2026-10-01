@@ -215,7 +215,7 @@ struct NetworkCommand: ParsableCommand {
 
     struct Check: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Boot a VM with a project's network settings and try to get out.",
+            abstract: "Start a sandbox with a project's network settings and try to get out.",
             discussion: """
             Tries an allowed and a blocked host through the proxy, then DNS, direct \
             TCP (IPv4 and IPv6) and UDP around it, and reports what connected.
@@ -227,6 +227,7 @@ struct NetworkCommand: ParsableCommand {
         var mode: NetworkMode?
         @Option(help: "A host that should be blocked.")
         var blocked: String = "example.com"
+        @OptionGroup var backendOptions: BackendOptions
 
         func run() throws {
             do {
@@ -235,10 +236,11 @@ struct NetworkCommand: ParsableCommand {
                 let m = mode ?? config.networkMode
                 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mudroom-check-\(UUID().uuidString)")
                 defer { try? FileManager.default.removeItem(at: scratch) }
-                print("checking \(m.rawValue) network in a VM...")
+                let backend = try backendOptions.make()
+                print("checking \(m.rawValue) network with \(backend.name)...")
                 fflush(nil)
                 let report = try NetworkCheck.run(mode: m, allowlist: config.allowlist(agent: AgentPreset.find(agent)?.id),
-                                                  backend: AppleContainerBackend(), blocked: blocked, scratch: scratch)
+                                                  backend: backend, blocked: blocked, scratch: scratch)
                 print("mode \(report.network.mode.rawValue) (\(report.network.enforcement.title))\(report.network.proxy.map { ", proxy \($0)" } ?? "")\n")
                 for o in report.outcomes {
                     let got = o.connected ? "got through" : "stopped    "
@@ -250,7 +252,11 @@ struct NetworkCommand: ParsableCommand {
                     print("\(verdict)  \(got)  \(o.detail): \(o.result)")
                 }
                 if report.outcomes.contains(where: { $0.name == "mac-services" && $0.connected }) {
+                    if backend.name == "apple-container" {
                     print("\nnote: the VM can reach services on this Mac that listen on all interfaces (the host-only network's gateway is the Mac).")
+                } else {
+                    print("\nnote: the sandbox can reach the internal network's gateway. On Linux that is the host itself, so services listening on all interfaces are reachable; with Docker Desktop or a Podman VM it is the runtime's VM.")
+                }
                 }
                 if !report.matchesExpectation { throw ExitCode(3) }
             } catch let e as ExitCode { throw e } catch { fail(error) }
@@ -270,7 +276,8 @@ struct Agent: ParsableCommand {
         @Argument(help: "claude, codex or gemini.")
         var agent: String
         @Option(help: "Container image to run.")
-        var image: String = AppleContainerBackend.defaultImage
+        var image: String = AgentBaseImage.tag
+        @OptionGroup var backendOptions: BackendOptions
 
         func run() throws {
             guard let preset = AgentPreset.find(agent), AgentHome(store: store(), agent: preset.id) != nil else {
@@ -280,7 +287,7 @@ struct Agent: ParsableCommand {
             let tty = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
             let status: Int32
             do {
-                status = try AgentLogin.run(preset, store: store(), backend: AppleContainerBackend(), image: image, tty: tty) {
+                status = try AgentLogin.run(preset, store: store(), backend: try backendOptions.make(), image: image, tty: tty) {
                     print($0)
                     fflush(nil)
                 }

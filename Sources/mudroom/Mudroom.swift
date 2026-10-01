@@ -15,8 +15,9 @@ struct Mudroom: ParsableCommand {
         commandName: "mudroom",
         abstract: "A pull-request gate for local coding agents.",
         discussion: """
-        The agent works on a copy of your project inside a Linux micro-VM. Nothing \
-        touches your real folder until you review the diff and apply it.
+        The agent works on a copy of your project inside a sandbox: a Linux micro-VM \
+        with the apple backend, a container with docker or podman. Nothing touches \
+        your real folder until you review the diff and apply it.
         """,
         version: mudroomVersion,
         subcommands: [Run.self, New.self, Start.self, Diff.self, Hunks.self, Apply.self, Undo.self, Snapshots.self,
@@ -63,6 +64,26 @@ struct RunFlags: ParsableArguments {
 }
 
 extension NetworkMode: ExpressibleByArgument {}
+extension BackendChoice: ExpressibleByArgument {}
+
+/// `--backend` and `--oci-runtime`, shared by every command that starts a sandbox.
+struct BackendOptions: ParsableArguments {
+    @Option(help: "Sandbox backend: auto, apple, docker or podman. Default: $MUDROOM_BACKEND, else auto (apple on Apple-silicon macOS 26+ with `container` installed, else docker, else podman).")
+    var backend: BackendChoice?
+
+    @Option(help: "OCI runtime for docker or podman, e.g. runsc (gVisor) or kata. Default: $MUDROOM_OCI_RUNTIME.")
+    var ociRuntime: String?
+
+    /// `recorded` is the backend a session was created for; an explicit
+    /// --backend or $MUDROOM_BACKEND wins over it.
+    func make(recorded: String? = nil) throws -> SandboxBackend {
+        let env = ProcessInfo.processInfo.environment
+        let runtime = ociRuntime ?? env["MUDROOM_OCI_RUNTIME"].flatMap { $0.isEmpty ? nil : $0 }
+        let fromEnv = env["MUDROOM_BACKEND"].flatMap { BackendChoice(rawValue: $0.lowercased()) }
+        let choice = backend ?? fromEnv ?? recorded.flatMap(BackendChoice.init(backendName:)) ?? .auto
+        return try Backends.make(choice, ociRuntime: runtime)
+    }
+}
 
 struct Run: ParsableCommand {
     static let configuration = CommandConfiguration(
@@ -72,9 +93,11 @@ struct Run: ParsableCommand {
     var project: String
 
     @Option(help: "Container image to run.")
-    var image: String = AppleContainerBackend.defaultImage
+    var image: String = AgentBaseImage.tag
 
     @OptionGroup var flags: RunFlags
+
+    @OptionGroup var backendOptions: BackendOptions
 
     @Flag(help: "Copy instead of a copy-on-write clone (for testing).")
     var noClone = false
@@ -83,8 +106,11 @@ struct Run: ParsableCommand {
     var command: [String] = []
 
     func run() throws {
-        let backend = AppleContainerBackend()
-        do { try backend.checkAvailable() } catch { fail(error) }
+        let backend: SandboxBackend
+        do {
+            backend = try backendOptions.make()
+            try backend.checkAvailable()
+        } catch { fail(error) }
 
         let projectURL = URL(fileURLWithPath: project, isDirectory: true)
         var handle: SessionHandle
@@ -95,6 +121,7 @@ struct Run: ParsableCommand {
         let s = handle.session
         print("session \(s.id)  (\(s.cloneMethod.label))")
         print("project \(s.projectPath) stays untouched; the agent sees a copy at /workspace")
+        print("backend \(backend.name)")
 
         try runAgent(&handle, backend: backend, flags: flags)
     }
@@ -141,18 +168,25 @@ struct New: ParsableCommand {
     var project: String
 
     @Option(help: "Container image to run.")
-    var image: String = AppleContainerBackend.defaultImage
+    var image: String = AgentBaseImage.tag
 
     @Option(help: "Agent name to record, e.g. \"Claude Code\".")
     var agent: String?
+
+    @Option(help: "Backend to record for `mudroom start`: apple, docker or podman. Default: decided when it starts.")
+    var backend: BackendChoice?
 
     @Argument(parsing: .postTerminator, help: "Command to run inside the VM (after --).")
     var command: [String] = []
 
     func run() throws {
         do {
-            let handle = try store().create(project: URL(fileURLWithPath: project, isDirectory: true),
+            var handle = try store().create(project: URL(fileURLWithPath: project, isDirectory: true),
                                             command: command, image: image, agent: agent)
+            if let backend, backend != .auto {
+                handle.session.backend = backend.rawValue
+                try handle.save()
+            }
             print(handle.session.id)
         } catch { fail(error) }
     }
@@ -167,17 +201,21 @@ struct Start: ParsableCommand {
 
     @OptionGroup var flags: RunFlags
 
+    @OptionGroup var backendOptions: BackendOptions
+
     func run() throws {
-        let backend = AppleContainerBackend()
+        let backend: SandboxBackend
         var handle: SessionHandle
         do {
-            try backend.checkAvailable()
             handle = try store().open(session)
+            backend = try backendOptions.make(recorded: handle.session.backend)
+            try backend.checkAvailable()
         } catch { fail(error) }
         if handle.isRunnerAlive { fail(MudroomError.invalid("session \(handle.session.id) is already running")) }
         let s = handle.session
         print("session \(s.id)  \(s.agentLabel) on \(s.projectName)")
         print("project \(s.projectPath) stays untouched; the agent sees a copy at /workspace")
+        print("backend \(backend.name)")
         try runAgent(&handle, backend: backend, flags: flags)
     }
 }
@@ -389,7 +427,7 @@ struct Image: ParsableCommand {
 
     struct Build: ParsableCommand {
         static let configuration = CommandConfiguration(
-            abstract: "Build mudroom/agent-base:latest with `container build`.")
+            abstract: "Build mudroom/agent-base:latest with the backend's build command (container, docker or podman build).")
 
         @Option(help: "Use this Containerfile instead of the built-in one.")
         var file: String?
@@ -397,9 +435,11 @@ struct Image: ParsableCommand {
         @Option(help: "Image tag.")
         var tag: String = AgentBaseImage.tag
 
+        @OptionGroup var backendOptions: BackendOptions
+
         func run() throws {
             do {
-                let backend = AppleContainerBackend()
+                let backend = try backendOptions.make()
                 if let file {
                     let url = URL(fileURLWithPath: file)
                     try backend.buildImage(containerfile: url, context: url.deletingLastPathComponent(), tag: tag)
@@ -412,7 +452,7 @@ struct Image: ParsableCommand {
                     try AgentBaseImage.containerfile.write(to: containerfile, atomically: true, encoding: .utf8)
                     try backend.buildImage(containerfile: containerfile, context: dir, tag: tag)
                 }
-                print("built \(tag)")
+                print("built \(tag) for \(backend.name)")
             } catch { fail(error) }
         }
     }
