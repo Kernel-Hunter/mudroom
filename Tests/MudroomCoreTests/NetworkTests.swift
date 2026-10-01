@@ -1,6 +1,11 @@
+#if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
-import Network
 import Testing
 @testable import MudroomCore
 
@@ -138,52 +143,55 @@ struct ConfigPathTests {
 /// A loopback HTTP server that answers every request with "hello" and keeps
 /// what it received.
 final class TestHTTPServer: @unchecked Sendable {
-    let listener: NWListener
-    let queue = DispatchQueue(label: "test.server")
+    let fd: Int32
+    let port: UInt16
     private let received = LockedBox<[String]>([])
-    var port: UInt16 { listener.port?.rawValue ?? 0 }
+    private let stopped = LockedBox(false)
     var requests: [String] { received.value }
 
     init() throws {
-        let params = NWParameters.tcp
-        params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-        listener = try NWListener(using: params)
-        let ready = DispatchSemaphore(value: 0)
-        listener.stateUpdateHandler = { if case .ready = $0 { ready.signal() } }
-        listener.newConnectionHandler = { [self] conn in
-            conn.start(queue: queue)
-            read(conn, buffer: Data())
-        }
-        listener.start(queue: queue)
-        _ = ready.wait(timeout: .now() + 5)
+        (fd, port) = try Sock.listen(host: "127.0.0.1", port: 0)
+        let t = Thread { [self] in serve() }
+        t.start()
     }
 
-    private func read(_ conn: NWConnection, buffer: Data) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [self] data, _, done, _ in
-            var buf = buffer
-            if let data { buf.append(data) }
+    private func serve() {
+        while !stopped.value {
+            guard Sock.waitReadable(fd, timeout: 0.1) else { continue }
+            if stopped.value { return }
+            guard let (conn, _) = Sock.accept(fd) else { continue }
+            var buf = Data()
+            var chunk = [UInt8](repeating: 0, count: 65536)
+            while buf.range(of: Data("\r\n\r\n".utf8)) == nil {
+                let n = recv(conn, &chunk, chunk.count, 0)
+                if n <= 0 { break }
+                buf.append(contentsOf: chunk[0..<n])
+            }
             if buf.range(of: Data("\r\n\r\n".utf8)) != nil {
                 var r = received.value
                 r.append(String(decoding: buf, as: UTF8.self))
                 received.value = r
-                let resp = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
-                conn.send(content: Data(resp.utf8), contentContext: .finalMessage, isComplete: true,
-                          completion: .contentProcessed { _ in conn.cancel() })
-            } else if !done {
-                read(conn, buffer: buf)
-            } else {
-                conn.cancel()
+                _ = Sock.sendAll(conn, Data("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".utf8))
             }
+            close(conn)
         }
     }
 
-    deinit { listener.cancel() }
+    /// Stops accepting and closes the listening socket.
+    func cancel() {
+        guard !stopped.value else { return }
+        stopped.value = true
+        usleep(150_000)
+        close(fd)
+    }
+
+    deinit { cancel() }
 }
 
 /// Blocking loopback client: sends `request`, optionally a second payload
 /// after the first reply, and returns everything read until EOF.
 func talk(port: UInt16, _ request: String, then second: String? = nil) throws -> String {
-    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    let fd = Sock.make(AF_INET)
     guard fd >= 0 else { throw MudroomError.posix("socket", "", errno) }
     defer { close(fd) }
     var tv = timeval(tv_sec: 5, tv_usec: 0)
@@ -196,7 +204,7 @@ func talk(port: UInt16, _ request: String, then second: String? = nil) throws ->
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
     }
     guard rc == 0 else { throw MudroomError.posix("connect", "127.0.0.1:\(port)", errno) }
-    func send(_ s: String) { _ = s.withCString { Darwin.send(fd, $0, strlen($0), 0) } }
+    func send(_ s: String) { _ = s.withCString { MudroomCore.Sock.sendAll(fd, Data(bytes: $0, count: strlen($0))) } }
     func readSome() -> Data {
         var buf = [UInt8](repeating: 0, count: 65536)
         let n = recv(fd, &buf, buf.count, 0)
@@ -318,7 +326,7 @@ struct EgressProxyTests {
         // A port nothing listens on.
         let server = try TestHTTPServer()
         let dead = server.port
-        server.listener.cancel()
+        server.cancel()
         usleep(100_000)
         let proxy = try makeProxy(["127.0.0.1"])
         defer { proxy.stop() }
@@ -340,7 +348,7 @@ struct EgressProxyTests {
     @Test("only loopback and the VM subnet may use the proxy")
     func clients() throws {
         let proxy = EgressProxy(.init(allowlist: Allowlist([]), clientSubnets: [IPv4Subnet("192.168.128.0/24")!]))
-        func ep(_ s: String) -> NWEndpoint { .hostPort(host: NWEndpoint.Host(s), port: 1234) }
+        func ep(_ s: String) -> IPAddress { IPAddress(s)! }
         #expect(proxy.isAllowedClient(ep("127.0.0.1")))
         #expect(proxy.isAllowedClient(ep("::1")))
         #expect(proxy.isAllowedClient(ep("192.168.128.7")))

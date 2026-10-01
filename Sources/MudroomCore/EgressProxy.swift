@@ -1,5 +1,12 @@
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
-import Network
+
 
 /// One line of `network.jsonl`: a proxied (or refused) connection.
 public struct NetworkLogEntry: Codable, Sendable, Equatable {
@@ -123,31 +130,33 @@ public struct IPv4Subnet: Sendable, Equatable, CustomStringConvertible {
     public init?(_ cidr: String) {
         let parts = cidr.split(separator: "/")
         guard parts.count == 2, let prefix = Int(parts[1]), (0...32).contains(prefix),
-              let addr = IPv4Address(String(parts[0])) else { return nil }
+              case .v4(let addr)? = IPAddress(String(parts[0])) else { return nil }
         self.prefix = prefix
-        self.base = Self.value(addr) & Self.mask(prefix)
+        self.base = addr & Self.mask(prefix)
     }
 
     static func mask(_ prefix: Int) -> UInt32 { prefix == 0 ? 0 : UInt32.max << (32 - prefix) }
 
-    static func value(_ a: IPv4Address) -> UInt32 {
-        a.rawValue.reduce(0) { ($0 << 8) | UInt32($1) }
+    /// True for an IPv4 address (or IPv4-mapped IPv6 address) in this network.
+    public func contains(_ a: IPAddress) -> Bool {
+        guard let v = a.asIPv4 else { return false }
+        return v & Self.mask(prefix) == base
     }
 
-    public func contains(_ a: IPv4Address) -> Bool { Self.value(a) & Self.mask(prefix) == base }
-
     public var description: String {
-        let b = base
-        return "\(b >> 24).\((b >> 16) & 0xff).\((b >> 8) & 0xff).\(b & 0xff)/\(prefix)"
+        "\(IPAddress.v4(base))/\(prefix)"
     }
 }
 
-/// A small HTTP forward proxy for the VM: `CONNECT host:port` tunnels (HTTPS)
-/// and absolute-URI requests (plain HTTP). Only hosts on the allowlist get
-/// through; everything is logged to `network.jsonl`.
+/// A small HTTP forward proxy for the sandbox: `CONNECT host:port` tunnels
+/// (HTTPS) and absolute-URI requests (plain HTTP). Only hosts on the
+/// allowlist get through; everything is logged to `network.jsonl`.
 ///
-/// It runs inside `mudroom start` for the lifetime of the agent. With the VM
-/// on a host-only network it is the only way out.
+/// It runs inside `mudroom start` for the lifetime of the agent. With the
+/// sandbox on a host-only (or internal) network it is the only way out.
+///
+/// Plain BSD sockets and one thread per connection, so it builds on macOS
+/// and Linux alike. Agents open a few dozen connections, not thousands.
 public final class EgressProxy: @unchecked Sendable {
     public struct Configuration: Sendable {
         public var allowlist: Allowlist
@@ -162,29 +171,38 @@ public final class EgressProxy: @unchecked Sendable {
         /// network. Anyone else is disconnected without a reply.
         public var clientSubnets: [IPv4Subnet]
         /// Refuse upstream connections that resolve to loopback, link-local
-        /// or the VM's own network, so an allowed name can't be pointed at
-        /// services on the Mac.
+        /// or the sandbox's own networks (`clientSubnets` and
+        /// `blockedSubnets`), so an allowed name can't be pointed at
+        /// services on the host.
         public var blockLocalDestinations: Bool
+        /// More networks to refuse as destinations (e.g. a container
+        /// runtime's internal network).
+        public var blockedSubnets: [IPv4Subnet]
         public var connectTimeout: Int
 
         public init(allowlist: Allowlist, logURL: URL? = nil, bindHost: String? = nil, port: UInt16 = 0,
-                    clientSubnets: [IPv4Subnet] = [], blockLocalDestinations: Bool = true, connectTimeout: Int = 15) {
+                    clientSubnets: [IPv4Subnet] = [], blockLocalDestinations: Bool = true,
+                    blockedSubnets: [IPv4Subnet] = [], connectTimeout: Int = 15) {
             self.allowlist = allowlist
             self.logURL = logURL
             self.bindHost = bindHost
             self.port = port
             self.clientSubnets = clientSubnets
             self.blockLocalDestinations = blockLocalDestinations
+            self.blockedSubnets = blockedSubnets
             self.connectTimeout = connectTimeout
         }
     }
 
     public let configuration: Configuration
-    let queue = DispatchQueue(label: "mudroom.proxy")
-    private var listener: NWListener?
+    private let lock = NSLock()
+    private var listenFD: Int32 = -1
+    private var wakeFDs: [Int32] = [-1, -1]
+    private let acceptDone = DispatchSemaphore(value: 0)
+    private var running = false
     private var active: [ObjectIdentifier: ProxyExchange] = [:]
     private var logHandle: FileHandle?
-    private(set) var entries: [NetworkLogEntry] = []
+    private var entries: [NetworkLogEntry] = []
     private let encoder = NetworkLog.encoder()
 
     /// The port actually listened on (after `start`).
@@ -198,54 +216,51 @@ public final class EgressProxy: @unchecked Sendable {
     public func start() throws {
         if let url = configuration.logURL {
             if !FileManager.default.fileExists(atPath: url.path) {
-                FileManager.default.createFile(atPath: url.path, contents: nil)
+                _ = FileManager.default.createFile(atPath: url.path, contents: nil)
             }
             logHandle = try FileHandle(forWritingTo: url)
             try logHandle?.seekToEnd()
         }
-        let params = NWParameters.tcp
-        params.allowLocalEndpointReuse = true
-        if let host = configuration.bindHost {
-            params.requiredLocalEndpoint = .hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: configuration.port) ?? .any)
+        let (fd, p) = try Sock.listen(host: configuration.bindHost, port: configuration.port)
+        var fds: [Int32] = [-1, -1]
+        guard pipe(&fds) == 0 else {
+            close(fd)
+            throw MudroomError.posix("pipe", "proxy", errno)
         }
-        let listener: NWListener
-        if configuration.bindHost == nil, configuration.port != 0, let p = NWEndpoint.Port(rawValue: configuration.port) {
-            listener = try NWListener(using: params, on: p)
-        } else {
-            listener = try NWListener(using: params)
+        lock.withLock {
+            listenFD = fd
+            wakeFDs = fds
+            port = p
+            running = true
         }
-        let ready = DispatchSemaphore(value: 0)
-        let failure = LockedBox<Error?>(nil)
-        listener.stateUpdateHandler = { state in
-            switch state {
-            case .ready: ready.signal()
-            case .failed(let e):
-                failure.value = e
-                ready.signal()
-            default: break
-            }
-        }
-        listener.newConnectionHandler = { [weak self] conn in self?.accept(conn) }
-        listener.start(queue: queue)
-        if ready.wait(timeout: .now() + 10) == .timedOut {
-            listener.cancel()
-            throw MudroomError.invalid("the network proxy did not start listening")
-        }
-        if let e = failure.value {
-            listener.cancel()
-            throw MudroomError.invalid("the network proxy could not listen: \(e)")
-        }
-        self.listener = listener
-        port = listener.port?.rawValue ?? 0
+        let wakeRead = fds[0]
+        let t = Thread { [self] in acceptLoop(fd, wake: wakeRead) }
+        t.name = "mudroom.proxy.accept"
+        t.start()
     }
 
     /// Stops listening and closes open tunnels (they are logged as they close).
     public func stop() {
-        queue.sync {
-            listener?.cancel()
-            listener = nil
-            for ex in active.values { ex.finish(reason: nil) }
-            active.removeAll()
+        let open: [ProxyExchange]
+        let wasRunning: Bool = lock.withLock {
+            let r = running
+            running = false
+            return r
+        }
+        guard wasRunning else { return }
+        var b: UInt8 = 1
+        _ = write(wakeFDs[1], &b, 1)
+        acceptDone.wait()
+        open = lock.withLock { Array(active.values) }
+        for ex in open { ex.abort() }
+        // Give the exchanges a moment to log themselves.
+        let deadline = Date().addingTimeInterval(3)
+        while Date() < deadline, lock.withLock({ !active.isEmpty }) { usleep(10_000) }
+        lock.withLock {
+            close(listenFD)
+            close(wakeFDs[0])
+            close(wakeFDs[1])
+            listenFD = -1
             try? logHandle?.synchronize()
             try? logHandle?.close()
             logHandle = nil
@@ -253,62 +268,63 @@ public final class EgressProxy: @unchecked Sendable {
     }
 
     /// Log entries so far (for tests and live views).
-    public var loggedEntries: [NetworkLogEntry] { queue.sync { entries } }
+    public var loggedEntries: [NetworkLogEntry] { lock.withLock { entries } }
 
-    // MARK: Internals (all on `queue`)
+    // MARK: Internals
 
-    private func accept(_ conn: NWConnection) {
-        guard isAllowedClient(conn.endpoint) else {
-            conn.cancel()
-            return
+    private func acceptLoop(_ fd: Int32, wake: Int32) {
+        defer { acceptDone.signal() }
+        while true {
+            var fds = [pollfd(fd: fd, events: Int16(POLLIN), revents: 0), pollfd(fd: wake, events: Int16(POLLIN), revents: 0)]
+            let n = poll(&fds, 2, -1)
+            if n < 0 {
+                if errno == EINTR { continue }
+                return
+            }
+            if fds[1].revents != 0 { return }
+            guard fds[0].revents != 0, let (conn, peer) = Sock.accept(fd) else { continue }
+            guard let peer, isAllowedClient(peer) else {
+                close(conn)
+                continue
+            }
+            let ex = ProxyExchange(proxy: self, client: conn)
+            let accepted: Bool = lock.withLock {
+                guard running else { return false }
+                active[ObjectIdentifier(ex)] = ex
+                return true
+            }
+            guard accepted else {
+                close(conn)
+                return
+            }
+            let t = Thread { ex.run() }
+            t.name = "mudroom.proxy.conn"
+            t.start()
         }
-        let ex = ProxyExchange(proxy: self, client: conn)
-        active[ObjectIdentifier(ex)] = ex
-        ex.start()
     }
 
     func finished(_ ex: ProxyExchange, entry: NetworkLogEntry?) {
-        active[ObjectIdentifier(ex)] = nil
-        guard let entry else { return }
-        entries.append(entry)
-        if let h = logHandle, var line = try? encoder.encode(entry) {
-            line.append(UInt8(ascii: "\n"))
-            try? h.write(contentsOf: line)
+        lock.withLock {
+            active[ObjectIdentifier(ex)] = nil
+            guard let entry else { return }
+            entries.append(entry)
+            if let h = logHandle, var line = try? encoder.encode(entry) {
+                line.append(UInt8(ascii: "\n"))
+                try? h.write(contentsOf: line)
+            }
         }
     }
 
-    func isAllowedClient(_ endpoint: NWEndpoint) -> Bool {
-        guard case .hostPort(let host, _) = endpoint else { return false }
-        var v4: IPv4Address?
-        switch host {
-        case .ipv4(let a): v4 = a
-        case .ipv6(let a):
-            if a.isLoopback { return true }
-            v4 = a.asIPv4
-        default: return false
-        }
-        guard let a = v4 else { return false }
+    func isAllowedClient(_ a: IPAddress) -> Bool {
         if a.isLoopback { return true }
         return configuration.clientSubnets.contains { $0.contains(a) }
     }
 
-    /// True if an upstream address is on this Mac or the VM network.
-    func isLocalDestination(_ endpoint: NWEndpoint?) -> Bool {
+    /// True if an upstream address is on this host or a sandbox network.
+    func isLocalDestination(_ a: IPAddress) -> Bool {
         guard configuration.blockLocalDestinations else { return false }
-        guard case .hostPort(let host, _)? = endpoint else { return false }
-        switch host {
-        case .ipv4(let a):
-            return Self.isLocal(a) || configuration.clientSubnets.contains { $0.contains(a) }
-        case .ipv6(let a):
-            if let m = a.asIPv4 { return Self.isLocal(m) || configuration.clientSubnets.contains { $0.contains(m) } }
-            return a.isLoopback || a.isLinkLocal || a.isAny || a.rawValue.first.map { $0 & 0xfe == 0xfc } == true
-        default:
-            return false
-        }
-    }
-
-    static func isLocal(_ a: IPv4Address) -> Bool {
-        a.isLoopback || a.isLinkLocal || a.isMulticast || a == IPv4Address.any || a.rawValue.first == 0
+        if a.isLocal { return true }
+        return (configuration.clientSubnets + configuration.blockedSubnets).contains { $0.contains(a) }
     }
 }
 
@@ -323,58 +339,86 @@ final class LockedBox<T>: @unchecked Sendable {
     }
 }
 
-/// One client connection: read the proxy request, decide, then pipe bytes.
+/// One client connection, handled start to finish on its own thread: read
+/// the proxy request, decide, connect, then pipe bytes both ways.
 final class ProxyExchange: @unchecked Sendable {
     unowned let proxy: EgressProxy
-    let client: NWConnection
-    var upstream: NWConnection?
+    let client: Int32
+    private var upstream: Int32 = -1
+    private let fdLock = NSLock()
+    private var aborted = false
     let started = Date()
-    var header = Data()
     var host = ""
     var port = 0
     var method = ""
     var allowed = false
     var bytesOut: Int64 = 0
     var bytesIn: Int64 = 0
-    var done = false
-    var clientClosed = false
-    var upstreamClosed = false
     var failure: String?
 
     static let maxHeader = 64 * 1024
-    var queue: DispatchQueue { proxy.queue }
+    static let headerTimeout: TimeInterval = 60
 
-    init(proxy: EgressProxy, client: NWConnection) {
+    init(proxy: EgressProxy, client: Int32) {
         self.proxy = proxy
         self.client = client
     }
 
-    func start() {
-        client.stateUpdateHandler = { [self] state in
-            switch state {
-            case .failed, .cancelled: finish(reason: failure)
-            default: break
-            }
+    var isAborted: Bool { fdLock.withLock { aborted } }
+
+    /// Called from `EgressProxy.stop`: unblocks any read or write.
+    func abort() {
+        fdLock.withLock {
+            aborted = true
+            shutdown(client, Int32(SHUT_RDWR))
+            if upstream >= 0 { shutdown(upstream, Int32(SHUT_RDWR)) }
         }
-        client.start(queue: queue)
-        readHeader()
     }
 
-    private func readHeader() {
-        client.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [self] data, _, isComplete, error in
-            if done { return }
-            if let data { header.append(data) }
-            if let end = header.range(of: Data("\r\n\r\n".utf8)) {
-                let head = header.subdata(in: header.startIndex..<end.lowerBound)
-                let rest = header.subdata(in: end.upperBound..<header.endIndex)
-                handle(head: head, rest: rest)
-            } else if header.count > Self.maxHeader {
-                reject(400, "request header too large")
-            } else if isComplete || error != nil {
-                finish(reason: nil, log: false)
-            } else {
-                readHeader()
+    func run() {
+        var log = true
+        defer {
+            fdLock.withLock {
+                close(client)
+                if upstream >= 0 { close(upstream) }
+                upstream = -1
             }
+            let entry = log && !host.isEmpty ? NetworkLogEntry(
+                // `allowed` is the policy decision; an allowed host whose
+                // connection failed keeps allowed = true and gets a reason.
+                time: Date(timeIntervalSince1970: (started.timeIntervalSince1970 * 1000).rounded() / 1000), host: host, port: port,
+                method: method, allowed: allowed, reason: failure, bytesOut: bytesOut, bytesIn: bytesIn,
+                durationMs: Int(Date().timeIntervalSince(started) * 1000)) : nil
+            proxy.finished(self, entry: entry)
+        }
+        guard let (head, rest) = readHeader() else {
+            log = false
+            return
+        }
+        handle(head: head, rest: rest)
+    }
+
+    /// Reads up to the blank line. Nil if the client went away first.
+    private func readHeader() -> (Data, Data)? {
+        var header = Data()
+        var buf = [UInt8](repeating: 0, count: 16 * 1024)
+        let deadline = Date().addingTimeInterval(Self.headerTimeout)
+        while true {
+            if let end = header.range(of: Data("\r\n\r\n".utf8)) {
+                return (header.subdata(in: header.startIndex..<end.lowerBound), header.subdata(in: end.upperBound..<header.endIndex))
+            }
+            if header.count > Self.maxHeader {
+                reject(400, "request header too large")
+                return nil
+            }
+            let left = deadline.timeIntervalSinceNow
+            if left <= 0 || isAborted { return nil }
+            if !Sock.waitReadable(client, timeout: min(left, 1)) { continue }
+            let n = recv(client, &buf, buf.count, 0)
+            if n < 0 && errno == EINTR { continue }
+            if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+            if n <= 0 { return nil }
+            header.append(contentsOf: buf[0..<n])
         }
     }
 
@@ -444,73 +488,90 @@ final class ProxyExchange: @unchecked Sendable {
     }
 
     private func connectUpstream(then initial: Data) {
-        let tcp = NWProtocolTCP.Options()
-        tcp.connectionTimeout = proxy.configuration.connectTimeout
-        let params = NWParameters(tls: nil, tcp: tcp)
-        guard let nwPort = NWEndpoint.Port(rawValue: UInt16(port)) else { return reject(400, "bad port") }
-        let up = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: params)
-        upstream = up
-        up.stateUpdateHandler = { [self] state in
-            switch state {
-            case .ready:
-                if proxy.isLocalDestination(up.currentPath?.remoteEndpoint) {
-                    allowed = false
-                    up.cancel()
-                    upstream = nil
-                    return reject(403, "resolves to a local address")
-                }
-                if method == "CONNECT" {
-                    client.send(content: Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8),
-                                completion: .contentProcessed { _ in })
-                }
-                if !initial.isEmpty {
-                    bytesOut += Int64(initial.count)
-                    up.send(content: initial, completion: .contentProcessed { _ in })
-                }
-                pump(from: client, to: up, outbound: true)
-                pump(from: up, to: client, outbound: false)
-            case .waiting(let e), .failed(let e):
-                // .waiting means no route or no DNS answer; don't hang.
-                if bytesIn == 0 && bytesOut <= Int64(initial.count) && failure == nil && !upstreamClosed {
-                    upstream = nil
-                    up.cancel()
-                    reject(502, "upstream: \(e)")
-                } else {
-                    finish(reason: "upstream: \(e)")
-                }
-            default:
-                break
-            }
+        let addresses: [IPAddress]
+        switch Sock.resolve(host) {
+        case .success(let a): addresses = a
+        case .failure(let e): return reject(502, "upstream: \(e)")
         }
-        up.start(queue: queue)
-    }
+        // Local addresses are refused before connecting, so nothing on the
+        // host ever sees a connection for a name that points back at it.
+        let candidates = addresses.filter { !proxy.isLocalDestination($0) }
+        if candidates.isEmpty {
+            allowed = false
+            return reject(403, "resolves to a local address")
+        }
+        let timeout = TimeInterval(proxy.configuration.connectTimeout)
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError: Int32 = ECONNREFUSED
+        var fd: Int32 = -1
+        for a in candidates {
+            let left = max(1, deadline.timeIntervalSinceNow)
+            switch Sock.connect(a, port: UInt16(port), timeout: left, cancelled: { isAborted }) {
+            case .success(let c): fd = c
+            case .failure(let e): lastError = e.code
+            }
+            if fd >= 0 || isAborted || deadline.timeIntervalSinceNow <= 0 { break }
+        }
+        guard fd >= 0 else {
+            if isAborted { failure = "proxy stopped"; return }
+            return reject(502, "upstream: \(Sock.errorText(lastError))")
+        }
+        let stillOpen: Bool = fdLock.withLock {
+            upstream = fd
+            return !aborted
+        }
+        guard stillOpen else { return }
 
-    private func pump(from src: NWConnection, to dst: NWConnection, outbound: Bool) {
-        src.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [self] data, _, isComplete, error in
-            if done { return }
-            if let data, !data.isEmpty {
-                if outbound { bytesOut += Int64(data.count) } else { bytesIn += Int64(data.count) }
-                dst.send(content: data, completion: .contentProcessed { [self] sendError in
-                    if sendError != nil { return finish(reason: nil) }
-                    if isComplete { halfClose(dst, outbound: outbound) } else { pump(from: src, to: dst, outbound: outbound) }
-                })
+        if method == "CONNECT" {
+            guard Sock.sendAll(client, Data("HTTP/1.1 200 Connection Established\r\n\r\n".utf8)) else { return }
+        }
+        if !initial.isEmpty {
+            bytesOut += Int64(initial.count)
+            guard Sock.sendAll(fd, initial) else {
+                failure = "upstream: write failed"
                 return
             }
-            if isComplete || error != nil {
-                halfClose(dst, outbound: outbound)
-            } else {
-                pump(from: src, to: dst, outbound: outbound)
-            }
         }
+        relay(fd)
     }
 
-    private func halfClose(_ dst: NWConnection, outbound: Bool) {
-        if outbound { clientClosed = true } else { upstreamClosed = true }
-        dst.send(content: nil, contentContext: .finalMessage, isComplete: true, completion: .contentProcessed { _ in })
-        if clientClosed && upstreamClosed { finish(reason: nil) }
-        // When the server is done, the client doesn't need to keep sending.
-        if upstreamClosed && !clientClosed {
-            queue.asyncAfter(deadline: .now() + 2) { [self] in finish(reason: nil) }
+    /// Copies bytes both ways until both sides are done. When the server
+    /// finishes, the client gets two seconds to close its side too.
+    private func relay(_ up: Int32) {
+        var clientOpen = true
+        var upstreamOpen = true
+        var upstreamDone: Date?
+        var buf = [UInt8](repeating: 0, count: 64 * 1024)
+        while (clientOpen || upstreamOpen) && !isAborted {
+            if let t = upstreamDone, Date().timeIntervalSince(t) >= 2 { break }
+            var fds: [pollfd] = []
+            if clientOpen { fds.append(pollfd(fd: client, events: Int16(POLLIN), revents: 0)) }
+            if upstreamOpen { fds.append(pollfd(fd: up, events: Int16(POLLIN), revents: 0)) }
+            let n = poll(&fds, nfds_t(fds.count), 250)
+            if n < 0 && errno != EINTR { break }
+            if n <= 0 { continue }
+            for p in fds where p.revents != 0 {
+                let fromClient = p.fd == client
+                let got = recv(p.fd, &buf, buf.count, 0)
+                if got < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+                if got > 0 {
+                    let data = Data(buf[0..<got])
+                    if fromClient {
+                        bytesOut += Int64(got)
+                        if !Sock.sendAll(up, data) { return }
+                    } else {
+                        bytesIn += Int64(got)
+                        if !Sock.sendAll(client, data) { return }
+                    }
+                } else if fromClient {
+                    clientOpen = false
+                    shutdown(up, Int32(SHUT_WR))
+                } else {
+                    upstreamOpen = false
+                    shutdown(client, Int32(SHUT_WR))
+                    upstreamDone = Date()
+                }
+            }
         }
     }
 
@@ -519,21 +580,14 @@ final class ProxyExchange: @unchecked Sendable {
         let phrase = [400: "Bad Request", 403: "Forbidden", 502: "Bad Gateway"][status] ?? "Error"
         let body = "mudroom: \(host.isEmpty ? "request" : "\(host):\(port)") refused: \(reason)\n"
         let resp = "HTTP/1.1 \(status) \(phrase)\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
-        client.send(content: Data(resp.utf8), contentContext: .finalMessage, isComplete: true,
-                    completion: .contentProcessed { [self] _ in finish(reason: reason) })
-    }
-
-    func finish(reason: String?, log: Bool = true) {
-        if done { return }
-        done = true
-        client.cancel()
-        upstream?.cancel()
-        let entry = log && !host.isEmpty ? NetworkLogEntry(
-            // `allowed` is the policy decision; an allowed host whose
-            // connection failed keeps allowed = true and gets a reason.
-            time: Date(timeIntervalSince1970: (started.timeIntervalSince1970 * 1000).rounded() / 1000), host: host, port: port, method: method, allowed: allowed,
-            reason: reason ?? failure, bytesOut: bytesOut, bytesIn: bytesIn,
-            durationMs: Int(Date().timeIntervalSince(started) * 1000)) : nil
-        proxy.finished(self, entry: entry)
+        _ = Sock.sendAll(client, Data(resp.utf8))
+        shutdown(client, Int32(SHUT_WR))
+        // Read what the client still sends before closing, so the close
+        // doesn't turn into a reset that eats the reply.
+        var buf = [UInt8](repeating: 0, count: 4096)
+        let deadline = Date().addingTimeInterval(1)
+        while deadline.timeIntervalSinceNow > 0, !isAborted, Sock.waitReadable(client, timeout: deadline.timeIntervalSinceNow) {
+            if recv(client, &buf, buf.count, 0) <= 0 { break }
+        }
     }
 }
