@@ -16,7 +16,7 @@ struct FileDetailView: View {
             Divider()
             if let warning = entry.warning, entry.conflict == nil, !entry.readOnly {
                 Banner(style: .warning, title: "Check this file before applying",
-                       detail: "It \(warning). It isn't selected by default.")
+                       detail: "\(warning.prefix(1).uppercased() + warning.dropFirst()). It isn't selected by default.")
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
                 Divider()

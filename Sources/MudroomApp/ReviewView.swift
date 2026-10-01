@@ -219,7 +219,7 @@ struct FileRow: View {
             if let warning = entry.warning, entry.conflict == nil {
                 Image(systemName: "exclamationmark.shield.fill")
                     .foregroundStyle(.yellow)
-                    .help("Check before applying: this file \(warning). Not selected by default.")
+                    .help("Check before applying: \(warning). Not selected by default.")
             }
             if entry.conflict != nil {
                 Image(systemName: "exclamationmark.triangle.fill")

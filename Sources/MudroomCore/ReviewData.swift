@@ -80,7 +80,7 @@ public struct FileEntry: Identifiable, Sendable {
         if let risk = Differ.reviewNote(change.path) {
             warning = risk
         } else if let m = change.after.mode, m & 0o6000 != 0 {
-            warning = "has the setuid/setgid bit, which Mudroom drops when applying"
+            warning = "it has the setuid/setgid bit, which Mudroom drops when applying"
         } else {
             warning = nil
         }
