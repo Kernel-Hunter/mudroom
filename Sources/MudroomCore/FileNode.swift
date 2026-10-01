@@ -322,14 +322,15 @@ public struct TreeSnapshot: Sendable {
             var hashed = [FileNode?](repeating: nil, count: files.count)
             let workers = max(1, min(files.count, ProcessInfo.processInfo.activeProcessorCount * 2))
             hashed.withUnsafeMutableBufferPointer { out in
-                let outBase = out.baseAddress!
-                files.withUnsafeBufferPointer { list in
+                let outBase = Unchecked(out.baseAddress!)
+                files.withUnsafeBufferPointer { buf in
+                    let list = Unchecked(buf)
                     DispatchQueue.concurrentPerform(iterations: workers) { w in
                         var i = w
-                        while i < list.count {
-                            let f = list[i]
+                        while i < list.value.count {
+                            let f = list.value[i]
                             let st = f.st
-                            (outBase + i).pointee = FileNode.node(st, regular: {
+                            (outBase.value + i).pointee = FileNode.node(st, regular: {
                                 SafeFS.hashFile(path: base + "/" + f.path, expect: st)
                             }, link: { "" })
                             i += workers

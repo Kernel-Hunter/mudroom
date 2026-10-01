@@ -82,11 +82,8 @@ public enum Differ {
 
     public static func compare(base: URL, work: URL) throws -> DiffResult {
         // The two trees are independent; scan them side by side.
-        var a: Result<TreeSnapshot, Error> = .failure(MudroomError.invalid("not scanned"))
-        var b: Result<TreeSnapshot, Error> = .failure(MudroomError.invalid("not scanned"))
-        DispatchQueue.concurrentPerform(iterations: 2) { i in
-            if i == 0 { a = Result { try TreeSnapshot.scan(base) } } else { b = Result { try TreeSnapshot.scan(work) } }
-        }
+        let scans = parallelMap([base, work]) { url in Result { try TreeSnapshot.scan(url) } }
+        let a = scans[0], b = scans[1]
         return compare(base: try a.get(), work: try b.get())
     }
 

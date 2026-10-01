@@ -538,23 +538,10 @@ public struct Applier {
 
     /// FileNode.read of many project paths, on all cores.
     private func readProject(_ paths: [String]) -> [FileNode] {
-        var out = [FileNode](repeating: .absent, count: paths.count)
         let root = project
-        let workers = max(1, min(paths.count, ProcessInfo.processInfo.activeProcessorCount * 2))
-        out.withUnsafeMutableBufferPointer { buf in
-            let base = buf.baseAddress!
-            paths.withUnsafeBufferPointer { list in
-                DispatchQueue.concurrentPerform(iterations: workers) { w in
-                    var i = w
-                    while i < list.count {
-                        let node = (try? FileNode.read(at: root.appendingPathComponent(list[i]))) ?? .unreadable(reason: "lstat failed")
-                        (base + i).pointee = node
-                        i += workers
-                    }
-                }
-            }
+        return parallelMap(paths) {
+            (try? FileNode.read(at: root.appendingPathComponent($0))) ?? .unreadable(reason: "lstat failed")
         }
-        return out
     }
 
     // MARK: - Hunks

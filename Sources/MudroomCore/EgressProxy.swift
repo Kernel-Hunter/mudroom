@@ -373,12 +373,17 @@ public final class EgressProxy: @unchecked Sendable {
     /// One thread and two descriptors per connection: make sure the cap,
     /// not the descriptor limit, is what runs out first.
     static func raiseFileLimit() {
+        #if canImport(Glibc)
+        let resource = __rlimit_resource_t(RLIMIT_NOFILE.rawValue)
+        #else
+        let resource = RLIMIT_NOFILE
+        #endif
         var rl = rlimit()
-        guard getrlimit(RLIMIT_NOFILE, &rl) == 0 else { return }
+        guard getrlimit(resource, &rl) == 0 else { return }
         let want = rlim_t(min(UInt64(rl.rlim_max), 10240))
         if rl.rlim_cur < want {
             rl.rlim_cur = want
-            _ = setrlimit(RLIMIT_NOFILE, &rl)
+            _ = setrlimit(resource, &rl)
         }
     }
 }

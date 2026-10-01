@@ -10,7 +10,11 @@ import Testing
 /// Peak resident memory of this process so far, in MB.
 func peakRSSMB() -> Int {
     var u = rusage()
+    #if canImport(Glibc)
+    getrusage(__rusage_who_t(RUSAGE_SELF.rawValue), &u)
+    #else
     getrusage(RUSAGE_SELF, &u)
+    #endif
     #if canImport(Darwin)
     return Int(u.ru_maxrss) >> 20
     #else

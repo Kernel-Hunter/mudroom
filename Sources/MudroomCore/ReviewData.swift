@@ -451,17 +451,28 @@ func parallelMap<T, R>(_ items: [T], _ body: (T) -> R) -> [R] {
     guard items.count > 1 else { return items.map(body) }
     var out = [R?](repeating: nil, count: items.count)
     let workers = min(items.count, ProcessInfo.processInfo.activeProcessorCount * 2)
-    out.withUnsafeMutableBufferPointer { buf in
-        let base = buf.baseAddress!
-        items.withUnsafeBufferPointer { list in
-            DispatchQueue.concurrentPerform(iterations: workers) { w in
-                var i = w
-                while i < list.count {
-                    (base + i).pointee = body(list[i])
-                    i += workers
+    withoutActuallyEscaping(body) { body in
+        let fn = Unchecked(body)
+        out.withUnsafeMutableBufferPointer { buf in
+            let base = Unchecked(buf.baseAddress!)
+            items.withUnsafeBufferPointer { list in
+                let list = Unchecked(list)
+                DispatchQueue.concurrentPerform(iterations: workers) { w in
+                    var i = w
+                    while i < list.value.count {
+                        (base.value + i).pointee = fn.value(list.value[i])
+                        i += workers
+                    }
                 }
             }
         }
     }
     return out.map { $0! }
+}
+
+/// Hands a value to `concurrentPerform` workers that each touch a separate
+/// part of it. Only for that use.
+struct Unchecked<T>: @unchecked Sendable {
+    let value: T
+    init(_ value: T) { self.value = value }
 }

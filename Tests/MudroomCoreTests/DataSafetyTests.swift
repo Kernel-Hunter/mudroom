@@ -186,13 +186,25 @@ struct DataSafetyTests {
         try SessionGuard.ensureIdle(f.handle)
     }
 
-    @Test("M7: a stale runnerPID reused by another process (pid 1) is not 'running'")
+    @Test("M7: a stale runnerPID reused by a newer process is not 'running'")
     func pidReuse() throws {
         var f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
-        f.handle.session.runnerPID = 1
-        f.handle.session.started = Date()
+        // The runner died a minute ago and its PID went to a new process.
+        let other = Process()
+        other.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        other.arguments = ["10"]
+        try other.run()
+        defer { other.terminate(); other.waitUntilExit() }
+        f.handle.session.runnerPID = other.processIdentifier
+        f.handle.session.started = Date().addingTimeInterval(-60)
         try f.handle.setStatus(.running)
         #expect(!f.handle.isRunnerAlive)
+        // Another user's process (EPERM) is not ours either; as root there is none.
+        if getuid() != 0 {
+            f.handle.session.runnerPID = 1
+            try f.handle.setStatus(.running)
+            #expect(!f.handle.isRunnerAlive)
+        }
     }
 
     @Test("M7: legacy sessions without a lock count a live pid only if it started before the run")
@@ -247,9 +259,9 @@ struct DataSafetyTests {
 
     // MARK: M2/M3. Unreadable and special entries
 
-    @Test("M2: a mode-000 file in work/ is one unreadable entry; everything else still diffs and applies")
+    @Test("M2: a mode-000 file in work/ is one unreadable entry; everything else still diffs and applies",
+          .disabled(if: getuid() == 0, "root can read mode-000 files"))
     func unreadableWorkFile() throws {
-        try #require(getuid() != 0, "root reads everything")
         let f = try Fixture { root in try write("a\n", to: root.appendingPathComponent("a.txt")) }
         try write("a2\n", to: f.work.appendingPathComponent("a.txt"))
         try write("x\n", to: f.work.appendingPathComponent("trap"), mode: 0o000)
@@ -262,9 +274,9 @@ struct DataSafetyTests {
         #expect(!exists(f.project.appendingPathComponent("trap")))
     }
 
-    @Test("M2: a mode-000 directory in work/ is reported once, its children aren't 'deleted'")
+    @Test("M2: a mode-000 directory in work/ is reported once, its children aren't 'deleted'",
+          .disabled(if: getuid() == 0, "root can read mode-000 directories"))
     func unreadableWorkDir() throws {
-        try #require(getuid() != 0, "root reads everything")
         let f = try Fixture { root in try write("in\n", to: root.appendingPathComponent("d/in.txt")) }
         chmod(f.work.appendingPathComponent("d").path, 0o000)
         defer { chmod(f.work.appendingPathComponent("d").path, 0o755) }
@@ -274,9 +286,9 @@ struct DataSafetyTests {
         #expect(try read(f.project.appendingPathComponent("d/in.txt")) == "in\n")
     }
 
-    @Test("M3: a project with an unreadable file can be cloned; the file is listed as skipped")
+    @Test("M3: a project with an unreadable file can be cloned; the file is listed as skipped",
+          .disabled(if: getuid() == 0, "root can read mode-000 files"))
     func unreadableProjectFile() throws {
-        try #require(getuid() != 0, "root reads everything")
         let tmp = try TempDir()
         let project = tmp.path("p")
         try write("ok\n", to: project.appendingPathComponent("a.txt"))
