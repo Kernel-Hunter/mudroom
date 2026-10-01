@@ -24,8 +24,11 @@ fi
 
 # Stamp the CLI's version for this build only, and put the file back after.
 if [[ "$VERSION" != "$SOURCE_VERSION" ]]; then
-    cp "$VERSION_FILE" "$VERSION_FILE.orig"
-    trap 'mv -f "$VERSION_FILE.orig" "$VERSION_FILE"' EXIT
+    # The backup goes in build/, not next to the source, where SwiftPM
+    # would warn about an unhandled file.
+    mkdir -p build
+    cp "$VERSION_FILE" build/Version.swift.orig
+    trap 'mv -f build/Version.swift.orig "$VERSION_FILE"' EXIT
     sed -i '' "s/^let mudroomVersion = .*/let mudroomVersion = \"$VERSION\"/" "$VERSION_FILE"
 fi
 
