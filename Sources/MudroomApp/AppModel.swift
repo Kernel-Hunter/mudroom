@@ -211,9 +211,13 @@ enum TerminalLauncher {
             throw MudroomError.invalid("the mudroom command-line tool was not found inside the app or on PATH")
         }
         let script = handle.directory.appendingPathComponent("run.command")
+        // The settings this app runs with, so the session uses the same
+        // store, token store and backend.
         var env = ""
-        if let home = ProcessInfo.processInfo.environment["MUDROOM_HOME"] {
-            env = "export MUDROOM_HOME=\(shellQuote(home))\n"
+        for name in ["MUDROOM_HOME", "MUDROOM_TOKEN_STORE", "MUDROOM_BACKEND", "MUDROOM_OCI_RUNTIME"] {
+            if let v = ProcessInfo.processInfo.environment[name], !v.isEmpty {
+                env += "export \(name)=\(shellQuote(v))\n"
+            }
         }
         let text = """
         #!/bin/zsh -l
