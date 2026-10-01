@@ -2,7 +2,7 @@
 
 A pull-request gate for local coding agents, for macOS and Linux.
 
-Mudroom runs Claude Code, Codex, Gemini CLI (or any command) in a sandbox, on
+Mudroom runs Claude Code, Codex, Gemini CLI, opencode, Aider (or any command) in a sandbox, on
 a copy of your project: a Linux micro-VM on Apple-silicon Macs, or a Docker
 or Podman container elsewhere. Your real folder is never mounted. The
 sandbox can only reach the hosts you allow. When the agent is done you read the
@@ -12,6 +12,32 @@ be undone.
 > Status: early prototype. Expect rough edges and breaking changes.
 
 ![Reviewing a session in Mudroom](docs/screenshots/review-light.png)
+
+## Quick start
+
+1. Install Mudroom (Apple-silicon Mac, macOS 26 or later):
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/mudroom/main/install.sh | sh
+   ```
+
+2. Open Mudroom. The Setup window opens on the first launch. Click through it:
+   - **VM runtime**: Install (runs `brew install container`) and Start. The
+     first start downloads Apple's recommended Linux kernel without asking.
+   - **Agent image**: Build. It takes a few minutes the first time and shows
+     its progress. A network check runs right after.
+   - **Sign in**: "Use my Claude account" opens your browser; approve there
+     and you're done. Codex and Gemini CLI can reuse the login you already
+     have on this Mac. For opencode and Aider, paste an API key (OpenRouter
+     works for most models).
+
+3. Click New Session, pick a folder and an agent, and Start.
+
+Setup stays out of the way once everything is green. It's always under
+Mudroom > Setup, and the sidebar says so when a step needs attention. On the
+command line, `mudroom setup` does the same steps.
+
+![The Setup window](docs/screenshots/setup-light.png)
 
 ## Platforms
 
@@ -66,14 +92,17 @@ quarantine flag, so macOS won't block it. If you download the zip in a
 browser, use System Settings > Privacy & Security > Open Anyway, or run
 `xattr -dr com.apple.quarantine /Applications/Mudroom.app`.
 
-Then set up the VM runtime and the agent image once:
+Then open the app and follow Setup, or run it from a terminal:
 
 ```sh
-brew install container          # skip if you used the cask
-container system start          # first run offers to download Apple's default kernel
-mudroom image build             # builds mudroom/agent-base:latest (Node LTS, git, ripgrep, claude, codex, gemini)
-mudroom agent login claude      # optional: sign in once, kept for later sessions
+mudroom setup                   # runtime, agent image, VM network, sign-in; asks before each fix
+mudroom setup --yes --no-sign-in   # unattended: install, start, build, repair, then stop
 ```
+
+By hand, the same steps are `brew install container`, `container system start
+--enable-kernel-install`, `mudroom image build` (Node LTS, git, ripgrep,
+Claude Code, Codex, Gemini CLI, opencode and Aider) and `mudroom agent login
+claude`.
 
 Mudroom needs Apple's [`container`](https://github.com/apple/container) CLI
 1.5 or later. Earlier versions may lack host-only networks; see
@@ -238,35 +267,55 @@ so the agent can't change them.
 
 ### Credentials and logins
 
+Sessions never stop to ask you to sign in. Sign each agent in once, in Setup
+or with these commands, and every session after that starts signed in. New
+Session points you to Setup when the agent you picked isn't signed in yet.
+
 `ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY` and
-`GEMINI_API_KEY` are forwarded into the VM when they are set on the host.
-They are passed by name (`container run --env NAME`, `docker run --env NAME`),
-so the values don't show up in the process list.
+`GEMINI_API_KEY` are also forwarded into the VM when they are set in your
+shell. Everything is passed by name (`container run --env NAME`, `docker run
+--env NAME`), so values don't show up in the process list.
 
-To use a subscription instead, there are two ways in.
-
-**A stored token (the most reliable for Claude Code).** If the `claude` CLI is
-installed on your Mac, `claude setup-token` signs in through your browser and
-prints a long-lived token. Hand it to Mudroom:
+**Claude Code: your Claude account.** If the `claude` CLI is installed on your
+Mac (Mudroom looks in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`
+and your login shell's PATH), "Use my Claude account" in Setup, or `mudroom
+agent login claude`, runs `claude setup-token` in a terminal of its own.
+Claude opens your browser; once you approve, Mudroom reads the long-lived
+token from Claude's output and stores it. You never see or copy it, and it is
+hidden from the output Mudroom shows. If the page shows a code instead,
+paste it into the field in Setup (or the terminal).
 
 ```sh
-claude setup-token              # copy the sk-ant-oat01-... token it prints
-mudroom agent token claude      # paste it; nothing is echoed
+mudroom agent login claude      # the same from a terminal
+mudroom agent token claude      # or paste a token you already have (shown as dots)
 mudroom agent token claude --clear
 ```
 
-The token is read without echo and kept in the macOS Keychain (service
+The token is kept in the macOS Keychain (service
 `io.github.kernel-hunter.mudroom`, written with `SecItemAdd`, never through a
 command line). On Linux it goes to `~/.local/share/mudroom/agents/<agent>/token`,
-mode 0600. Sessions get it as `CLAUDE_CODE_OAUTH_TOKEN`, passed by name like
-the variables above, so it is never in a process's arguments. A paste that the
-terminal wrapped over several lines is put back together. `mudroom agent login
-claude` offers to do all of this for you when `claude` is installed.
+mode 0600. Sessions get it as `CLAUDE_CODE_OAUTH_TOKEN`. Mudroom also marks
+Claude Code's first-run screens (theme, the bypass-permissions notice, folder
+trust for `/workspace`) as done in its own copy of Claude's settings, so a
+session starts straight at the prompt.
 
-**Signing in inside a VM.**
+**Codex and Gemini CLI: the login you already have.** If `~/.codex/auth.json`
+or `~/.gemini/oauth_creds.json` exists, "Use my ChatGPT login" or "Use my
+Google login" copies it into Mudroom's agent directory, only when you click.
+It is a copy: the original isn't changed or mounted. If you sign in again on
+the Mac later, import again.
 
 ```sh
-mudroom agent login claude      # `claude auth login` in the sandbox (--in-vm skips the token offer)
+mudroom agent import codex
+mudroom agent import gemini
+```
+
+**Signing in inside a VM.** Without those, the agent signs in inside a VM.
+In Setup, the device code (Codex) or the sign-in page (Claude, Gemini) opens
+for you, and a visible field takes the code the page gives you.
+
+```sh
+mudroom agent login claude --in-vm   # `claude auth login` in the sandbox
 mudroom agent login codex       # `codex login --device-auth`
 mudroom agent login gemini      # Gemini CLI's sign-in screen, NO_BROWSER mode
 mudroom agent status            # signed in / token stored, per agent
@@ -283,8 +332,8 @@ accounts.google.com), opens it in your browser, copies it to the clipboard and
 prints it on one line. For Claude Code, whose link points back to a port
 inside the sandbox, the redirect is swapped for Claude's own "copy this code"
 page; the rest of the request (PKCE challenge, state) is unchanged. After
-signing in, paste the code back. The code won't appear when you paste it.
-Paste with ⌘V (Ctrl+Shift+V on Linux), then press Enter.
+signing in, paste the code back: in Setup into the code field, in a terminal
+where the prompt is (the agent's prompt doesn't echo it).
 
 Each agent gets its own config directory,
 `~/Library/Application Support/Mudroom/agents/<agent>/home` (Linux:
@@ -296,6 +345,71 @@ sign-in is copied back (`.credentials.json` and the account fields of
 `.claude.json` for Claude Code, `auth.json` for Codex, `oauth_creds.json` and
 `google_accounts.json` for Gemini), so a login made in a session sticks, while
 settings, hooks or MCP servers a session adds stay in that session.
+
+### API keys
+
+For opencode, Aider, custom commands, or an API key instead of a
+subscription, store provider keys with Mudroom. Setup has a field for each;
+from a terminal:
+
+```sh
+mudroom keys set OPENROUTER_API_KEY   # paste it; shown as dots
+mudroom keys                          # names only, never values
+mudroom keys remove OPENROUTER_API_KEY
+```
+
+Known names: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
+`OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`,
+`TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `XAI_API_KEY`. Any other
+upper-case name works too. Keys live in the Keychain (Linux: 0600 files) and
+reach sessions by name only.
+
+Claude Code, Codex and Gemini CLI get only their own key. opencode, Aider and
+custom commands get all of them, and in locked mode the API host of each
+provider whose key is set is allowed automatically: openrouter.ai,
+api.deepseek.com, api.groq.com, api.mistral.ai, api.together.xyz,
+api.fireworks.ai, api.x.ai (plus api.anthropic.com, api.openai.com and
+generativelanguage.googleapis.com). When Claude Code has a sign-in token, a
+stored `ANTHROPIC_API_KEY` is left out, so Claude doesn't stop to ask which
+one to use.
+
+### Local models (Ollama, LM Studio)
+
+Turn on Local models for a project (New Session, or `mudroom network
+local-models on`) and the VM can use Ollama and LM Studio running on your
+Mac. They are reached as `http://host.mudroom.internal:11434` (Ollama) and
+`http://host.mudroom.internal:1234` (LM Studio) through Mudroom's proxy,
+which connects to 127.0.0.1 on those two ports itself. No other port on the
+Mac becomes reachable, and nothing else changes about the allowlist.
+Sessions get `OLLAMA_HOST`, `OLLAMA_API_BASE` (Aider) and `LM_STUDIO_API_BASE`
+pointing there. For example, with the Custom agent:
+
+```sh
+aider --yes-always --no-auto-commits --model ollama_chat/qwen3
+```
+
+opencode needs the provider set up in its own config (an OpenAI-compatible
+provider with `baseURL` `http://host.mudroom.internal:11434/v1`). Local models
+need locked mode: open and offline sessions don't go through the proxy.
+
+### When the VM can't reach the network
+
+A locked session has one way out, Mudroom's proxy on the Mac. Apple's VM
+network sometimes gets into a state where the VM can't reach the Mac at all
+(`EHOSTUNREACH` to 192.168.128.1) until the container system restarts. Before
+every locked session Mudroom boots a tiny VM and checks that it reaches the
+proxy (about a second). If it doesn't, the session doesn't start; New Session
+and Setup show Repair Network, and in a terminal you're asked:
+
+```sh
+mudroom network probe            # check
+mudroom network probe --repair   # check, and restart the container system if needed
+mudroom setup --repair-network
+```
+
+Repair runs `container system stop` and `container system start`, checks
+again, and recreates Mudroom's host-only network if that wasn't enough. It
+won't run while a Mudroom session is running unless you confirm.
 
 ### What `diff` shows
 

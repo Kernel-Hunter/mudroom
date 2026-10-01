@@ -57,6 +57,10 @@ struct TokenCaptureTests {
         #expect(ConsoleText.links(out) == ["https://auth.openai.com/codex/device"])
         #expect(ConsoleText.deviceCode(out) == "ABCD-EFG12")
         #expect(ConsoleText.deviceCode("nothing here 1234-5678") == nil)
+        // Codex 0.160's device-code screen.
+        let codex = "\u{1B}[1mWelcome to Codex\u{1B}[0m [v0.160.0]\r\n1. Open this link in your browser and sign in to your account\r\n   \u{1B}[94mhttps://auth.openai.com/codex/device\u{1B}[0m\r\n2. Enter this one-time code \u{1B}[90m(expires in 15 minutes)\u{1B}[0m\r\n   \u{1B}[94m923M-ISK1S\u{1B}[0m\r\n"
+        #expect(ConsoleText.deviceCode(codex) == "923M-ISK1S")
+        #expect(ConsoleText.links(codex) == ["https://auth.openai.com/codex/device"])
     }
 }
 
