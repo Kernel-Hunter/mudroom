@@ -148,10 +148,11 @@ public struct Applier {
     var storeRoot: URL { handle.directory.deletingLastPathComponent().deletingLastPathComponent() }
 
     static func normalize(_ selection: String) -> String {
-        var s = selection
-        while s.hasPrefix("./") { s.removeFirst(2) }
-        while s.hasSuffix("/") && s.count > 1 { s.removeLast() }
-        return s
+        // "./a//b/" and "a/./b" name a/b. ".." is left alone (it matches nothing).
+        let parts = selection.split(separator: "/", omittingEmptySubsequences: true).filter { $0 != "." }
+        let joined = parts.joined(separator: "/")
+        if selection.hasPrefix("/") { return "/" + joined }
+        return joined.isEmpty ? "." : joined
     }
 
     public static func normalizePath(_ s: String) -> String { normalize(s) }

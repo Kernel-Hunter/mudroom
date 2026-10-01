@@ -382,7 +382,18 @@ struct DataSafetyTests {
         #expect(!applier.canUndo)
     }
 
-    // MARK: L3, L5
+    // MARK: L3, L5, L7
+
+    @Test("L7: hunks and apply name a path the same way")
+    func hunkPathNormalized() throws {
+        #expect(Applier.normalizePath("./src/x.swift") == "src/x.swift")
+        #expect(Applier.normalizePath("src//x.swift/") == "src/x.swift")
+        let f = try Fixture { root in try write("a\nb\n", to: root.appendingPathComponent("src/x.txt")) }
+        try write("a\nB\n", to: f.work.appendingPathComponent("src/x.txt"))
+        let path = Applier.normalizePath("./src/x.txt")
+        let change = try #require(try Differ.compare(base: f.handle.base, work: f.handle.work).changes.first { $0.path == path })
+        #expect(try Applier(handle: f.handle).hunks(for: change)?.count == 1)
+    }
 
     @Test("L3: setuid and setgid bits are never applied")
     func setuidStripped() throws {
