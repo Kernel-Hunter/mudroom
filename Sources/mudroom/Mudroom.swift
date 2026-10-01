@@ -20,7 +20,7 @@ struct Mudroom: ParsableCommand {
         your real folder until you review the diff and apply it.
         """,
         version: mudroomVersion,
-        subcommands: [Run.self, New.self, Start.self, Diff.self, Hunks.self, Apply.self, Undo.self, Snapshots.self,
+        subcommands: [Run.self, New.self, Start.self, Diff.self, Review.self, Hunks.self, Apply.self, Undo.self, Snapshots.self,
                       NetworkCommand.self, Agent.self, List.self, Discard.self, Image.self]
     )
 }

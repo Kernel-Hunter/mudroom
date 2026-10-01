@@ -26,9 +26,11 @@ The CLI picks a backend with `--backend apple|docker|podman|auto` (or
 `MUDROOM_BACKEND`). `auto`, the default, uses Apple's `container` on an
 Apple-silicon Mac with macOS 26+ where it is installed, otherwise Docker,
 otherwise Podman. A session remembers its backend, so `mudroom start` uses
-the same one again. The review app is macOS only; on Linux you review with
-`mudroom diff`, `hunks` and `apply`. A terminal review screen for Linux is
-planned.
+the same one again. The review app is macOS only. Everywhere else,
+`mudroom review <session>` is a basic terminal review screen (toggle files,
+read diffs, apply the selection), next to `mudroom diff`, `hunks` and
+`apply`. A fuller terminal review UI for Linux, with per-hunk selection and
+the network log, is planned.
 
 See [Docker and Podman](#docker-and-podman) for how isolation differs from
 the VM backend.
@@ -184,6 +186,7 @@ export ANTHROPIC_API_KEY=...    # passed through only if set
 mudroom run ~/code/myapp -- claude --dangerously-skip-permissions
 
 # Review.
+mudroom review last             # terminal review: space toggles, enter shows the diff, x applies
 mudroom diff last --stat
 mudroom diff last
 mudroom network log last        # what the VM connected to, and what was blocked
@@ -489,7 +492,8 @@ so it runs the same on macOS and Linux.
 - Snapshots skip unchanged trees by comparing file size, mode and mtime. An
   edit that keeps both size and mtime the same doesn't trigger a snapshot on
   its own. The review diff always compares content.
-- No review app on Linux yet; use `mudroom diff`, `hunks` and `apply`.
+- No review app on Linux yet. `mudroom review` covers files and diffs;
+  per-hunk applies still go through `mudroom hunks` and `apply --hunks`.
 - No Windows support. WSL2 is untested.
 - The app is ad-hoc signed, not notarized. See [Install](#install) for what
   that means when you download it.
