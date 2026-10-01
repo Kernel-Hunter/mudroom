@@ -123,6 +123,50 @@ public enum ProcessRunner {
         return 128 + low
     }
 
+    /// Runs a program to completion, handing each line of its output
+    /// (stdout and stderr together) to `onLine` as it arrives. Returns the
+    /// exit status and the last `keep` lines.
+    @discardableResult
+    public static func stream(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
+                              keep: Int = 40, onLine: @escaping @Sendable (String) -> Void) throws -> (status: Int32, tail: [String]) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        if !environment.isEmpty {
+            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        }
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        process.standardInput = FileHandle.nullDevice
+        try process.run()
+        // Closed here so the read ends when the child (and its children) do.
+        let reader = pipe.fileHandleForReading
+        let tail = LockedBox<[String]>([])
+        var partial = Data()
+        func emit(_ line: Data) {
+            // Progress bars redraw with \r; the last frame is the line.
+            let text = String(decoding: line, as: UTF8.self).split(separator: "\r", omittingEmptySubsequences: true).last.map(String.init) ?? ""
+            onLine(text)
+            var t = tail.value
+            t.append(text)
+            if t.count > keep { t.removeFirst(t.count - keep) }
+            tail.value = t
+        }
+        while true {
+            let chunk = reader.availableData
+            if chunk.isEmpty { break }
+            partial.append(chunk)
+            while let nl = partial.firstIndex(of: 0x0A) {
+                emit(partial[partial.startIndex..<nl])
+                partial = Data(partial[partial.index(after: nl)...])
+            }
+        }
+        if !partial.isEmpty { emit(partial) }
+        process.waitUntilExit()
+        return (process.terminationStatus, tail.value)
+    }
+
     /// Finds an executable on PATH (plus Homebrew's usual prefixes).
     public static func which(_ name: String) -> String? {
         if name.contains("/") { return FileManager.default.isExecutableFile(atPath: name) ? name : nil }
