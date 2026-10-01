@@ -29,6 +29,15 @@ public struct SandboxSpec: Sendable, Equatable {
     public var environment: [String: String]
     /// Network to attach to; nil uses the runtime's default (NAT, full access).
     public var network: String?
+    /// Secrets Mudroom itself holds (a stored agent token), by variable
+    /// name. Only the names go on the command line (`--env NAME`); the
+    /// values are set in the runtime CLI's own environment, never in argv.
+    public var secretEnvironment: [String: String] = [:]
+
+    /// Every name passed with `--env NAME`.
+    public var passedNames: [String] {
+        environmentNames + secretEnvironment.keys.sorted().filter { !environmentNames.contains($0) }
+    }
 
     public init(name: String, image: String, workspace: URL, guestWorkspace: String = "/workspace",
                 command: [String], environmentNames: [String] = [], interactive: Bool = true,
@@ -123,6 +132,12 @@ public protocol SandboxBackend: Sendable {
     /// Makes the proxy (already listening on `port`) reachable from the
     /// sandbox network and returns the address to put in HTTPS_PROXY.
     func attachProxy(port: UInt16, plan: NetworkPlan) throws -> ProxyRoute
+    /// True if a container with this name is running.
+    func isRunning(_ name: String) -> Bool
+    /// Stops a container (best effort).
+    func stop(_ name: String)
+    /// The command a person would run to stop it.
+    func stopHint(_ name: String) -> String
 }
 
 extension SandboxBackend {
@@ -136,6 +151,10 @@ extension SandboxBackend {
         guard let host = plan.proxyHost else { throw MudroomError.invalid("no proxy address for this network") }
         return ProxyRoute(host: host, port: port)
     }
+
+    public func isRunning(_ name: String) -> Bool { false }
+    public func stop(_ name: String) {}
+    public func stopHint(_ name: String) -> String { "stop the container \(name)" }
 }
 
 public enum AgentEnvironment {
@@ -188,7 +207,7 @@ public struct AppleContainerBackend: SandboxBackend {
             args += ["--mount", "type=bind,source=\(m.source.path),target=\(m.target)" + (m.readOnly ? ",readonly" : "")]
         }
         args += ["--workdir", spec.guestWorkspace]
-        for name in spec.environmentNames {
+        for name in spec.passedNames {
             // `-e NAME` makes `container` copy the value from its own
             // environment, so secrets never appear in argv or `ps`.
             args += ["--env", name]
@@ -206,8 +225,30 @@ public struct AppleContainerBackend: SandboxBackend {
 
     public func run(_ spec: SandboxSpec) throws -> Int32 {
         try checkAvailable()
-        return try ProcessRunner.runAttached(executable!, Self.runArguments(for: spec))
+        return try ProcessRunner.runAttached(executable!, Self.runArguments(for: spec), environment: spec.secretEnvironment)
     }
+
+    public func isRunning(_ name: String) -> Bool {
+        guard let exe = executable, let out = try? ProcessRunner.capture(exe, ["inspect", name]), out.status == 0 else { return false }
+        return Self.parseRunning(Data(out.stdout.utf8))
+    }
+
+    /// `container inspect` JSON: [{"status": {"state": "running"}}] (or a
+    /// plain "running" string in older releases).
+    public static func parseRunning(_ data: Data) -> Bool {
+        guard let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return false }
+        return arr.contains { o in
+            if let s = o["status"] as? String { return s == "running" }
+            return (o["status"] as? [String: Any])?["state"] as? String == "running"
+        }
+    }
+
+    public func stop(_ name: String) {
+        guard let exe = executable else { return }
+        _ = try? ProcessRunner.capture(exe, ["stop", name])
+    }
+
+    public func stopHint(_ name: String) -> String { "container stop \(name)" }
 
     public static let networkName = "mudroom-hostonly"
 
@@ -252,7 +293,8 @@ public struct AppleContainerBackend: SandboxBackend {
 
     public func capture(_ spec: SandboxSpec) throws -> CapturedOutput {
         try checkAvailable()
-        return try ProcessRunner.capture(executable!, ["run", "--progress", "none"] + Self.runArguments(for: spec).dropFirst())
+        return try ProcessRunner.capture(executable!, ["run", "--progress", "none"] + Self.runArguments(for: spec).dropFirst(),
+                                         environment: spec.secretEnvironment)
     }
 
     public func buildImage(containerfile: URL, context: URL, tag: String) throws {

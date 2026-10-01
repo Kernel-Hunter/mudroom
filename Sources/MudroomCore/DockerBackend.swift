@@ -120,7 +120,7 @@ public struct DockerBackend: SandboxBackend {
             args += ["--mount", "type=bind,source=\(m.source.path),target=\(m.target)" + (m.readOnly ? ",readonly" : "")]
         }
         args += ["--workdir", spec.guestWorkspace]
-        for name in spec.environmentNames {
+        for name in spec.passedNames {
             // `--env NAME` copies the value from the CLI's own environment,
             // so secrets never appear in argv or `ps`.
             args += ["--env", name]
@@ -150,13 +150,28 @@ public struct DockerBackend: SandboxBackend {
     public func run(_ spec: SandboxSpec) throws -> Int32 {
         try checkAvailable()
         try ensureImage(spec.image)
-        return try ProcessRunner.runAttached(executable!, Self.runArguments(for: spec, host: .current(self), ociRuntime: ociRuntime))
+        return try ProcessRunner.runAttached(executable!, Self.runArguments(for: spec, host: .current(self), ociRuntime: ociRuntime),
+                                             environment: spec.secretEnvironment)
     }
+
+    public func isRunning(_ name: String) -> Bool {
+        guard let exe = executable,
+              let out = try? ProcessRunner.capture(exe, ["inspect", "--format", "{{.State.Running}}", name]), out.status == 0 else { return false }
+        return out.stdout.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+    }
+
+    public func stop(_ name: String) {
+        guard let exe = executable else { return }
+        _ = try? ProcessRunner.capture(exe, ["rm", "--force", name])
+    }
+
+    public func stopHint(_ name: String) -> String { "\(flavor.rawValue) rm --force \(name)" }
 
     public func capture(_ spec: SandboxSpec) throws -> CapturedOutput {
         try checkAvailable()
         try ensureImage(spec.image)
-        return try ProcessRunner.capture(executable!, Self.runArguments(for: spec, host: .current(self), ociRuntime: ociRuntime))
+        return try ProcessRunner.capture(executable!, Self.runArguments(for: spec, host: .current(self), ociRuntime: ociRuntime),
+                                         environment: spec.secretEnvironment)
     }
 
     /// Mudroom's own image is never on a registry; say how to build it

@@ -43,6 +43,9 @@ public struct Session: Codable, Sendable, Equatable {
     /// created for or last ran with. `mudroom start` uses it unless told
     /// otherwise. Nil for older sessions.
     public var backend: String?
+    /// Entries of the project the clones don't have (sockets, FIFOs,
+    /// unreadable files). Nil when nothing was left out.
+    public var cloneSkipped: [SkippedEntry]?
 
     public init(id: String, projectPath: String, created: Date, command: [String], image: String,
                 status: SessionStatus, cloneMethod: CloneMethod, exitCode: Int32? = nil, agent: String? = nil) {
@@ -105,8 +108,15 @@ public struct SessionHandle: Sendable {
     public var rollbackRoot: URL { directory.appendingPathComponent("rollback", isDirectory: true) }
     public var snapshotsRoot: URL { directory.appendingPathComponent("snapshots", isDirectory: true) }
     public var networkLog: URL { directory.appendingPathComponent("network.jsonl") }
+    /// This session's copy of the agent's config directory (see AgentHome).
+    public var agentHomeCopy: URL { directory.appendingPathComponent("agent-home", isDirectory: true) }
     public var project: URL { URL(fileURLWithPath: session.projectPath, isDirectory: true) }
     var metadataURL: URL { directory.appendingPathComponent("session.json") }
+    /// Held (flock) by `mudroom start` and the sandbox process it runs, for
+    /// as long as either lives.
+    public var runnerLockURL: URL { directory.appendingPathComponent("runner.lock") }
+    /// The sandbox's container name.
+    public var containerName: String { "mudroom-\(session.id)" }
 
     public func save() throws {
         let encoder = JSONEncoder()
@@ -126,11 +136,19 @@ public struct SessionHandle: Sendable {
         session = try SessionStore.decode(Data(contentsOf: metadataURL))
     }
 
-    /// True while status is `running` and the recorded runner process exists.
-    /// A `running` session whose runner is gone (terminal closed, crash) is stale.
+    /// True while the agent may still be writing work/: some process holds
+    /// the runner lock. The lock goes away with the processes, even after a
+    /// crash, so a stale `running` status or a reused PID can't keep a
+    /// session "running" forever.
     public var isRunnerAlive: Bool {
-        guard session.status == .running, let pid = session.runnerPID else { return false }
-        return kill(pid, 0) == 0 || errno == EPERM
+        if FileLock.isHeld(runnerLockURL) { return true }
+        guard session.status == .running, let pid = session.runnerPID, pid > 0,
+              !FileManager.default.fileExists(atPath: runnerLockURL.path) else { return false }
+        // Started by a Mudroom without the lock: the PID must be one of ours
+        // (EPERM means another user's process) and have started before the run.
+        guard kill(pid, 0) == 0 else { return false }
+        guard let started = session.started, let procStart = ProcessInfo.startTime(of: pid) else { return false }
+        return procStart <= started.addingTimeInterval(2)
     }
 
     /// Whether the clones still exist (false after a discard).
@@ -192,9 +210,12 @@ public struct SessionStore: Sendable {
             id: id, projectPath: project.path, created: Date(), command: command, image: image,
             status: .created, cloneMethod: .clonefile, agent: agent))
         do {
-            let m1 = try Cloner.cloneTree(from: project, to: handle.base, allowClonefile: allowClonefile)
-            let m2 = try Cloner.cloneTree(from: project, to: handle.work, allowClonefile: allowClonefile)
-            handle.session.cloneMethod = m1 == m2 ? m1 : .copy
+            let r1 = try Cloner.clone(from: project, to: handle.base, allowClonefile: allowClonefile)
+            let r2 = try Cloner.clone(from: project, to: handle.work, allowClonefile: allowClonefile)
+            handle.session.cloneMethod = r1.method == r2.method ? r1.method : .copy
+            var skipped = r1.skipped
+            for e in r2.skipped where !skipped.contains(e) { skipped.append(e) }
+            if !skipped.isEmpty { handle.session.cloneSkipped = skipped }
             try handle.save()
         } catch {
             try? FileManager.default.removeItem(at: dir)
@@ -209,7 +230,34 @@ public struct SessionStore: Sendable {
         return try decoder.decode(Session.self, from: data)
     }
 
-    /// All sessions, oldest first. Unreadable session.json files are skipped.
+    /// Session directories whose session.json can't be read. They don't
+    /// show up in `list`, but can be removed with `discardBroken`.
+    public func brokenSessions() -> [URL] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: sessionsDirectory.path)) ?? []
+        return names.sorted().compactMap { name in
+            let dir = sessionsDirectory.appendingPathComponent(name, isDirectory: true)
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { return nil }
+            guard let data = try? Data(contentsOf: dir.appendingPathComponent("session.json")),
+                  (try? Self.decode(data)) != nil else { return dir }
+            return nil
+        }
+    }
+
+    /// Deletes a session directory whose session.json is unreadable, by its
+    /// directory name. Refuses if it is running.
+    public func discardBroken(_ id: String) throws {
+        guard let dir = brokenSessions().first(where: { $0.lastPathComponent == id }) else {
+            throw MudroomError.sessionNotFound(id)
+        }
+        if FileLock.isHeld(dir.appendingPathComponent("runner.lock")) {
+            throw MudroomError.invalid("session \(id) is still running")
+        }
+        try FileManager.default.removeItem(at: dir)
+    }
+
+    /// All sessions, oldest first. Unreadable session.json files are skipped
+    /// (see `brokenSessions`).
     public func list() throws -> [SessionHandle] {
         guard FileManager.default.fileExists(atPath: sessionsDirectory.path) else { return [] }
         return try FileManager.default.contentsOfDirectory(atPath: sessionsDirectory.path).sorted().compactMap { name in
@@ -233,7 +281,11 @@ public struct SessionStore: Sendable {
         let matches = all.filter { $0.session.id.hasPrefix(query) }
         switch matches.count {
         case 1: return matches[0]
-        case 0: throw MudroomError.sessionNotFound(query)
+        case 0:
+            if let broken = brokenSessions().first(where: { $0.lastPathComponent.hasPrefix(query) }) {
+                throw MudroomError.invalid("session \(broken.lastPathComponent) has an unreadable session.json; remove it with `mudroom discard \(broken.lastPathComponent)`")
+            }
+            throw MudroomError.sessionNotFound(query)
         default: throw MudroomError.ambiguousSession(query, matches.map(\.session.id))
         }
     }
@@ -252,11 +304,53 @@ public struct SessionStore: Sendable {
             try FileManager.default.removeItem(at: dir)
             return
         }
-        for sub in [handle.base, handle.work, handle.rollbackRoot, handle.snapshotsRoot] where FileManager.default.fileExists(atPath: sub.path) {
+        for sub in [handle.base, handle.work, handle.rollbackRoot, handle.snapshotsRoot, handle.agentHomeCopy] where FileManager.default.fileExists(atPath: sub.path) {
             try FileManager.default.removeItem(at: sub)
         }
         var h = handle
         h.session.runnerPID = nil
         try h.setStatus(.discarded)
+    }
+}
+
+/// Refuses to touch the project while the agent may still be running.
+public enum SessionGuard {
+    /// Throws when the runner is alive or the session's container is still
+    /// running (e.g. `mudroom start` was killed but the sandbox wasn't).
+    /// `backend` defaults to the one the session last ran with.
+    public static func ensureIdle(_ handle: SessionHandle, backend: SandboxBackend? = nil) throws {
+        if handle.isRunnerAlive {
+            throw MudroomError.invalid("session \(handle.session.id) is still running; let the agent finish (or quit it) first")
+        }
+        guard handle.session.started != nil else { return }
+        let b = backend ?? handle.session.backend.flatMap(BackendChoice.init(backendName:)).flatMap { try? Backends.make($0) }
+        if let b, b.isRunning(handle.containerName) {
+            throw MudroomError.invalid("the sandbox \(handle.containerName) is still running; stop it first (\(b.stopHint(handle.containerName)))")
+        }
+    }
+}
+
+extension ProcessInfo {
+    /// When process `pid` started, or nil if unknown.
+    static func startTime(of pid: Int32) -> Date? {
+        #if canImport(Darwin)
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        let tv = info.kp_proc.p_un.__p_starttime
+        return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1_000_000)
+        #else
+        // Field 22 of /proc/<pid>/stat: start time in clock ticks after boot.
+        guard let stat = try? String(contentsOfFile: "/proc/\(pid)/stat", encoding: .utf8),
+              let close = stat.lastIndex(of: ")") else { return nil }
+        let fields = stat[stat.index(after: close)...].split(separator: " ")
+        guard fields.count > 19, let ticks = Double(fields[19]),
+              let procStat = try? String(contentsOfFile: "/proc/stat", encoding: .utf8),
+              let line = procStat.split(separator: "\n").first(where: { $0.hasPrefix("btime ") }),
+              let boot = Double(line.split(separator: " ")[1]) else { return nil }
+        let hz = Double(sysconf(Int32(_SC_CLK_TCK)))
+        return Date(timeIntervalSince1970: boot + ticks / max(hz, 1))
+        #endif
     }
 }
