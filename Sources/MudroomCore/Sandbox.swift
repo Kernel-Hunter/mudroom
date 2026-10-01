@@ -72,7 +72,37 @@ public struct SandboxNetwork: Sendable, Equatable {
     public var subnet: String
 }
 
+/// Where the proxy on the host listens, and who may use it.
+public struct ProxyListen: Sendable, Equatable {
+    /// nil listens on every address.
+    public var bindHost: String?
+    public var clientSubnets: [IPv4Subnet]
+    /// Networks the proxy must never connect to (besides the client ones).
+    public var blockedSubnets: [IPv4Subnet]
+
+    public init(bindHost: String?, clientSubnets: [IPv4Subnet], blockedSubnets: [IPv4Subnet] = []) {
+        self.bindHost = bindHost
+        self.clientSubnets = clientSubnets
+        self.blockedSubnets = blockedSubnets
+    }
+}
+
+/// The address the sandbox uses for the proxy, and how to tear down
+/// whatever the backend started to provide it.
+public struct ProxyRoute: Sendable {
+    public var host: String
+    public var port: UInt16
+    public var teardown: (@Sendable () -> Void)?
+
+    public init(host: String, port: UInt16, teardown: (@Sendable () -> Void)? = nil) {
+        self.host = host
+        self.port = port
+        self.teardown = teardown
+    }
+}
+
 public protocol SandboxBackend: Sendable {
+    /// "apple-container", "docker" or "podman".
     var name: String { get }
     /// Throws `MudroomError.backendUnavailable` with a human-readable reason.
     func checkAvailable() throws
@@ -88,6 +118,24 @@ public protocol SandboxBackend: Sendable {
     /// The runtime's default (NAT) network, used to find the address a VM
     /// on it reaches the Mac at.
     func defaultNetwork() throws -> SandboxNetwork?
+    /// Where to run the proxy for a locked plan.
+    func proxyListen(for plan: NetworkPlan) throws -> ProxyListen
+    /// Makes the proxy (already listening on `port`) reachable from the
+    /// sandbox network and returns the address to put in HTTPS_PROXY.
+    func attachProxy(port: UInt16, plan: NetworkPlan) throws -> ProxyRoute
+}
+
+extension SandboxBackend {
+    /// VM backends: listen everywhere, accept only the VM network, and let
+    /// the VM reach the proxy at the network's gateway (the host).
+    public func proxyListen(for plan: NetworkPlan) throws -> ProxyListen {
+        ProxyListen(bindHost: nil, clientSubnets: plan.clientSubnet.map { [$0] } ?? [])
+    }
+
+    public func attachProxy(port: UInt16, plan: NetworkPlan) throws -> ProxyRoute {
+        guard let host = plan.proxyHost else { throw MudroomError.invalid("no proxy address for this network") }
+        return ProxyRoute(host: host, port: port)
+    }
 }
 
 public enum AgentEnvironment {

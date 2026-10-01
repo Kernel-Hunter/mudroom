@@ -64,7 +64,7 @@ public struct NetworkPlan: Sendable, Equatable {
         case .offline:
             guard let net = try backend.hostOnlyNetwork() else {
                 throw MudroomError.backendUnavailable(
-                    "offline mode needs a host-only VM network, which this version of `container` can't create")
+                    "offline mode needs a host-only network, which this \(backend.name) version can't create")
             }
             return NetworkPlan(record: SessionNetwork(mode: .offline, enforcement: .enforced, vmNetwork: net.name),
                                vmNetwork: net.name, proxyHost: nil, clientSubnet: nil, allowlist: allowlist)
@@ -103,16 +103,30 @@ public final class NetworkSetup: @unchecked Sendable {
     public let record: SessionNetwork
     /// Proxy variables for the VM (empty unless locked).
     public let environment: [String: String]
+    private let teardown = LockedBox<(@Sendable () -> Void)?>(nil)
 
     public init(mode: NetworkMode, allowlist: Allowlist, backend: SandboxBackend, logURL: URL?) throws {
         plan = try NetworkPlan.make(mode: mode, allowlist: allowlist, backend: backend)
         var record = plan.record
-        if mode == .locked, let host = plan.proxyHost {
-            let p = EgressProxy(.init(allowlist: plan.allowlist, logURL: logURL,
-                                      clientSubnets: plan.clientSubnet.map { [$0] } ?? []))
-            try p.start()
+        if mode == .locked, plan.proxyHost != nil {
+            let listen = try backend.proxyListen(for: plan)
+            let p = EgressProxy(.init(allowlist: plan.allowlist, logURL: logURL, bindHost: listen.bindHost,
+                                      clientSubnets: listen.clientSubnets, blockedSubnets: listen.blockedSubnets))
+            do {
+                try p.start()
+            } catch {
+                throw MudroomError.backendUnavailable("the network proxy could not listen on \(listen.bindHost ?? "all addresses") for \(backend.name): \(error)")
+            }
+            let route: ProxyRoute
+            do {
+                route = try backend.attachProxy(port: p.port, plan: plan)
+            } catch {
+                p.stop()
+                throw error
+            }
+            teardown.value = route.teardown
             proxy = p
-            let url = "http://\(host):\(p.port)"
+            let url = "http://\(route.host):\(route.port)"
             record.proxy = url
             environment = NetworkPlan.proxyEnvironment(url)
         } else {
@@ -122,14 +136,19 @@ public final class NetworkSetup: @unchecked Sendable {
         self.record = record
     }
 
-    public func stop() { proxy?.stop() }
+    public func stop() {
+        let t = teardown.value
+        teardown.value = nil
+        t?()
+        proxy?.stop()
+    }
 
     public var summary: [String] {
         switch record.mode {
         case .locked:
             var lines = ["network: locked (\(record.enforcement.title)), \(plan.allowlist.patterns.count) allowed hosts, proxy \(record.proxy ?? "-")"]
             if record.enforcement == .advisory {
-                lines.append("warning: this runtime can't give the VM a host-only network, so a program that ignores the proxy settings can still connect directly")
+                lines.append("warning: this runtime can't give the sandbox a host-only network, so a program that ignores the proxy settings can still connect directly")
             }
             return lines
         case .open:
@@ -208,6 +227,7 @@ public struct SessionRunner {
             handle.session.runnerPID = getpid()
             handle.session.started = Date()
             handle.session.network = record
+            handle.session.backend = BackendChoice(backendName: backend.name)?.rawValue ?? backend.name
             try handle.setStatus(.running)
         }
         let status: Int32

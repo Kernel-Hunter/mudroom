@@ -39,6 +39,10 @@ public struct Session: Codable, Sendable, Equatable {
     /// How the last run reached the network. Nil for sessions that never ran
     /// (or ran before Mudroom recorded this).
     public var network: SessionNetwork?
+    /// Sandbox backend ("apple", "docker" or "podman") the session was
+    /// created for or last ran with. `mudroom start` uses it unless told
+    /// otherwise. Nil for older sessions.
+    public var backend: String?
 
     public init(id: String, projectPath: String, created: Date, command: [String], image: String,
                 status: SessionStatus, cloneMethod: CloneMethod, exitCode: Int32? = nil, agent: String? = nil) {
