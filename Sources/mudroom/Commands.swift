@@ -267,7 +267,7 @@ struct NetworkCommand: ParsableCommand {
 struct Agent: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Persistent agent logins, kept in Mudroom's own directory (never your real ~/.claude).",
-        subcommands: [Login.self, Status.self])
+        subcommands: [Login.self, Token.self, Status.self])
 
     struct Login: ParsableCommand {
         static let configuration = CommandConfiguration(
@@ -277,6 +277,8 @@ struct Agent: ParsableCommand {
         var agent: String
         @Option(help: "Container image to run.")
         var image: String = AgentBaseImage.tag
+        @Flag(help: "Always sign in inside the sandbox, even when claude is installed on this machine.")
+        var inVM = false
         @OptionGroup var backendOptions: BackendOptions
 
         func run() throws {
@@ -285,6 +287,26 @@ struct Agent: ParsableCommand {
             }
             if preset.id == "gemini" { print("Pick \"Login with Google\", finish in your browser, then type /quit.") }
             let tty = isatty(STDIN_FILENO) == 1 && isatty(STDOUT_FILENO) == 1
+            // Most robust for Claude: a long-lived token made by the claude CLI
+            // on this machine, which opens the browser itself.
+            if preset.id == "claude", !inVM, tty, let claude = ProcessRunner.which("claude") {
+                print("The claude CLI is installed here. Sign in with it and store a long-lived token for sessions? [Y/n] ", terminator: "")
+                fflush(nil)
+                let answer = (readLine() ?? "").trimmingCharacters(in: .whitespaces).lowercased()
+                if answer.isEmpty || answer == "y" || answer == "yes" {
+                    print("Running `claude setup-token`. When it prints the token, copy it.")
+                    fflush(nil)
+                    let rc = (try? ProcessRunner.runAttached(claude, ["setup-token"])) ?? 1
+                    if rc == 0 {
+                        do { try storeToken(for: preset.id) } catch { fail(error) }
+                        return
+                    }
+                    print("claude setup-token didn't finish (status \(rc)); signing in inside the sandbox instead.")
+                }
+            }
+            print(AuthLinkHandoff.pasteNote)
+            if tty { print("The sign-in page opens in your browser by itself; the link is also copied to the clipboard.") }
+            fflush(nil)
             let status: Int32
             do {
                 status = try AgentLogin.run(preset, store: store(), backend: try backendOptions.make(), image: image, tty: tty) {
@@ -301,9 +323,100 @@ struct Agent: ParsableCommand {
         func run() throws {
             for p in AgentPreset.all {
                 guard let h = AgentHome(store: store(), agent: p.id) else { continue }
-                let state = h.isPopulated ? "has config" : "empty (run `mudroom agent login \(p.id)`)"
-                print("\(p.id.padding(toLength: 7, withPad: " ", startingAt: 0)) \(h.hostDirectory.path) -> \(h.guestPath)  \(state)")
+                let state = h.hasCredentials ? "signed in" : h.isPopulated ? "has config, no sign-in" : "empty (run `mudroom agent login \(p.id)`)"
+                let token = ((try? AgentToken.defaultStore(store()).read(p.id)) ?? nil) != nil ? ", token stored" : ""
+                print("\(p.id.padding(toLength: 7, withPad: " ", startingAt: 0)) \(h.hostDirectory.path) -> \(h.guestPath)  \(state)\(token)")
             }
         }
     }
+}
+
+extension Agent {
+    struct Token: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            abstract: "Store a long-lived token for an agent (e.g. the output of `claude setup-token`).",
+            discussion: """
+            Reads the token from standard input without showing it, and keeps it in the macOS \
+            Keychain (service io.github.kernel-hunter.mudroom), or on Linux in a 0600 file in \
+            Mudroom's data directory. Sessions get it as CLAUDE_CODE_OAUTH_TOKEN (codex: \
+            OPENAI_API_KEY, gemini: GEMINI_API_KEY), passed by name: the value is never on a \
+            command line. Example: claude setup-token, then mudroom agent token claude.
+            """)
+        @Argument(help: "claude, codex or gemini.")
+        var agent: String = "claude"
+        @Flag(help: "Delete the stored token instead.")
+        var clear = false
+
+        func run() throws {
+            guard let preset = AgentPreset.find(agent) else { fail(MudroomError.invalid("unknown agent \(agent); use claude, codex or gemini")) }
+            do {
+                if clear {
+                    let had = try AgentToken.defaultStore(store()).delete(preset.id)
+                    print(had ? "deleted the stored \(preset.id) token" : "no \(preset.id) token was stored")
+                    return
+                }
+                try storeToken(for: preset.id)
+            } catch { fail(error) }
+        }
+    }
+}
+
+/// Asks for a token without echo and stores it.
+func storeToken(for agent: String) throws {
+    let tty = isatty(STDIN_FILENO) == 1
+    if tty {
+        FileHandle.standardError.write(Data("Paste the token, then press Enter. \(AuthLinkHandoff.pasteNote.replacingOccurrences(of: "The code", with: "The token"))\n> ".utf8))
+    }
+    let raw = tty ? readSecretFromTerminal() : String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+    if tty { FileHandle.standardError.write(Data("\n".utf8)) }
+    let token = AgentToken.clean(raw)
+    if let problem = AgentToken.problem(token, agent: agent) { throw MudroomError.invalid("not stored: \(problem)") }
+    let tokens = AgentToken.defaultStore(store())
+    try tokens.write(agent, token)
+    let name = AgentToken.variable(for: agent) ?? "the agent's variable"
+    print("stored the \(agent) token (\(token.count) characters) in \(tokens.location). Sessions get it as \(name).")
+}
+
+/// Reads a pasted secret with echo off. A paste arrives as one burst, so
+/// line breaks inside it (a token the terminal wrapped) don't end the
+/// input; Enter after a pause does.
+func readSecretFromTerminal() -> String {
+    var saved = termios()
+    guard tcgetattr(STDIN_FILENO, &saved) == 0 else { return readLine() ?? "" }
+    var raw = saved
+    raw.c_lflag &= ~tcflag_t(ECHO | ICANON)
+    tcsetattr(STDIN_FILENO, TCSANOW, &raw)
+    defer { tcsetattr(STDIN_FILENO, TCSANOW, &saved) }
+    var bytes: [UInt8] = []
+    while true {
+        var p = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+        guard poll(&p, 1, -1) > 0 else { break }
+        var b: UInt8 = 0
+        guard read(STDIN_FILENO, &b, 1) == 1 else { break }
+        if b == 3 { return "" } // Ctrl-C
+        if b == 0x7f || b == 8 {
+            if !bytes.isEmpty { bytes.removeLast() }
+            continue
+        }
+        if b == 0x0d || b == 0x0a {
+            // More input within a moment means it was part of the paste.
+            var q = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+            if poll(&q, 1, 300) > 0 { bytes.append(0x0a); continue }
+            break
+        }
+        bytes.append(b)
+    }
+    return String(decoding: bytes, as: UTF8.self)
+}
+
+/// Before a session: if the agent isn't signed in yet, say how the code
+/// paste works (and that a token avoids it).
+func printSignInHint(_ session: Session, options: RunOptions) {
+    guard let preset = AgentPreset.matching(agent: session.agent, command: session.command),
+          let home = AgentHome(store: store(), agent: preset.id), !home.hasCredentials else { return }
+    if let name = AgentToken.variable(for: preset.id), options.environmentNames.contains(name) { return }
+    if ((try? options.tokenStore?.read(preset.id)) ?? nil) != nil { return }
+    if preset.credential.map(options.environmentNames.contains) == true { return }
+    print("\(preset.name) isn't signed in yet. When it asks for a code: \(AuthLinkHandoff.pasteNote)")
+    print("The sign-in page opens in your browser on its own. To skip this next time: mudroom agent login \(preset.id)")
 }

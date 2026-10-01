@@ -59,7 +59,8 @@ struct RunFlags: ParsableArguments {
             hosts.append(p)
         }
         return RunOptions(tty: tty, cpus: cpus, memory: memory, networkMode: network, extraHosts: hosts,
-                          snapshotMinutes: snapshotEvery, snapshotLimit: snapshotLimit)
+                          snapshotMinutes: snapshotEvery, snapshotLimit: snapshotLimit,
+                          tokenStore: AgentToken.defaultStore(store()))
     }
 }
 
@@ -134,6 +135,7 @@ func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, flags: Run
     var options: RunOptions
     do { options = try flags.options(tty: tty) } catch { fail(error) }
     if !options.environmentNames.isEmpty { print("passing through: \(options.environmentNames.joined(separator: ", "))") }
+    printSignInHint(handle.session, options: options)
     let result: SessionRunner.Result
     do {
         let runner = SessionRunner(backend: backend, store: store()) { line in

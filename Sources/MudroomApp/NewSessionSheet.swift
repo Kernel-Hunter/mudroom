@@ -90,6 +90,12 @@ struct NewSessionSheet: View {
                     Text("\(key) is passed into the VM if it is set in your shell.")
                         .font(.system(size: 11)).foregroundStyle(.tertiary)
                 }
+                if let p = preset, let home = AgentHome(store: app.store, agent: p.id), !home.hasCredentials {
+                    Text("\(p.name) isn't signed in yet. It asks in Terminal and opens the sign-in page in your browser. \(AuthLinkHandoff.pasteNote) To sign in once for all sessions, run `mudroom agent login \(p.id)`.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                }
             }
 
             section("Network") {

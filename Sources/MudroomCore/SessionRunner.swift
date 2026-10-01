@@ -25,11 +25,14 @@ public struct RunOptions: Sendable {
     public var persistAgentConfig: Bool
     /// Take snapshots (off for login runs, which don't touch work/).
     public var snapshots: Bool
+    /// Where a stored agent token is looked up (`mudroom agent token`).
+    public var tokenStore: AgentTokenStore?
 
     public init(tty: Bool, cpus: Int? = nil, memory: String? = nil,
                 environmentNames: [String] = AgentEnvironment.present(), networkMode: NetworkMode? = nil,
                 extraHosts: [HostPattern] = [], snapshotMinutes: Int? = nil, snapshotLimit: Int? = nil,
-                commandOverride: [String]? = nil, persistAgentConfig: Bool = true, snapshots: Bool = true) {
+                commandOverride: [String]? = nil, persistAgentConfig: Bool = true, snapshots: Bool = true,
+                tokenStore: AgentTokenStore? = nil) {
         self.tty = tty
         self.cpus = cpus
         self.memory = memory
@@ -41,6 +44,7 @@ public struct RunOptions: Sendable {
         self.commandOverride = commandOverride
         self.persistAgentConfig = persistAgentConfig
         self.snapshots = snapshots
+        self.tokenStore = tokenStore
     }
 }
 
@@ -196,33 +200,68 @@ public struct SessionRunner {
         let record = net.record
         net.summary.forEach(log)
 
+        let runsSession = options.commandOverride == nil
+        // Held by this process and inherited by the sandbox process, so the
+        // session counts as running while either lives.
+        var runnerLock: FileLock?
+        if runsSession {
+            guard let l = FileLock.tryAcquire(handle.runnerLockURL, inheritable: true) else {
+                throw MudroomError.invalid("session \(s.id) is already running")
+            }
+            runnerLock = l
+        }
+        defer { runnerLock?.release() }
+
         var env = preset?.environment ?? [:]
         var mounts: [SandboxMount] = []
-        if options.persistAgentConfig, let id = preset?.id, let home = AgentHome(store: store, agent: id) {
-            try home.create()
-            mounts.append(home.mount)
-            env.merge(home.environment) { _, new in new }
+        var home: AgentHome?
+        if options.persistAgentConfig, let id = preset?.id, let h = AgentHome(store: store, agent: id) {
+            // A copy per session; only the login is carried back afterwards.
+            mounts.append(try h.sessionCopy(for: handle))
+            env.merge(h.environment) { _, new in new }
+            home = h
         }
         env.merge(net.environment) { _, new in new }
+        var secrets: [String: String] = [:]
+        if let id = preset?.id, let name = AgentToken.variable(for: id), !options.environmentNames.contains(name),
+           let token = try? options.tokenStore?.read(id) {
+            secrets[name] = token
+            log("agent token: \(name) from \(options.tokenStore?.location ?? "the token store")")
+        }
+        var handoff: AuthLinkHandoff?
+        if options.tty, let h = try? AuthLinkHandoff(directory: handle.directory.appendingPathComponent("handoff")) {
+            mounts.append(h.mount)
+            env.merge(h.environment) { _, new in new }
+            handoff = h
+        }
 
         let spec = SandboxSpec(
             name: "mudroom-\(s.id)", image: s.image, workspace: handle.work,
             command: options.commandOverride ?? s.command,
             environmentNames: options.environmentNames, interactive: true, tty: options.tty,
             cpus: options.cpus, memory: options.memory, mounts: mounts, environment: env, network: net.plan.vmNetwork)
+        var runSpec = spec
+        runSpec.secretEnvironment = secrets
+        let log = self.log
+        handoff?.start { url in AuthLinkHandoff.deliver(url) { log($0) } }
+        let backend = self.backend
+        defer {
+            handoff?.stop()
+            // If the runtime CLI went away but the sandbox didn't, stop it.
+            if backend.isRunning(spec.name) { backend.stop(spec.name) }
+            if let home, !home.syncBack(from: handle).isEmpty { log("kept the \(home.agent) sign-in from this session for later ones") }
+        }
 
         var snapshotter: Snapshotter?
         if options.snapshots {
             let minutes = options.snapshotMinutes ?? config.snapshotMinutes
             let snap = Snapshotter(store: SnapshotStore(handle: handle), interval: TimeInterval(max(0, minutes) * 60),
                                    limit: options.snapshotLimit ?? config.snapshotLimit)
-            let log = self.log
             snap.onError = { log("snapshot failed: \($0)") }
             snap.start()
             snapshotter = snap
         }
 
-        let runsSession = options.commandOverride == nil
         if runsSession {
             handle.session.runnerPID = getpid()
             handle.session.started = Date()
@@ -232,7 +271,7 @@ public struct SessionRunner {
         }
         let status: Int32
         do {
-            status = try backend.run(spec)
+            status = try backend.run(runSpec)
         } catch {
             _ = snapshotter?.finish()
             if runsSession {

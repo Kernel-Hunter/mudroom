@@ -4,7 +4,7 @@ import Foundation
 public enum AgentLogin {
     public static func run(_ preset: AgentPreset, store: SessionStore, backend: SandboxBackend,
                            image: String = AgentBaseImage.tag, tty: Bool,
-                           log: @Sendable (String) -> Void = { print($0) }) throws -> Int32 {
+                           log: @escaping @Sendable (String) -> Void = { print($0) }) throws -> Int32 {
         try backend.checkAvailable()
         guard let home = AgentHome(store: store, agent: preset.id) else {
             throw MudroomError.invalid("\(preset.name) has no persistent config directory")
@@ -26,11 +26,24 @@ public enum AgentLogin {
         var env = preset.environment
         env.merge(home.environment) { _, n in n }
         env.merge(net.environment) { _, n in n }
+        var mounts = [home.mount]
+        // The sign-in link goes straight to the browser on the host.
+        let handoff = tty ? try? AuthLinkHandoff(directory: home.hostDirectory.deletingLastPathComponent().appendingPathComponent("handoff")) : nil
+        if let handoff {
+            mounts.append(handoff.mount)
+            env.merge(handoff.environment) { _, n in n }
+            handoff.start { url in AuthLinkHandoff.deliver(url) { log($0) } }
+        }
+        defer { handoff?.stop() }
         let spec = SandboxSpec(name: "mudroom-login-\(preset.id)-\(UInt16.random(in: 0...0xffff))", image: image,
                                workspace: scratch, command: preset.loginCommand, environmentNames: [],
-                               interactive: true, tty: tty, mounts: [home.mount], environment: env,
+                               interactive: true, tty: tty, mounts: mounts, environment: env,
                                network: net.plan.vmNetwork)
-        return try backend.run(spec)
+        let status = try backend.run(spec)
+        if status == 0 && !home.hasCredentials && preset.id != "gemini" {
+            log("warning: the login finished but no credentials were saved in \(home.hostDirectory.path)")
+        }
+        return status
     }
 }
 

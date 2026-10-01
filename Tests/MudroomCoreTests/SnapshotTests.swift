@@ -168,8 +168,8 @@ struct NetworkPlanTests {
         #expect(spec.environment["CLAUDE_CONFIG_DIR"] == "/home/node/.claude")
         #expect(spec.environmentNames == ["ANTHROPIC_API_KEY"])
         #expect(spec.environment.values.allSatisfy { !$0.contains("sk-") })
-        #expect(spec.mounts == [SandboxMount(source: f.store.root.appendingPathComponent("agents/claude/home", isDirectory: true),
-                                             target: "/home/node/.claude")])
+        // The session's own copy of the agent home, never the shared one.
+        #expect(spec.mounts.first == SandboxMount(source: f.handle.agentHomeCopy, target: "/home/node/.claude"))
         let args = AppleContainerBackend.runArguments(for: spec)
         #expect(args.contains("--network") && args.contains("mudroom-hostonly"))
 

@@ -98,3 +98,85 @@ extension AgentPreset {
         return all.first { $0.command.first == exe }
     }
 }
+
+extension AgentHome {
+    /// Files that hold the sign-in. Only these are carried back from a
+    /// session's copy (token refreshes, a login done inside a session).
+    public var credentialFiles: [String] {
+        switch agent {
+        case "claude": [".credentials.json"]
+        case "codex": ["auth.json"]
+        case "gemini": ["oauth_creds.json", "google_accounts.json"]
+        default: []
+        }
+    }
+
+    /// Account keys of Claude Code's .claude.json carried back too (so a
+    /// login sticks), and nothing else from it: MCP servers, hooks and
+    /// project settings a session writes stay in that session.
+    static let claudeAccountKeys = ["oauthAccount", "hasCompletedOnboarding", "lastOnboardingVersion", "userID",
+                                    "theme", "hasAvailableSubscription"]
+
+    /// True if a login has been stored in the shared directory.
+    public var hasCredentials: Bool {
+        credentialFiles.contains { FileManager.default.fileExists(atPath: hostDirectory.appendingPathComponent($0).path) }
+    }
+
+    /// The copy of this directory a session runs with: `<session>/agent-home`,
+    /// cloned from the shared one the first time. What a session writes
+    /// there (settings, hooks, MCP servers, history) never reaches other
+    /// sessions or projects.
+    public func sessionCopy(for handle: SessionHandle) throws -> SandboxMount {
+        let copy = handle.agentHomeCopy
+        if !FileManager.default.fileExists(atPath: copy.path) {
+            try create()
+            try Cloner.cloneTree(from: hostDirectory, to: copy)
+            chmod(copy.path, 0o700)
+        }
+        return SandboxMount(source: copy, target: guestPath)
+    }
+
+    /// Carries credentials (and Claude's account keys) from a session's
+    /// copy back to the shared directory. Files are read without
+    /// following symlinks and must be JSON objects.
+    @discardableResult
+    public func syncBack(from handle: SessionHandle) -> [String] {
+        let copy = handle.agentHomeCopy
+        var updated: [String] = []
+        for name in credentialFiles {
+            guard let data = try? SafeFS.readBeneath(copy, name, limit: 1 << 20),
+                  (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else { continue }
+            let dest = hostDirectory.appendingPathComponent(name)
+            if (try? Data(contentsOf: dest)) == data { continue }
+            if (try? Self.writePrivate(data, to: dest)) != nil { updated.append(name) }
+        }
+        if agent == "claude",
+           let data = try? SafeFS.readBeneath(copy, ".claude.json", limit: 8 << 20),
+           let theirs = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+            let dest = hostDirectory.appendingPathComponent(".claude.json")
+            var ours = ((try? Data(contentsOf: dest)).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:]
+            var changed = false
+            for key in Self.claudeAccountKeys {
+                guard let v = theirs[key] else { continue }
+                if let old = ours[key], NSDictionary(dictionary: [key: old]).isEqual(to: [key: v]) { continue }
+                ours[key] = v
+                changed = true
+            }
+            if changed, let out = try? JSONSerialization.data(withJSONObject: ours, options: [.prettyPrinted, .sortedKeys]),
+               (try? Self.writePrivate(out, to: dest)) != nil {
+                updated.append(".claude.json")
+            }
+        }
+        return updated
+    }
+
+    static func writePrivate(_ data: Data, to dest: URL) throws {
+        let tmp = dest.deletingLastPathComponent().appendingPathComponent(".mudroom-\(UUID().uuidString.prefix(8))")
+        try data.write(to: tmp)
+        chmod(tmp.path, 0o600)
+        guard rename(tmp.path, dest.path) == 0 else {
+            unlink(tmp.path)
+            throw MudroomError.posix("rename", dest.path, errno)
+        }
+    }
+}
