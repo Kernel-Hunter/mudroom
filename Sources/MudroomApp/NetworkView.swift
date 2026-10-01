@@ -337,7 +337,7 @@ struct ConnectionTable: View {
             }
             .frame(width: 14)
             Text(host).lineLimit(1).truncationMode(.middle).frame(minWidth: 150, maxWidth: 260, alignment: .leading)
-            Text(kind).frame(width: 48, alignment: .leading)
+            Text(kind).lineLimit(1).frame(width: 84, alignment: .leading)
             Text(sent).monospacedDigit().frame(width: 60, alignment: .trailing)
             Text(received).monospacedDigit().frame(width: 64, alignment: .trailing)
             Text(open).monospacedDigit().frame(width: 56, alignment: .trailing)
