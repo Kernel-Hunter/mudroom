@@ -159,10 +159,15 @@ struct SetupCommand: ParsableCommand {
         }
         let keys = APIKeys.storedNames(tokens)
         say("   API keys     \(keys.isEmpty ? "none stored. Add one with `mudroom keys set OPENROUTER_API_KEY` (or any provider)" : keys.joined(separator: ", "))")
-        if !anySignedIn { problems += 1 }
+        let signInMissing = !anySignedIn
+        if signInMissing && !noSignIn { problems += 1 }
 
-        say(problems == 0 ? "\nAll set. Start a session in the app, or: mudroom run <project> -- claude --dangerously-skip-permissions"
-                          : "\n\(problems) \(problems == 1 ? "step still needs" : "steps still need") attention.")
+        if problems == 0 && signInMissing {
+            say("\nThe runtime, image and network are ready. Sign an agent in when you want to: mudroom setup, or Setup in the app.")
+        } else {
+            say(problems == 0 ? "\nAll set. Start a session in the app, or: mudroom run <project> -- claude --dangerously-skip-permissions"
+                              : "\n\(problems) \(problems == 1 ? "step still needs" : "steps still need") attention.")
+        }
         if problems > 0 { throw ExitCode(2) }
     }
 
@@ -171,7 +176,7 @@ struct SetupCommand: ParsableCommand {
         case "claude": "not signed in: mudroom agent login claude"
         case "codex": HostLogin.forAgent("codex")?.isAvailable == true ? "not signed in: mudroom agent import codex" : "not signed in: mudroom agent login codex"
         case "gemini": HostLogin.forAgent("gemini")?.isAvailable == true ? "not signed in: mudroom agent import gemini" : "not signed in: mudroom agent login gemini, or mudroom keys set GEMINI_API_KEY"
-        default: "needs an API key: mudroom keys set OPENROUTER_API_KEY (or another provider), or Local models"
+        default: "needs an API key (mudroom keys set OPENROUTER_API_KEY, or another provider) or local models (mudroom network local-models on)"
         }
     }
 
