@@ -385,12 +385,29 @@ Sessions get `OLLAMA_HOST`, `OLLAMA_API_BASE` (Aider) and `LM_STUDIO_API_BASE`
 pointing there. For example, with the Custom agent:
 
 ```sh
-aider --yes-always --no-auto-commits --model ollama_chat/qwen3
+aider --yes-always --no-auto-commits --model ollama_chat/qwen2.5:7b-instruct
 ```
 
-opencode needs the provider set up in its own config (an OpenAI-compatible
-provider with `baseURL` `http://host.mudroom.internal:11434/v1`). Local models
-need locked mode: open and offline sessions don't go through the proxy.
+For Aider the model name is enough; it reads `OLLAMA_API_BASE`. opencode
+needs the provider in its config, for example an `opencode.json` in the
+project:
+
+```json
+{
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://host.mudroom.internal:11434/v1" },
+      "models": { "qwen2.5:7b-instruct": { "tools": true } }
+    }
+  }
+}
+```
+
+and then `opencode run -m ollama/qwen2.5:7b-instruct "..."` (or pick the model
+in opencode). Small models often get tool calls wrong; that is the model, not
+the sandbox. Local models need locked mode: open and offline sessions don't
+go through the proxy.
 
 ### When the VM can't reach the network
 
