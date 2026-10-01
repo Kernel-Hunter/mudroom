@@ -12,6 +12,67 @@ be undone.
 
 ![Reviewing a session in Mudroom](docs/screenshots/review-light.png)
 
+## Install
+
+Mudroom needs macOS 26 or later on Apple silicon.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/mudroom/main/install.sh | sh
+```
+
+The script downloads the latest release, checks its SHA-256, puts
+Mudroom.app in /Applications (or ~/Applications if /Applications isn't
+writable) and links the `mudroom` command into /opt/homebrew/bin,
+/usr/local/bin or ~/.local/bin. It doesn't use sudo. Set
+`MUDROOM_VERSION=0.1.0` to pick a version. To remove Mudroom again (your
+sessions and settings stay):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/mudroom/main/install.sh | sh -s -- --uninstall
+```
+
+Or with Homebrew, which also installs Apple's `container` CLI:
+
+```sh
+brew install --cask kernel-hunter/tap/mudroom
+```
+
+Mudroom isn't notarized. The install script and the Homebrew cask remove the
+quarantine flag, so macOS won't block it. If you download the zip in a
+browser, use System Settings > Privacy & Security > Open Anyway, or run
+`xattr -dr com.apple.quarantine /Applications/Mudroom.app`.
+
+Then set up the VM runtime and the agent image once:
+
+```sh
+brew install container          # skip if you used the cask
+container system start          # first run offers to download Apple's default kernel
+mudroom image build             # builds mudroom/agent-base:latest (Node LTS, git, ripgrep, claude, codex, gemini)
+mudroom agent login claude      # optional: sign in once, kept for later sessions
+```
+
+Mudroom needs Apple's [`container`](https://github.com/apple/container) CLI
+1.5 or later. Earlier versions may lack host-only networks; see
+[Network](#network).
+
+### Build from source
+
+You need Xcode 26+ (Swift 6.2+).
+
+```sh
+git clone https://github.com/Kernel-Hunter/mudroom
+cd mudroom
+scripts/build-app.sh            # build/Mudroom.app (app + bundled CLI), ad-hoc signed
+open build/Mudroom.app
+```
+
+For the command line only:
+
+```sh
+swift build -c release
+cp .build/release/mudroom /usr/local/bin/   # or anywhere on your PATH
+```
+
 ## Why
 
 Agents in "skip permissions" mode are fast, and every so often they delete
@@ -45,39 +106,6 @@ Mudroom puts these pieces together in one place:
   apply can be undone.
 - Snapshots taken while the agent runs let you see what it did after a given
   point.
-
-## Requirements
-
-- macOS 26 or later on Apple silicon
-- Xcode 26+ / Swift 6.2+ to build
-- Apple's [`container`](https://github.com/apple/container) CLI, 1.5 or later
-  (`brew install container`). Earlier versions may lack host-only networks;
-  see [Network](#network).
-
-## Build
-
-```sh
-git clone https://github.com/Kernel-Hunter/mudroom
-cd mudroom
-scripts/build-app.sh            # build/Mudroom.app (app + bundled CLI), ad-hoc signed
-open build/Mudroom.app
-```
-
-For the command line only:
-
-```sh
-swift build -c release
-cp .build/release/mudroom /usr/local/bin/   # or anywhere on your PATH
-```
-
-Set up the VM runtime and the agent image once:
-
-```sh
-brew install container
-container system start          # first run offers to download Apple's default kernel
-mudroom image build             # builds mudroom/agent-base:latest (Node LTS, git, ripgrep, claude, codex, gemini)
-mudroom agent login claude      # optional: sign in once, kept for later sessions
-```
 
 ## The app
 
@@ -347,7 +375,8 @@ package can replace it later without touching the diff/apply code.
 - Snapshots skip unchanged trees by comparing file size, mode and mtime. An
   edit that keeps both size and mtime the same doesn't trigger a snapshot on
   its own. The review diff always compares content.
-- The app is ad-hoc signed; no notarized build or Homebrew cask yet.
+- The app is ad-hoc signed, not notarized. See [Install](#install) for what
+  that means when you download it.
 
 ## Development
 
@@ -356,6 +385,7 @@ swift build
 swift test                 # diff, hunks, apply, undo, allowlist, proxy, snapshot tests; no VM needed
 scripts/make-demo.sh       # demo sessions in build/demo (no VM)
 scripts/screenshots.sh     # regenerates docs/screenshots from the demo
+scripts/release.sh 0.4.0   # dist/Mudroom-0.4.0.zip and its SHA-256
 mudroom network check      # needs `container`: verifies isolation in a real VM
 ```
 
