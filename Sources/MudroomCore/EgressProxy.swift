@@ -170,19 +170,26 @@ public final class EgressProxy: @unchecked Sendable {
         /// Clients allowed to use the proxy besides loopback, e.g. the VM
         /// network. Anyone else is disconnected without a reply.
         public var clientSubnets: [IPv4Subnet]
-        /// Refuse upstream connections that resolve to loopback, link-local
-        /// or the sandbox's own networks (`clientSubnets` and
-        /// `blockedSubnets`), so an allowed name can't be pointed at
-        /// services on the host.
+        /// Refuse upstream connections to addresses that aren't on the public
+        /// internet: loopback, link-local, multicast, this machine's own
+        /// addresses, the sandbox's networks (`clientSubnets` and
+        /// `blockedSubnets`), and private ranges (RFC 1918, CGNAT, ULA...).
+        /// A private address is reachable only when that exact IP is on the
+        /// allowlist. Checked after DNS, on the address actually connected to.
         public var blockLocalDestinations: Bool
         /// More networks to refuse as destinations (e.g. a container
         /// runtime's internal network).
         public var blockedSubnets: [IPv4Subnet]
         public var connectTimeout: Int
+        /// Seconds a client gets to send its request head.
+        public var headerTimeout: TimeInterval
+        /// Open connections at most; more are closed straight away.
+        public var maxConnections: Int
 
         public init(allowlist: Allowlist, logURL: URL? = nil, bindHost: String? = nil, port: UInt16 = 0,
                     clientSubnets: [IPv4Subnet] = [], blockLocalDestinations: Bool = true,
-                    blockedSubnets: [IPv4Subnet] = [], connectTimeout: Int = 15) {
+                    blockedSubnets: [IPv4Subnet] = [], connectTimeout: Int = 15,
+                    headerTimeout: TimeInterval = 10, maxConnections: Int = 256) {
             self.allowlist = allowlist
             self.logURL = logURL
             self.bindHost = bindHost
@@ -191,6 +198,8 @@ public final class EgressProxy: @unchecked Sendable {
             self.blockLocalDestinations = blockLocalDestinations
             self.blockedSubnets = blockedSubnets
             self.connectTimeout = connectTimeout
+            self.headerTimeout = headerTimeout
+            self.maxConnections = maxConnections
         }
     }
 
@@ -204,6 +213,7 @@ public final class EgressProxy: @unchecked Sendable {
     private var logHandle: FileHandle?
     private var entries: [NetworkLogEntry] = []
     private let encoder = NetworkLog.encoder()
+    private var ownAddresses: (Set<IPAddress>, Date) = ([], .distantPast)
 
     /// The port actually listened on (after `start`).
     public private(set) var port: UInt16 = 0
@@ -221,6 +231,7 @@ public final class EgressProxy: @unchecked Sendable {
             logHandle = try FileHandle(forWritingTo: url)
             try logHandle?.seekToEnd()
         }
+        Self.raiseFileLimit()
         let (fd, p) = try Sock.listen(host: configuration.bindHost, port: configuration.port)
         var fds: [Int32] = [-1, -1]
         guard pipe(&fds) == 0 else {
@@ -288,10 +299,18 @@ public final class EgressProxy: @unchecked Sendable {
                 continue
             }
             let ex = ProxyExchange(proxy: self, client: conn)
-            let accepted: Bool = lock.withLock {
+            let accepted: Bool? = lock.withLock {
                 guard running else { return false }
+                guard active.count < configuration.maxConnections else { return nil }
                 active[ObjectIdentifier(ex)] = ex
                 return true
+            }
+            guard let accepted else {
+                // Over the cap: refuse without a thread.
+                Sock.setNonBlocking(conn, true)
+                _ = Sock.sendAll(conn, Data("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".utf8))
+                close(conn)
+                continue
             }
             guard accepted else {
                 close(conn)
@@ -320,11 +339,47 @@ public final class EgressProxy: @unchecked Sendable {
         return configuration.clientSubnets.contains { $0.contains(a) }
     }
 
-    /// True if an upstream address is on this host or a sandbox network.
+    /// True if an upstream address must not be connected to (see
+    /// `blockLocalDestinations`).
     func isLocalDestination(_ a: IPAddress) -> Bool {
-        guard configuration.blockLocalDestinations else { return false }
-        if a.isLocal { return true }
-        return (configuration.clientSubnets + configuration.blockedSubnets).contains { $0.contains(a) }
+        destinationRefusal(a) != nil
+    }
+
+    /// Why an upstream address is refused, or nil if it may be used.
+    func destinationRefusal(_ a: IPAddress) -> String? {
+        guard configuration.blockLocalDestinations else { return nil }
+        if a.isLocal { return "resolves to a local address (\(a))" }
+        if (configuration.clientSubnets + configuration.blockedSubnets).contains(where: { $0.contains(a) }) {
+            return "resolves to a sandbox network address (\(a))"
+        }
+        let mapped = a.embeddedIPv4.map(IPAddress.v4)
+        let own = hostAddresses()
+        if own.contains(a) || mapped.map(own.contains) == true { return "resolves to an address of this machine (\(a))" }
+        if a.isPrivate && !configuration.allowlist.listsAddress(a) {
+            return "resolves to a private network address (\(a)); allow that exact IP to reach it"
+        }
+        return nil
+    }
+
+    /// This machine's addresses, re-read every few seconds (networks come
+    /// and go while a session runs).
+    func hostAddresses() -> Set<IPAddress> {
+        lock.withLock {
+            if ownAddresses.1.timeIntervalSinceNow < -5 { ownAddresses = (IPAddress.hostAddresses(), Date()) }
+            return ownAddresses.0
+        }
+    }
+
+    /// One thread and two descriptors per connection: make sure the cap,
+    /// not the descriptor limit, is what runs out first.
+    static func raiseFileLimit() {
+        var rl = rlimit()
+        guard getrlimit(RLIMIT_NOFILE, &rl) == 0 else { return }
+        let want = rlim_t(min(UInt64(rl.rlim_max), 10240))
+        if rl.rlim_cur < want {
+            rl.rlim_cur = want
+            _ = setrlimit(RLIMIT_NOFILE, &rl)
+        }
     }
 }
 
@@ -355,9 +410,9 @@ final class ProxyExchange: @unchecked Sendable {
     var bytesOut: Int64 = 0
     var bytesIn: Int64 = 0
     var failure: String?
+    var destination: ProxyHost?
 
-    static let maxHeader = 64 * 1024
-    static let headerTimeout: TimeInterval = 60
+    static let maxHeader = 32 * 1024
 
     init(proxy: EgressProxy, client: Int32) {
         self.proxy = proxy
@@ -402,9 +457,9 @@ final class ProxyExchange: @unchecked Sendable {
     private func readHeader() -> (Data, Data)? {
         var header = Data()
         var buf = [UInt8](repeating: 0, count: 16 * 1024)
-        let deadline = Date().addingTimeInterval(Self.headerTimeout)
+        let deadline = Date().addingTimeInterval(proxy.configuration.headerTimeout)
         while true {
-            if let end = header.range(of: Data("\r\n\r\n".utf8)) {
+            if let end = header.range(of: Data("\r\n\r\n".utf8)), end.lowerBound - header.startIndex <= Self.maxHeader {
                 return (header.subdata(in: header.startIndex..<end.lowerBound), header.subdata(in: end.upperBound..<header.endIndex))
             }
             if header.count > Self.maxHeader {
@@ -412,7 +467,11 @@ final class ProxyExchange: @unchecked Sendable {
                 return nil
             }
             let left = deadline.timeIntervalSinceNow
-            if left <= 0 || isAborted { return nil }
+            if isAborted { return nil }
+            if left <= 0 {
+                reject(408, "no request within \(Int(proxy.configuration.headerTimeout)) s")
+                return nil
+            }
             if !Sock.waitReadable(client, timeout: min(left, 1)) { continue }
             let n = recv(client, &buf, buf.count, 0)
             if n < 0 && errno == EINTR { continue }
@@ -423,82 +482,54 @@ final class ProxyExchange: @unchecked Sendable {
     }
 
     private func handle(head: Data, rest: Data) {
-        let text = String(decoding: head, as: UTF8.self)
-        var lines = text.components(separatedBy: "\r\n")
-        let requestLine = lines.removeFirst().split(separator: " ", omittingEmptySubsequences: true).map(String.init)
-        guard requestLine.count == 3 else { return reject(400, "malformed request line") }
-        method = requestLine[0].uppercased()
-        let target = requestLine[1]
-        let version = requestLine[2]
-
-        var upstreamHead: Data?
-        if method == "CONNECT" {
-            guard let (h, p) = Self.splitHostPort(target, defaultPort: nil) else { return reject(400, "bad CONNECT target") }
-            host = h
-            port = p
-        } else {
-            guard let url = URL(string: target), let scheme = url.scheme?.lowercased(), scheme == "http",
-                  let h = url.host, !h.isEmpty else {
-                return reject(400, "only absolute http:// URLs and CONNECT are supported")
+        let req: ProxyRequest
+        switch ProxyRequest.parse(head) {
+        case .failure(let f):
+            if let raw = f.rawHost {
+                host = raw
+                port = f.port ?? 0
+                method = f.method ?? ""
             }
-            host = HostPattern.normalize(h.trimmingCharacters(in: CharacterSet(charactersIn: "[]")))
-            port = url.port ?? 80
-            // Origin-form request line, one request per connection: a client
-            // can't reuse this upstream connection for a different host.
-            var path = url.path.isEmpty ? "/" : url.path
-            if let q = url.query { path += "?" + q }
-            let dropped: Set<String> = ["proxy-connection", "proxy-authorization", "connection", "keep-alive"]
-            var out = ["\(method) \(path) \(version)"]
-            for line in lines where !line.isEmpty {
-                let name = line.split(separator: ":", maxSplits: 1).first.map { $0.trimmingCharacters(in: .whitespaces).lowercased() } ?? ""
-                if !dropped.contains(name) { out.append(line) }
-            }
-            out.append("Connection: close")
-            upstreamHead = Data((out.joined(separator: "\r\n") + "\r\n\r\n").utf8)
+            return reject(400, f.reason)
+        case .success(let r):
+            req = r
         }
-
-        guard proxy.configuration.allowlist.allows(host) else {
+        method = req.method
+        host = req.host.canonical
+        port = req.port
+        destination = req.host
+        guard proxy.configuration.allowlist.allows(req.host) else {
             return reject(403, "not on this project's allowlist")
         }
-        guard (1...65535).contains(port) else { return reject(400, "bad port") }
         allowed = true
-        connectUpstream(then: upstreamHead.map { $0 + rest } ?? rest)
-    }
-
-    static func splitHostPort(_ s: String, defaultPort: Int?) -> (String, Int)? {
-        var hostPart = s
-        var portPart: String?
-        if s.hasPrefix("[") {
-            guard let close = s.firstIndex(of: "]") else { return nil }
-            hostPart = String(s[s.index(after: s.startIndex)..<close])
-            let after = s[s.index(after: close)...]
-            if after.hasPrefix(":") { portPart = String(after.dropFirst()) }
-        } else if let colon = s.lastIndex(of: ":"), s.firstIndex(of: ":") == colon {
-            hostPart = String(s[..<colon])
-            portPart = String(s[s.index(after: colon)...])
-        }
-        let host = HostPattern.normalize(hostPart)
-        guard !host.isEmpty else { return nil }
-        if let portPart {
-            guard let p = Int(portPart) else { return nil }
-            return (host, p)
-        }
-        guard let d = defaultPort else { return nil }
-        return (host, d)
+        connectUpstream(then: req.isConnect ? rest : req.upstreamHead() + rest)
     }
 
     private func connectUpstream(then initial: Data) {
         let addresses: [IPAddress]
-        switch Sock.resolve(host) {
-        case .success(let a): addresses = a
-        case .failure(let e): return reject(502, "upstream: \(e)")
+        switch destination {
+        case .ip(let a)?:
+            addresses = [a]
+        case .name(let n)?:
+            switch Sock.resolve(n) {
+            case .success(let a): addresses = a
+            case .failure(let e): return reject(502, "upstream: \(e)")
+            }
+        case nil:
+            return reject(400, "no destination")
         }
-        // Local addresses are refused before connecting, so nothing on the
-        // host ever sees a connection for a name that points back at it.
-        let candidates = addresses.filter { !proxy.isLocalDestination($0) }
+        // Checked on the resolved addresses, and the connection goes to the
+        // address that was checked: a name re-pointed between the check and
+        // the connect (DNS rebinding) can't slip through.
+        var refusal: String?
+        let candidates = addresses.filter { a in
+            guard let why = proxy.destinationRefusal(a) else { return true }
+            refusal = refusal ?? why
+            return false
+        }
         if candidates.isEmpty {
             allowed = false
-            return reject(403, "resolves to a local address")
+            return reject(403, refusal ?? "no usable address")
         }
         let timeout = TimeInterval(proxy.configuration.connectTimeout)
         let deadline = Date().addingTimeInterval(timeout)
@@ -577,7 +608,7 @@ final class ProxyExchange: @unchecked Sendable {
 
     private func reject(_ status: Int, _ reason: String) {
         failure = reason
-        let phrase = [400: "Bad Request", 403: "Forbidden", 502: "Bad Gateway"][status] ?? "Error"
+        let phrase = [400: "Bad Request", 403: "Forbidden", 408: "Request Timeout", 502: "Bad Gateway"][status] ?? "Error"
         let body = "mudroom: \(host.isEmpty ? "request" : "\(host):\(port)") refused: \(reason)\n"
         let resp = "HTTP/1.1 \(status) \(phrase)\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         _ = Sock.sendAll(client, Data(resp.utf8))

@@ -38,22 +38,26 @@ public enum NetworkEnforcement: String, Codable, Sendable {
     }
 }
 
-/// One allowlist entry: an exact host ("api.anthropic.com") or a wildcard
+/// One allowlist entry: an exact host ("api.anthropic.com"), a wildcard
 /// suffix ("*.githubusercontent.com", which matches subdomains only, not the
-/// bare domain).
+/// bare domain), or an IP literal, which only ever matches that address.
 public struct HostPattern: Hashable, Sendable, Codable, CustomStringConvertible {
     public let value: String
 
     public init?(_ raw: String) {
         let v = Self.normalize(raw)
         guard !v.isEmpty else { return nil }
-        let body = v.hasPrefix("*.") ? String(v.dropFirst(2)) : v
-        // Hostname characters only, at least one label, no empty labels. IP
-        // literals are allowed (digits and dots, or bracketless IPv6).
-        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789-.:")
-        guard !body.isEmpty, body.unicodeScalars.allSatisfy(allowed.contains),
-              !body.hasPrefix("."), !body.hasSuffix("."), !body.contains("..") else { return nil }
-        value = v
+        let wildcard = v.hasPrefix("*.")
+        let body = wildcard ? String(v.dropFirst(2)) : v
+        // Same rules as hosts in proxy requests, so a pattern can never be
+        // something a request can't spell.
+        guard case .success(let host) = HostName.parse(body) else { return nil }
+        if wildcard {
+            guard case .name(let n) = host else { return nil }
+            value = "*." + n
+        } else {
+            value = host.canonical
+        }
     }
 
     public init(from decoder: Decoder) throws {
@@ -72,20 +76,29 @@ public struct HostPattern: Hashable, Sendable, Codable, CustomStringConvertible 
     public var description: String { value }
     public var isWildcard: Bool { value.hasPrefix("*.") }
 
-    /// Lowercases, trims whitespace and a trailing dot.
+    /// Trims whitespace and lowercases. For patterns typed by a person;
+    /// proxy requests go through `HostName.parse` instead.
     public static func normalize(_ host: String) -> String {
-        var h = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        while h.hasSuffix(".") { h.removeLast() }
-        return h
+        host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    public func matches(_ host: String) -> Bool {
-        let h = Self.normalize(host)
-        if isWildcard {
-            let suffix = String(value.dropFirst(1)) // ".example.com"
-            return h.hasSuffix(suffix) && h.count > suffix.count
+    public func matches(_ host: ProxyHost) -> Bool {
+        switch host {
+        case .ip(let a):
+            return !isWildcard && IPAddress(value) == a
+        case .name(let n):
+            if isWildcard {
+                let suffix = String(value.dropFirst(1)) // ".example.com"
+                return n.hasSuffix(suffix) && n.count > suffix.count
+            }
+            return n == value
         }
-        return h == value
+    }
+
+    /// Parses `host` first; anything that isn't a valid host never matches.
+    public func matches(_ host: String) -> Bool {
+        guard case .success(let h) = HostName.parse(host) else { return false }
+        return matches(h)
     }
 }
 
@@ -101,13 +114,25 @@ public struct Allowlist: Sendable, Equatable {
         self.init(strings.compactMap(HostPattern.init))
     }
 
-    public func allows(_ host: String) -> Bool {
+    public func allows(_ host: ProxyHost) -> Bool {
         patterns.contains { $0.matches(host) }
+    }
+
+    public func allows(_ host: String) -> Bool {
+        guard case .success(let h) = HostName.parse(host) else { return false }
+        return allows(h)
+    }
+
+    /// True when `address` itself is on the list as an IP literal: the only
+    /// way a private address can be reached.
+    public func listsAddress(_ address: IPAddress) -> Bool {
+        patterns.contains { !$0.isWildcard && IPAddress($0.value) == address }
     }
 
     /// The first pattern that lets `host` through, for logs.
     public func match(for host: String) -> HostPattern? {
-        patterns.first { $0.matches(host) }
+        guard case .success(let h) = HostName.parse(host) else { return nil }
+        return patterns.first { $0.matches(h) }
     }
 
     public var strings: [String] { patterns.map(\.value) }

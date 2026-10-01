@@ -59,18 +59,57 @@ public enum IPAddress: Hashable, Sendable, CustomStringConvertible {
         return false
     }
 
-    /// Loopback, link-local, multicast, unspecified, "this network" (0/8),
-    /// or for IPv6 also unique-local (fc00::/7).
+    /// The IPv4 address carried inside an IPv6 address: IPv4-mapped
+    /// (::ffff:a.b.c.d), NAT64 (64:ff9b::/96) or 6to4 (2002:aabb:ccdd::/48).
+    public var embeddedIPv4: UInt32? {
+        if let v = asIPv4 { return v }
+        guard case .v6(let b) = self else { return nil }
+        func v4(_ i: Int) -> UInt32 { b[i..<(i + 4)].reduce(0) { ($0 << 8) | UInt32($1) } }
+        if b[0] == 0x00, b[1] == 0x64, b[2] == 0xff, b[3] == 0x9b, b[4..<12].allSatisfy({ $0 == 0 }) { return v4(12) }
+        if b[0] == 0x20, b[1] == 0x02 { return v4(2) }
+        return nil
+    }
+
+    /// Never a valid destination: loopback, "this network" (0/8),
+    /// link-local, multicast, reserved (240/4) and broadcast, and for IPv6
+    /// also the unspecified address, fe80::/10 and ff00::/8. IPv6 forms that
+    /// carry one of these IPv4 addresses count too.
     public var isLocal: Bool {
-        if let v = asIPv4 {
+        if let v = embeddedIPv4 {
             let first = v >> 24
-            return first == 127 || first == 0 || v >> 16 == 0xa9fe || first >= 224 && first <= 239
+            if first == 127 || first == 0 || v >> 16 == 0xa9fe || first >= 224 { return true }
+            if asIPv4 != nil { return false }
         }
         guard case .v6(let b) = self else { return false }
         if b.allSatisfy({ $0 == 0 }) || isLoopback { return true }
         if b[0] == 0xfe && b[1] & 0xc0 == 0x80 { return true } // fe80::/10
-        if b[0] & 0xfe == 0xfc { return true }                  // fc00::/7
+        if b[0] == 0xfe && b[1] & 0xc0 == 0xc0 { return true } // fec0::/10 (old site-local)
         return b[0] == 0xff                                     // multicast
+    }
+
+    /// Not on the public internet: RFC 1918, carrier-grade NAT (100.64/10),
+    /// IETF and documentation ranges, benchmarking (198.18/15), unique-local
+    /// IPv6 (fc00::/7), documentation (2001:db8::/32), Teredo, and IPv6
+    /// forms that carry one of these IPv4 addresses.
+    public var isPrivate: Bool {
+        if let v = embeddedIPv4 {
+            func inNet(_ base: UInt32, _ prefix: Int) -> Bool { v & IPv4Subnet.mask(prefix) == base }
+            let ranges: [(UInt32, Int)] = [
+                (0x0A00_0000, 8), (0xAC10_0000, 12), (0xC0A8_0000, 16), // RFC 1918
+                (0x6440_0000, 10),                                      // CGNAT
+                (0xC000_0000, 24), (0xC000_0200, 24),                   // IETF, TEST-NET-1
+                (0xC612_0000, 15),                                      // benchmarking
+                (0xC633_6400, 24), (0xCB00_7100, 24),                   // TEST-NET-2, -3
+                (0xC058_6300, 24),                                      // 6to4 relay anycast
+            ]
+            if ranges.contains(where: { inNet($0.0, $0.1) }) { return true }
+            if asIPv4 != nil { return false }
+        }
+        guard case .v6(let b) = self else { return false }
+        if b[0] & 0xfe == 0xfc { return true }                                   // fc00::/7
+        if b[0] == 0x20, b[1] == 0x01, b[2] == 0x0d, b[3] == 0xb8 { return true } // 2001:db8::/32
+        if b[0] == 0x20, b[1] == 0x01, b[2] == 0x00, b[3] == 0x00 { return true } // Teredo
+        return false
     }
 
     public var description: String {
@@ -296,7 +335,21 @@ enum Sock {
 }
 
 extension IPAddress {
-    var isV6: Bool { if case .v6 = self { return true } else { return false } }
+    public var isV6: Bool { if case .v6 = self { return true } else { return false } }
+
+    /// Every address configured on this machine's interfaces.
+    public static func hostAddresses() -> Set<IPAddress> {
+        var out = Set<IPAddress>()
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return out }
+        defer { freeifaddrs(first) }
+        var p: UnsafeMutablePointer<ifaddrs>? = first
+        while let ifa = p {
+            if let sa = ifa.pointee.ifa_addr, let a = IPAddress(UnsafePointer(sa)) { out.insert(a) }
+            p = ifa.pointee.ifa_next
+        }
+        return out
+    }
 }
 
 // `listen`, `accept` and `connect` are also names in `Sock`; these reach the
