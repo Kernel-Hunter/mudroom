@@ -99,12 +99,12 @@ public struct DiffRenderer: Sendable {
             return header
         }
         if max(c.before.size ?? 0, c.after.size ?? 0) > Self.maxDiffBytes {
-            return header + "\n    large file changed (size \(Self.sizeString(c.before.size)) -> \(Self.sizeString(c.after.size)))"
+            return header + "\n    large file " + Self.sizeChange(c, beforeFile: beforeFile, afterFile: afterFile)
         }
         let old = beforeFile ? try SafeFS.readBeneath(base, c.path) : Data()
         let new = afterFile ? try SafeFS.readBeneath(work, c.path) : Data()
         if Self.looksBinary(old) || Self.looksBinary(new) {
-            return header + "\n    binary changed (size \(Self.sizeString(c.before.size)) -> \(Self.sizeString(c.after.size)))"
+            return header + "\n    binary " + Self.sizeChange(c, beforeFile: beforeFile, afterFile: afterFile)
         }
         let hunks = LineDiff.hunks(base: old, work: new)
         var lines = ["diff --git a/\(c.path) b/\(c.path)"]
@@ -118,6 +118,13 @@ public struct DiffRenderer: Sendable {
         lines.append(afterFile ? "+++ b/\(c.path)" : "+++ /dev/null")
         lines.append(Self.unifiedBody(hunks))
         return lines.joined(separator: "\n")
+    }
+
+    /// "changed (size 4 bytes -> 8 bytes)", "added (33 KB)", "deleted (2 KB)".
+    static func sizeChange(_ c: Change, beforeFile: Bool, afterFile: Bool) -> String {
+        if !beforeFile { return "added (\(sizeString(c.after.size)))" }
+        if !afterFile { return "deleted (\(sizeString(c.before.size)))" }
+        return "changed (size \(sizeString(c.before.size)) -> \(sizeString(c.after.size)))"
     }
 
     /// Hunks in unified-diff form ("@@ -1,3 +1,4 @@", then " ", "-", "+" lines).

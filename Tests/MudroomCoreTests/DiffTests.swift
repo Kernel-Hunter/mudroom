@@ -111,6 +111,10 @@ struct DiffTests {
         let out = try DiffRenderer(base: f.handle.base, work: f.work).full(f.diff())
         #expect(out.contains("M  blob.bin"))
         #expect(out.contains("binary changed (size 4 bytes -> 8 bytes)"))
+
+        try Data([0, 9]).write(to: f.work.appendingPathComponent("new.bin"))
+        let added = try DiffRenderer(base: f.handle.base, work: f.work).full(f.diff())
+        #expect(added.contains("binary added (2 bytes)"))
     }
 
     @Test("stat lists paths and a summary")

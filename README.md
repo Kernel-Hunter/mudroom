@@ -425,7 +425,7 @@ git metadata changed (12 entries under .git/)
 ```
 
 Text files get a unified diff from Mudroom's own line diff. Binary files show
-`binary changed (size a -> b)`. Changes inside any `.git` directory (also
+`binary changed (size a -> b)` (or `binary added`, `binary deleted`). Changes inside any `.git` directory (also
 nested ones, and `.GIT` on case-insensitive disks) are collapsed into one line
 unless you pass `--include-git`; `apply` skips them by default for the same
 reason.
