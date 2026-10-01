@@ -85,7 +85,7 @@ struct FileDetailView: View {
             }
         case .binary(let before, let after):
             placeholder("doc.zipper", "Binary file",
-                        "\(DiffRenderer.sizeString(before)) → \(DiffRenderer.sizeString(after)). Mudroom applies binary files whole.")
+                        Self.binarySize(before, after) + " Mudroom applies binary files whole.")
         case .tooLarge(let size):
             placeholder("doc.text.magnifyingglass", "Large file", "\(DiffRenderer.sizeString(size)) is too big to show. It can still be applied whole.")
         case .meta(let title, let detail):
@@ -350,5 +350,16 @@ struct FolderDetailView: View {
         .padding(30)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.diffBackground)
+    }
+}
+
+extension FileDetailView {
+    /// "4 bytes → 8 bytes.", or "New, 33 KB." / "Deleted, 2 KB." when one side is missing.
+    static func binarySize(_ before: Int64?, _ after: Int64?) -> String {
+        switch (before, after) {
+        case (nil, let a?): "New, \(DiffRenderer.sizeString(a))."
+        case (let b?, nil): "Deleted, \(DiffRenderer.sizeString(b))."
+        default: "\(DiffRenderer.sizeString(before)) → \(DiffRenderer.sizeString(after))."
+        }
     }
 }
