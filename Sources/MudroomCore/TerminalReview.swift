@@ -42,7 +42,11 @@ public struct TerminalReview: Sendable {
     public var message: String?
 
     public init(changes: [Change], conflicts: [String: String] = [:]) {
-        items = changes.map { Item(change: $0, selected: conflicts[$0.path] == nil, conflict: conflicts[$0.path]) }
+        // Conflicts, unreadable entries and files the host acts on start unselected.
+        items = changes.map {
+            Item(change: $0, selected: conflicts[$0.path] == nil && $0.kind != .unreadable && Differ.hostRisk($0.path) == nil,
+                 conflict: conflicts[$0.path])
+        }
     }
 
     public var selectedPaths: [String] { items.filter { $0.selected && !$0.applied }.map(\.path) }
@@ -185,6 +189,7 @@ extension DiffRenderer {
         case .modeChanged: "P"
         case .symlinkChanged: "L"
         case .typeChanged: "T"
+        case .unreadable: "?"
         }
     }
 

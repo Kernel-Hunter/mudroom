@@ -1,9 +1,16 @@
 import Foundation
 
 /// Turns a `DiffResult` into text for a terminal.
+///
+/// Text diffs come from `LineDiff` (no `git` process per file) and files are
+/// read with `SafeFS`, so a symlink or FIFO planted in work/ can't redirect
+/// or stall the output.
 public struct DiffRenderer: Sendable {
     public let base: URL
     public let work: URL
+
+    /// Bigger files are summarised by size instead of diffed line by line.
+    public static let maxDiffBytes: Int64 = 8 << 20
 
     public init(base: URL, work: URL) {
         self.base = base
@@ -19,15 +26,7 @@ public struct DiffRenderer: Sendable {
 
     /// One line per change, e.g. "M  src/app.swift".
     public func statLine(_ c: Change) -> String {
-        let tag: String = switch c.kind {
-        case .added: "A "
-        case .modified: "M "
-        case .deleted: "D "
-        case .modeChanged: "P "
-        case .symlinkChanged: "L "
-        case .typeChanged: "T "
-        }
-        var line = "\(tag) \(c.path)\(c.after.isDirectory || (c.kind == .deleted && c.before.isDirectory) ? "/" : "")"
+        var line = "\(Self.code(c.kind))  \(c.path)\(c.after.isDirectory || (c.kind == .deleted && c.before.isDirectory) ? "/" : "")"
         if let m1 = c.before.mode, let m2 = c.after.mode, m1 != m2 {
             line += "  (mode \(Self.octal(m1)) -> \(Self.octal(m2)))"
         }
@@ -38,91 +37,110 @@ public struct DiffRenderer: Sendable {
             line += "  -> \(t)"
         case (.typeChanged, let b, let a):
             line += "  (\(b.kindName) -> \(a.kindName))"
+        case (.unreadable, .unreadable(let why), _), (.unreadable, _, .unreadable(let why)):
+            line += "  (unreadable: \(why); not applied)"
         default:
             break
+        }
+        if let mode = c.after.mode, mode & 0o6000 != 0 {
+            line += "  ! setuid/setgid bit, dropped on apply"
+        }
+        if let risk = Differ.hostRisk(c.path) {
+            line += "  ! \(risk)"
         }
         return line
     }
 
     public func stat(_ result: DiffResult) -> String {
-        var lines = result.changes.map(statLine)
+        var out: [String] = []
+        writeStat(result) { out.append($0) }
+        return out.joined(separator: "\n")
+    }
+
+    /// Streams the stat lines, one call per line.
+    public func writeStat(_ result: DiffResult, _ emit: (String) -> Void) {
+        for c in result.changes { emit(statLine(c)) }
         if !result.gitMetadataChanges.isEmpty {
-            lines.append("git metadata changed (\(result.gitMetadataChanges.count) entries under .git/)")
+            emit("git metadata changed (\(result.gitMetadataChanges.count) entries under .git/)")
         }
-        if lines.isEmpty { return "no changes" }
-        let counts = Dictionary(grouping: result.changes, by: \.kind).mapValues(\.count)
+        if result.changes.isEmpty && result.gitMetadataChanges.isEmpty {
+            emit("no changes")
+            return
+        }
+        var counts: [ChangeKind: Int] = [:]
+        for c in result.changes { counts[c.kind, default: 0] += 1 }
         let summary = ChangeKind.allCases.compactMap { k in counts[k].map { "\($0) \(k.rawValue)" } }
-        if !summary.isEmpty { lines.append(summary.joined(separator: ", ")) }
-        return lines.joined(separator: "\n")
+        if !summary.isEmpty { emit(summary.joined(separator: ", ")) }
     }
 
     /// Full output: a unified diff per text file, a one-line note otherwise.
     public func full(_ result: DiffResult) throws -> String {
         var out: [String] = []
-        for c in result.changes {
-            out.append(try render(c))
-        }
+        try writeFull(result) { out.append($0) }
+        return out.joined(separator: "\n")
+    }
+
+    /// Streams the full diff, one call per file, so nothing big is held in
+    /// memory.
+    public func writeFull(_ result: DiffResult, _ emit: (String) -> Void) throws {
+        for c in result.changes { emit(try render(c)) }
         if !result.gitMetadataChanges.isEmpty {
-            out.append("git metadata changed (\(result.gitMetadataChanges.count) entries under .git/; use --include-git to list)")
+            emit("git metadata changed (\(result.gitMetadataChanges.count) entries under .git/; use --include-git to list)")
         }
-        return out.isEmpty ? "no changes" : out.joined(separator: "\n")
+        if result.changes.isEmpty && result.gitMetadataChanges.isEmpty { emit("no changes") }
     }
 
     func render(_ c: Change) throws -> String {
         let header = statLine(c)
-        let beforeFile: URL? = if case .file = c.before { base.appendingPathComponent(c.path) } else { nil }
-        let afterFile: URL? = if case .file = c.after { work.appendingPathComponent(c.path) } else { nil }
-        guard c.contentChanged || (c.kind == .added && afterFile != nil) || (c.kind == .deleted && beforeFile != nil)
-                || (c.kind == .typeChanged && (afterFile != nil || beforeFile != nil)) else {
+        let beforeFile = if case .file = c.before { true } else { false }
+        let afterFile = if case .file = c.after { true } else { false }
+        guard c.contentChanged || (c.kind == .added && afterFile) || (c.kind == .deleted && beforeFile)
+                || (c.kind == .typeChanged && (afterFile || beforeFile)) else {
             return header
         }
-        let binary = try [beforeFile, afterFile].compactMap { $0 }.contains { try Self.looksBinary($0) }
-        if binary {
+        if max(c.before.size ?? 0, c.after.size ?? 0) > Self.maxDiffBytes {
+            return header + "\n    large file changed (size \(Self.sizeString(c.before.size)) -> \(Self.sizeString(c.after.size)))"
+        }
+        let old = beforeFile ? try SafeFS.readBeneath(base, c.path) : Data()
+        let new = afterFile ? try SafeFS.readBeneath(work, c.path) : Data()
+        if Self.looksBinary(old) || Self.looksBinary(new) {
             return header + "\n    binary changed (size \(Self.sizeString(c.before.size)) -> \(Self.sizeString(c.after.size)))"
         }
-        let text = try Self.unifiedDiff(path: c.path, before: beforeFile, after: afterFile)
-        return text.isEmpty ? header : text
+        let hunks = LineDiff.hunks(base: old, work: new)
+        var lines = ["diff --git a/\(c.path) b/\(c.path)"]
+        if !beforeFile, let m = c.after.mode { lines.append("new file mode 100\(Self.octal(m & 0o777))") }
+        if !afterFile, let m = c.before.mode { lines.append("deleted file mode 100\(Self.octal(m & 0o777))") }
+        if hunks.isEmpty {
+            lines.append("(empty file)")
+            return lines.joined(separator: "\n")
+        }
+        lines.append(beforeFile ? "--- a/\(c.path)" : "--- /dev/null")
+        lines.append(afterFile ? "+++ b/\(c.path)" : "+++ /dev/null")
+        lines.append(Self.unifiedBody(hunks))
+        return lines.joined(separator: "\n")
+    }
+
+    /// Hunks in unified-diff form ("@@ -1,3 +1,4 @@", then " ", "-", "+" lines).
+    public static func unifiedBody(_ hunks: [Hunk]) -> String {
+        var out: [String] = []
+        for h in hunks {
+            out.append(h.header)
+            for l in h.lines {
+                let sign = switch l.kind { case .context: " "; case .removed: "-"; case .added: "+" }
+                out.append(sign + l.text)
+                if l.missingNewline { out.append("\\ No newline at end of file") }
+            }
+        }
+        return out.joined(separator: "\n")
     }
 
     /// Same heuristic as git: a NUL byte in the first 8000 bytes means binary.
-    public static func looksBinary(_ url: URL) throws -> Bool {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        let head = try handle.read(upToCount: 8000) ?? Data()
-        return head.contains(0)
+    public static func looksBinary(_ data: Data) -> Bool {
+        data.prefix(8000).contains(0)
     }
 
-    /// Runs `git diff --no-index` between two files (nil means /dev/null) and
-    /// rewrites the header so both sides show the project-relative path.
-    public static func unifiedDiff(path: String, before: URL?, after: URL?) throws -> String {
-        let a = before?.path ?? "/dev/null"
-        let b = after?.path ?? "/dev/null"
-        let result = try ProcessRunner.capture("/usr/bin/git", [
-            "-c", "core.quotepath=off", "-c", "diff.noprefix=false",
-            "diff", "--no-index", "--no-color", "--no-ext-diff", "--no-textconv",
-            "--", a, b,
-        ])
-        // Exit 1 means "files differ"; anything else is a real failure.
-        guard result.status == 0 || result.status == 1 else {
-            throw MudroomError.commandFailed("git diff --no-index", result.status, result.stderr)
-        }
-        return rewriteHeaders(result.stdout, path: path)
-    }
-
-    static func rewriteHeaders(_ diff: String, path: String) -> String {
-        var lines = diff.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        for i in lines.indices {
-            let line = lines[i]
-            if line.hasPrefix("@@") { break }
-            if line.hasPrefix("diff --git ") {
-                lines[i] = "diff --git a/\(path) b/\(path)"
-            } else if line.hasPrefix("--- ") {
-                lines[i] = line == "--- /dev/null" ? line : "--- a/\(path)"
-            } else if line.hasPrefix("+++ ") {
-                lines[i] = line == "+++ /dev/null" ? line : "+++ b/\(path)"
-            }
-        }
-        while lines.last == "" { lines.removeLast() }
-        return lines.joined(separator: "\n")
+    /// `looksBinary` for a file inside `root`, read without following symlinks.
+    public static func looksBinary(_ root: URL, _ relative: String) throws -> Bool {
+        looksBinary(try SafeFS.readBeneath(root, relative, limit: 8000))
     }
 }
