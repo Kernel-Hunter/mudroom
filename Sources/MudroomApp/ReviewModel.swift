@@ -213,7 +213,9 @@ final class ReviewModel {
         var sel = selection
         // New files (and everything on first load) start selected, unless
         // they can't be applied or are flagged (host-run files, setuid).
-        for f in snap.files where !keepSelection || previous?.entry(f.path) == nil {
+        // So do files an undo just took back out of the project.
+        for f in snap.files where !keepSelection || previous?.entry(f.path) == nil
+            || (previous?.entry(f.path)?.isApplied == true && !f.isApplied) {
             sel.setDefault(f)
         }
         // Drop selections that can no longer be applied.
