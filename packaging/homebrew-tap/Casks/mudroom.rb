@@ -38,8 +38,7 @@ cask "mudroom" do
     Mudroom is not notarized. This cask removes the quarantine flag from
     Mudroom.app so macOS will open it.
 
-    Set up the VM runtime and the agent image once:
-      container system start
-      mudroom image build
+    Open Mudroom and follow the Setup window, or run Setup in a terminal:
+      mudroom setup
   EOS
 end
