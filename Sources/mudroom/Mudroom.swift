@@ -12,7 +12,7 @@ struct Mudroom: ParsableCommand {
         The agent works on a copy of your project inside a Linux micro-VM. Nothing \
         touches your real folder until you review the diff and apply it.
         """,
-        version: "0.3.0",
+        version: mudroomVersion,
         subcommands: [Run.self, New.self, Start.self, Diff.self, Hunks.self, Apply.self, Undo.self, Snapshots.self,
                       NetworkCommand.self, Agent.self, List.self, Discard.self, Image.self]
     )
