@@ -52,8 +52,10 @@ public struct FileEntry: Identifiable, Sendable {
     public var readOnly = false
     public let added: Int
     public let removed: Int
-    /// Set for files that tools on the host act on (`Differ.hostRisk`) or
-    /// that carry setuid/setgid bits. Never selected by default.
+    /// Set for files that tools on the host act on (`Differ.hostRisk`),
+    /// agent caches (`Differ.agentArtifact`) or files that carry
+    /// setuid/setgid bits. A phrase, as in "Check before applying: <warning>."
+    /// Never selected by default.
     public let warning: String?
 
     public init(change: Change, content: FileContent, conflict: String? = nil, isApplied: Bool = false,
@@ -75,7 +77,7 @@ public struct FileEntry: Identifiable, Sendable {
             added = 0
             removed = 0
         }
-        if let risk = Differ.hostRisk(change.path) {
+        if let risk = Differ.reviewNote(change.path) {
             warning = risk
         } else if let m = change.after.mode, m & 0o6000 != 0 {
             warning = "has the setuid/setgid bit, which Mudroom drops when applying"

@@ -47,6 +47,8 @@ public struct DiffRenderer: Sendable {
         }
         if let risk = Differ.hostRisk(c.path) {
             line += "  ! \(risk)"
+        } else if let note = Differ.agentArtifact(c.path) {
+            line += "  ~ \(note)"
         }
         return line
     }

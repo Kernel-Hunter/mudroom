@@ -44,7 +44,7 @@ public struct TerminalReview: Sendable {
     public init(changes: [Change], conflicts: [String: String] = [:]) {
         // Conflicts, unreadable entries and files the host acts on start unselected.
         items = changes.map {
-            Item(change: $0, selected: conflicts[$0.path] == nil && $0.kind != .unreadable && Differ.hostRisk($0.path) == nil,
+            Item(change: $0, selected: conflicts[$0.path] == nil && $0.kind != .unreadable && Differ.reviewNote($0.path) == nil,
                  conflict: conflicts[$0.path])
         }
     }

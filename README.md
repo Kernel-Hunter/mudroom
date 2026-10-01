@@ -443,15 +443,14 @@ listed so it isn't silently missing, and it is never applied. Files that your
 tools may run on your side, such as `.envrc`, `.gitattributes`,
 `.gitmodules`, `.pre-commit-config.yaml`, `.npmrc`, `.vscode/tasks.json` and
 scripts under `.husky/` or `.githooks/`, are marked and start unselected in
-the review. setuid and setgid bits are dropped when a file is applied.
+the review. Aider's own cache and history files (`.aider.tags.cache.v4/`,
+`.aider.chat.history.md`) are listed with a `~` note and start unselected
+too. setuid and setgid bits are dropped when a file is applied.
 
 Files are compared by content hash, never by timestamp, so an agent can't hide
 an edit by resetting mtime. The agent's tree is read through file descriptors
 that never follow symlinks and never block on FIFOs, so a swapped path can't
 point Mudroom at a file outside the session.
-
-Files are compared by content hash, never by timestamp, so an agent can't hide
-an edit by resetting mtime.
 
 ### How apply stays safe
 

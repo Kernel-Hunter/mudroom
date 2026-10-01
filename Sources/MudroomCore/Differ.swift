@@ -80,6 +80,23 @@ public enum Differ {
         return nil
     }
 
+    /// Files an agent leaves in the project for itself (Aider's repo-map
+    /// cache and history files). Listed like any change, but not selected
+    /// by default: they rarely belong in the real project.
+    public static func agentArtifact(_ path: String) -> String? {
+        let parts = path.split(separator: "/")
+        if parts.contains(where: { $0.hasPrefix(".aider.tags.cache.v") }) { return "Aider's repo-map cache, not part of your project" }
+        if let name = parts.last, [".aider.chat.history.md", ".aider.input.history", ".aider.llm.history"].contains(String(name)) {
+            return "Aider's history file, not part of your project"
+        }
+        return nil
+    }
+
+    /// `hostRisk`, else `agentArtifact`: why a path starts unselected.
+    public static func reviewNote(_ path: String) -> String? {
+        hostRisk(path) ?? agentArtifact(path)
+    }
+
     public static func compare(base: URL, work: URL) throws -> DiffResult {
         // The two trees are independent; scan them side by side.
         let scans = parallelMap([base, work]) { url in Result { try TreeSnapshot.scan(url) } }

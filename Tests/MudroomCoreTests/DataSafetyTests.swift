@@ -257,6 +257,18 @@ struct DataSafetyTests {
         #expect(TerminalReview(changes: [c]).selectedPaths.isEmpty)
     }
 
+    @Test("Aider's caches are listed but not selected by default")
+    func agentArtifacts() {
+        for p in [".aider.tags.cache.v4", ".aider.tags.cache.v4/cache.db", ".aider.chat.history.md", "sub/.aider.input.history"] {
+            #expect(Differ.agentArtifact(p) != nil, "\(p)")
+        }
+        #expect(Differ.agentArtifact("aider.py") == nil)
+        let c = Change(path: ".aider.tags.cache.v4/cache.db", kind: .added, before: .absent, after: .file(mode: 0o644, size: 1, sha256: "x"))
+        let src = Change(path: "calc.py", kind: .added, before: .absent, after: .file(mode: 0o644, size: 1, sha256: "y"))
+        #expect(!FileEntry(change: c, content: .lines(added: 1, removed: 0)).selectedByDefault)
+        #expect(TerminalReview(changes: [c, src]).selectedPaths == ["calc.py"])
+    }
+
     // MARK: M2/M3. Unreadable and special entries
 
     @Test("M2: a mode-000 file in work/ is one unreadable entry; everything else still diffs and applies",
