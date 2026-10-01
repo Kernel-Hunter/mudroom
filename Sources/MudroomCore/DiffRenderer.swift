@@ -63,7 +63,7 @@ public struct DiffRenderer: Sendable {
     public func writeStat(_ result: DiffResult, _ emit: (String) -> Void) {
         for c in result.changes { emit(statLine(c)) }
         if !result.gitMetadataChanges.isEmpty {
-            emit("git metadata changed (\(result.gitMetadataChanges.count) entries under .git/)")
+            emit("git metadata changed (\(Self.entries(result.gitMetadataChanges.count)) under .git/)")
         }
         if result.changes.isEmpty && result.gitMetadataChanges.isEmpty {
             emit("no changes")
@@ -87,7 +87,7 @@ public struct DiffRenderer: Sendable {
     public func writeFull(_ result: DiffResult, _ emit: (String) -> Void) throws {
         for c in result.changes { emit(try render(c)) }
         if !result.gitMetadataChanges.isEmpty {
-            emit("git metadata changed (\(result.gitMetadataChanges.count) entries under .git/; use --include-git to list)")
+            emit("git metadata changed (\(Self.entries(result.gitMetadataChanges.count)) under .git/; use --include-git to list)")
         }
         if result.changes.isEmpty && result.gitMetadataChanges.isEmpty { emit("no changes") }
     }
@@ -121,6 +121,8 @@ public struct DiffRenderer: Sendable {
         lines.append(Self.unifiedBody(hunks))
         return lines.joined(separator: "\n")
     }
+
+    static func entries(_ n: Int) -> String { n == 1 ? "1 entry" : "\(n) entries" }
 
     /// "changed (size 4 bytes -> 8 bytes)", "added (33 KB)", "deleted (2 KB)".
     static func sizeChange(_ c: Change, beforeFile: Bool, afterFile: Bool) -> String {

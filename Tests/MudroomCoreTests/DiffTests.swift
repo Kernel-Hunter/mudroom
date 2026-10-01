@@ -97,7 +97,7 @@ struct DiffTests {
         #expect(out.contains("--- a/old.txt\n+++ /dev/null"))
         #expect(out.contains("P  script.sh  (mode 644 -> 755)"))
         #expect(out.contains("L  ptr  (keep.txt -> new.txt)"))
-        #expect(out.contains("git metadata changed (1 entries under .git/"))
+        #expect(out.contains("git metadata changed (1 entry under .git/"))
         #expect(!out.contains(f.handle.base.path))
         #expect(!out.contains(f.work.path))
     }

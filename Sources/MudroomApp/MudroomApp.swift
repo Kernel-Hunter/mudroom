@@ -103,7 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if demoStore, let path = args["MudroomSnapshot"] as? String {
             let delay = defaults.object(forKey: "MudroomSnapshotDelay") as? Double ?? 3
             // Optional scripted steps before the capture, for docs:
-            // -MudroomSnapshotDeselectHunk path:id  -MudroomSnapshotAction applySelected|undo
+            // -MudroomSnapshotDeselectHunk path:id
+            // -MudroomSnapshotAction applySelected|applyAll|undo|newSession|setup
             DispatchQueue.main.asyncAfter(deadline: .now() + delay - 2.5) {
                 if args["MudroomSnapshotAction"] as? String == "newSession" {
                     Self.model?.showingNewSession = true
@@ -121,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 switch args["MudroomSnapshotAction"] as? String {
                 case "applySelected": review.applySelected()
                 case "applyAll": review.applyAll()
+                case "undo": review.undo()
                 case "newSession": Self.model?.showingNewSession = true
                 default: break
                 }

@@ -120,7 +120,7 @@ struct FileListColumn: View {
                 }
                 if let git = review.snapshot?.gitMetadataChanges, git > 0 {
                     Section {
-                        Label("\(git) entries under .git/ changed. They are not applied.", systemImage: "info.circle")
+                        Label(git == 1 ? "1 entry under .git/ changed. It isn't applied." : "\(git) entries under .git/ changed. They aren't applied.", systemImage: "info.circle")
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                             .selectionDisabled()
                     }
