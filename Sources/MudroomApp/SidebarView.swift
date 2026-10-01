@@ -42,15 +42,35 @@ struct SidebarView: View {
             }
         }
         .safeAreaInset(edge: .bottom) {
-            Button {
-                app.showingNewSession = true
-            } label: {
-                Label("New Session", systemImage: "plus")
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 0) {
+                if let problem = app.setup.problems.first, !forSnapshot {
+                    Button { app.openSetup(focus: app.setupFocus) } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text("Setup needs attention").font(.system(size: 11.5, weight: .semibold))
+                                Text(problem).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open Setup")
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    Divider().padding(.horizontal, 10)
+                }
+                Button {
+                    app.showingNewSession = true
+                } label: {
+                    Label("New Session", systemImage: "plus")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
             }
-            .buttonStyle(.borderless)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
         }
     }
 }

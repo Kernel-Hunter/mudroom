@@ -316,8 +316,11 @@ public final class ClaudeTokenSignIn: @unchecked Sendable {
     private let done = DispatchSemaphore(value: 0)
 
     public init(claude: String) throws {
-        // BROWSER is left as it is: claude opens the default browser.
-        pty = try PtyProcess(claude, ["setup-token"])
+        // BROWSER is left as it is: claude opens the default browser. PATH
+        // as a login shell has it, for an npm install that needs `node`.
+        var env: [String: String] = [:]
+        if let path = HostCLI.loginShellPath() { env["PATH"] = path }
+        pty = try PtyProcess(claude, ["setup-token"], environment: env)
         let found = self.found
         let done = self.done
         let p = pty

@@ -393,6 +393,7 @@ func storeToken(for agent: String) throws {
     if let problem = AgentToken.problem(token, agent: agent) { throw MudroomError.invalid("not stored: \(problem)") }
     let tokens = AgentToken.defaultStore(store())
     try tokens.write(agent, token)
+    if agent == "claude" { try? AgentHome(store: store(), agent: "claude")?.seedClaudeOnboarding() }
     let name = AgentToken.variable(for: agent) ?? "the agent's variable"
     print("stored the \(agent) token (\(token.count) characters) in \(tokens.location). Sessions get it as \(name).")
 }

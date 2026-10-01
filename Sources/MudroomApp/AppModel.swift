@@ -47,12 +47,16 @@ final class AppModel {
     private(set) var review: ReviewModel?
     var showingNewSession = false
     var confirmDiscard = false
+    let setup: SetupModel
+    /// Bumped to open the Setup window (RootView watches it).
+    private(set) var setupRequest = 0
     var errorMessage: String?
     private var reviews: [String: ReviewModel] = [:]
     private var pollTask: Task<Void, Never>?
 
     init(store: SessionStore = .defaultStore()) {
         self.store = store
+        setup = SetupModel(store: store)
         refresh()
         // Newest session waiting for review, else the newest one at all.
         let newest = sessions.sorted { $0.session.created > $1.session.created }
@@ -73,6 +77,23 @@ final class AppModel {
     var recentProjects: [String] { groups.map(\.path) }
 
     var selectedHandle: SessionHandle? { sessions.first { $0.session.id == selectedSessionID } }
+
+    var runningSessions: Int { sessions.filter { SessionPhase($0) == .running }.count }
+
+    /// Opens the Setup window, scrolled to `focus` (a step or agent id).
+    func openSetup(focus: String? = nil) {
+        setup.focus = focus
+        setupRequest += 1
+    }
+
+    /// The card for the first step that needs attention.
+    var setupFocus: String? {
+        if !setup.runtimeReady { return "runtime" }
+        if !setup.imageReady { return "image" }
+        if !setup.networkReady { return "network" }
+        if !setup.anySignedIn { return "claude" }
+        return nil
+    }
 
     private func syncReview(reload: Bool) {
         guard let h = selectedHandle else {

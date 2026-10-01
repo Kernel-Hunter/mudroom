@@ -70,6 +70,8 @@ struct AgentIcon: View {
         if label.contains("claude") || cmd == "claude" { return ("sparkle", .orange) }
         if label.contains("codex") || cmd == "codex" { return ("chevron.left.forwardslash.chevron.right", .teal) }
         if label.contains("gemini") || cmd == "gemini" { return ("diamond", .indigo) }
+        if label.contains("opencode") || cmd == "opencode" { return (AgentStyle.symbol("opencode"), AgentStyle.tint("opencode")) }
+        if label.contains("aider") || cmd == "aider" { return (AgentStyle.symbol("aider"), AgentStyle.tint("aider")) }
         return ("terminal", .gray)
     }
 

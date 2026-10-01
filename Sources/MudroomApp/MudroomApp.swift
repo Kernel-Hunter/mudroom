@@ -7,6 +7,12 @@ struct MudroomApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var app = AppModel()
 
+    init() {
+        // Snapshots start from a clean window layout, whatever was open
+        // (or minimized) last time.
+        if AppDelegate.isSnapshot { UserDefaults.standard.register(defaults: ["ApplePersistenceIgnoreState": true]) }
+    }
+
     var body: some Scene {
         Window("Mudroom", id: "main") {
             RootView(app: app)
@@ -16,6 +22,7 @@ struct MudroomApp: App {
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Mudroom") { AppDelegate.showAbout() }
+                Button("Setup…") { app.openSetup() }
             }
             CommandGroup(replacing: .newItem) {
                 Button("New Session…") { app.showingNewSession = true }
@@ -52,6 +59,28 @@ struct MudroomApp: App {
                     .disabled(app.selectedHandle?.hasClones != true || review?.isRunning == true)
             }
         }
+
+        Window("Mudroom Setup", id: "setup") {
+            SetupWindowRoot(app: app)
+        }
+        .defaultSize(width: 720, height: 860)
+        .windowResizability(.contentMinSize)
+    }
+}
+
+/// The Setup window's content; Done closes it and brings up the main window.
+struct SetupWindowRoot: View {
+    let app: AppModel
+    @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        SetupView(model: app.setup, runningSessions: app.runningSessions) {
+            app.setup.login?.cancel()
+            dismissWindow(id: "setup")
+            openWindow(id: "main")
+        }
+        .task { if !app.setup.hasChecked && !app.setup.checking { await app.setup.refresh() } }
     }
 }
 
@@ -59,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+
         let defaults = UserDefaults.standard
         switch defaults.string(forKey: "MudroomAppearance") {
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
@@ -79,6 +109,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     Self.model?.showingNewSession = true
                     return
                 }
+                if args["MudroomSnapshotAction"] as? String == "setup" {
+                    Self.model?.openSetup(focus: args["MudroomSnapshotFocus"] as? String)
+                    return
+                }
                 guard let review = Self.model?.review else { return }
                 if let spec = args["MudroomSnapshotDeselectHunk"] as? String,
                    let colon = spec.lastIndex(of: ":"), let id = Int(spec[spec.index(after: colon)...]) {
@@ -91,9 +125,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 default: break
                 }
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay - 1.5) { Self.prepareSidebarSnapshot() }
+            let setupShot = args["MudroomSnapshotAction"] as? String == "setup"
+            if !setupShot {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay - 1.5) { Self.prepareSidebarSnapshot() }
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                Self.snapshot(to: URL(fileURLWithPath: path))
+                Self.snapshot(to: URL(fileURLWithPath: path), title: setupShot ? "Mudroom Setup" : nil)
                 // Not terminate(): an open sheet can hold it up.
                 exit(0)
             }
@@ -125,10 +162,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// `-MudroomSnapshot out.png`: renders the main window (title bar and
     /// toolbar included) to a PNG and quits. Works without Screen Recording
     /// permission because the app only draws its own views. For docs/demos.
-    @MainActor static func snapshot(to url: URL) {
-        guard let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil && $0 !== sidebarWindow }),
+    /// True when started with -MudroomSnapshot (no first-run Setup then).
+    static var isSnapshot: Bool {
+        UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["MudroomSnapshot"] != nil
+    }
+
+    @MainActor static func snapshot(to url: URL, title: String? = nil) {
+        guard let window = NSApp.windows.first(where: {
+                  $0.isVisible && $0.contentView != nil && $0 !== sidebarWindow && (title == nil || $0.title == title)
+              }),
               let view = window.contentView?.superview ?? window.contentView,
-              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else {
+            let titles = NSApp.windows.map { "\($0.title.isEmpty ? "untitled" : $0.title)\($0.isVisible ? "" : " (hidden)")\($0.isMiniaturized ? " (minimized)" : "")" }
+                + ["app hidden: \(NSApp.isHidden)"]
+            FileHandle.standardError.write(Data("snapshot: no window to capture; windows: \(titles.joined(separator: ", "))\n".utf8))
+            return
+        }
         view.cacheDisplay(in: view.bounds, to: rep)
         if let side = sidebarWindow?.contentView,
            let sideRep = side.bitmapImageRepForCachingDisplay(in: side.bounds),
@@ -188,6 +237,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 struct RootView: View {
     @Bindable var app: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         NavigationSplitView {
@@ -227,6 +277,13 @@ struct RootView: View {
         .navigationSubtitle(app.review.map { $0.handle.session.agentLabel } ?? "")
         .toolbar { toolbar }
         .onAppear { AppDelegate.model = app }
+        .onChange(of: app.setupRequest) { openWindow(id: "setup") }
+        .task {
+            // First run, or something broke since: open Setup at that step.
+            guard !AppDelegate.isSnapshot else { return }
+            await app.setup.refresh()
+            if !app.setup.allGreen { app.openSetup(focus: app.setupFocus) }
+        }
         .sheet(isPresented: $app.showingNewSession) { NewSessionSheet(app: app) }
         .confirmationDialog("Discard this session?", isPresented: $app.confirmDiscard) {
             Button("Discard Session", role: .destructive) { app.discardSelected() }

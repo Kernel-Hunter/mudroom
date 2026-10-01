@@ -13,7 +13,10 @@ struct NewSessionSheet: View {
     @State private var showAdvanced = false
     @State private var networkMode: NetworkMode = .locked
     @State private var registries = false
+    @State private var localModels = false
     @State private var projectHosts: [String] = []
+    @State private var checkingNetwork = false
+    @State private var networkProblem: NetworkProbe.Result?
 
     private let customID = "custom"
 
@@ -23,7 +26,20 @@ struct NewSessionSheet: View {
         preset?.command ?? AgentPreset.parseCommand(customCommand)
     }
 
-    var canStart: Bool { project != nil && !command.isEmpty }
+    /// nil for custom commands (we can't tell what they need).
+    var signIn: SignInStatus? {
+        guard let preset else { return nil }
+        return app.setup.status(preset.id) ?? SignInStatus.check(preset, store: app.store, tokens: app.setup.tokens)
+    }
+
+    /// Signed in, or an agent that can run on local models with them on.
+    var isReady: Bool {
+        guard let preset, let signIn else { return true }
+        if signIn.isSignedIn { return true }
+        return preset.isMultiProvider && localModels && networkMode == .locked
+    }
+
+    var canStart: Bool { project != nil && !command.isEmpty && isReady && !checkingNetwork }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -66,7 +82,7 @@ struct NewSessionSheet: View {
             section("Agent") {
                 HStack(spacing: 8) {
                     ForEach(AgentPreset.all) { p in
-                        AgentCard(title: p.name, symbol: symbol(p.id), tint: tint(p.id), selected: presetID == p.id) {
+                        AgentCard(title: p.name, symbol: AgentStyle.symbol(p.id), tint: AgentStyle.tint(p.id), selected: presetID == p.id) {
                             presetID = p.id
                         }
                     }
@@ -75,7 +91,7 @@ struct NewSessionSheet: View {
                     }
                 }
                 if presetID == customID {
-                    TextField("Command, e.g. aider --yes", text: $customCommand)
+                    TextField("Command, e.g. aider --model ollama_chat/qwen3", text: $customCommand)
                         .textFieldStyle(.roundedBorder)
                         .font(.system(size: 12, design: .monospaced))
                 }
@@ -86,15 +102,27 @@ struct NewSessionSheet: View {
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                 }
-                if let key = preset?.credential {
-                    Text("\(key) is passed into the VM if it is set in your shell.")
-                        .font(.system(size: 11)).foregroundStyle(.tertiary)
-                }
-                if let p = preset, let home = AgentHome(store: app.store, agent: p.id), !home.hasCredentials {
-                    Text("\(p.name) isn't signed in yet. It asks in Terminal and opens the sign-in page in your browser. \(AuthLinkHandoff.pasteNote) To sign in once for all sessions, run `mudroom agent login \(p.id)`.")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
+                if let p = preset {
+                    if let m = signIn?.method {
+                        SignedInBadge(method: m)
+                    } else if isReady {
+                        Label("Uses local models from this Mac", systemImage: "desktopcomputer")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    } else {
+                        HStack(spacing: 8) {
+                            Image(systemName: "person.crop.circle.badge.exclamationmark").foregroundStyle(.orange)
+                            Text(p.isMultiProvider ? "\(p.name) needs an API key (or local models, below)." : "\(p.name) isn't signed in yet.")
+                                .font(.system(size: 11.5))
+                            Spacer()
+                            Button(p.isMultiProvider ? "Add a Key" : "Sign In First") {
+                                app.openSetup(focus: p.isMultiProvider ? "keys" : p.id)
+                                dismiss()
+                            }
+                            .controlSize(.small)
+                        }
+                        .padding(8)
+                        .background(RoundedRectangle(cornerRadius: 7).fill(Color.orange.opacity(0.10)))
+                    }
                 }
             }
 
@@ -112,6 +140,9 @@ struct NewSessionSheet: View {
                 if networkMode == .locked {
                     Toggle("Also allow package registries (npm, PyPI, GitHub)", isOn: $registries)
                         .font(.system(size: 12))
+                    Toggle("Local models (Ollama, LM Studio on this Mac)", isOn: $localModels)
+                        .font(.system(size: 12))
+                        .help("The VM reaches them at http://\(NetworkDefaults.hostServiceName):11434 and :1234 through Mudroom's proxy. No other port on this Mac is reachable.")
                 }
             }
 
@@ -124,29 +155,46 @@ struct NewSessionSheet: View {
             }
             .font(.system(size: 12))
 
+            if let problem = networkProblem {
+                Banner(style: .warning, title: "The VM network isn't working",
+                       detail: problem.summary.prefix(1).uppercased() + problem.summary.dropFirst() + ". Restarting the container system usually fixes it.",
+                       actions: AnyView(
+                        Button(app.setup.networkBusy ? "Repairing…" : "Repair Network") {
+                            Task {
+                                await app.setup.repairNetwork(force: false)
+                                if app.setup.networkReady { networkProblem = nil }
+                            }
+                        }
+                        .disabled(app.setup.networkBusy)))
+                if let e = app.setup.networkError {
+                    Text(e).font(.system(size: 11)).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
             HStack {
-                Image(systemName: "terminal").foregroundStyle(.secondary)
-                Text("Opens in Terminal so you can talk to the agent.")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                if checkingNetwork {
+                    ProgressView().controlSize(.small)
+                    Text("Checking the VM network…").font(.system(size: 11)).foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "terminal").foregroundStyle(.secondary)
+                    Text("Opens in Terminal so you can talk to the agent.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Start Session") {
-                    guard let project else { return }
-                    saveNetwork(project)
-                    app.startSession(project: project, preset: preset, customCommand: customCommand, image: image)
-                    dismiss()
-                }
+                Button("Start Session") { Task { await start() } }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(!canStart)
             }
         }
         .padding(22)
-        .frame(width: 540)
+        .frame(width: 600)
         .onAppear {
             if project == nil, let recent = app.recentProjects.first { project = URL(fileURLWithPath: recent) }
             loadNetwork()
+            app.setup.refreshSignIn()
         }
         .onChange(of: project) { loadNetwork() }
     }
@@ -169,10 +217,29 @@ struct NewSessionSheet: View {
         }
     }
 
+    /// Checks the VM network first (locked mode), so a broken one is
+    /// repaired here instead of in a session that can't reach its API.
+    func start() async {
+        guard let project else { return }
+        saveNetwork(project)
+        if networkMode == .locked {
+            checkingNetwork = true
+            let r = await app.setup.probeBeforeSession()
+            checkingNetwork = false
+            if r.needsRepair {
+                networkProblem = r
+                return
+            }
+        }
+        app.startSession(project: project, preset: preset, customCommand: customCommand, image: image)
+        dismiss()
+    }
+
     func loadNetwork() {
         guard let project, let c = try? configStore.load(project.path) else { return }
         networkMode = c.networkMode
         registries = c.includePackageRegistries
+        localModels = c.localModels
         projectHosts = c.allowedHosts.map(\.value)
     }
 
@@ -181,6 +248,7 @@ struct NewSessionSheet: View {
             try configStore.update(project.path) {
                 $0.networkMode = networkMode
                 $0.includePackageRegistries = registries
+                $0.localModels = localModels
             }
         } catch {
             app.errorMessage = "Couldn't save the network setting: \(error)"
@@ -191,24 +259,6 @@ struct NewSessionSheet: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary).textCase(.uppercase)
             content()
-        }
-    }
-
-    func symbol(_ id: String) -> String {
-        switch id {
-        case "claude": "sparkle"
-        case "codex": "chevron.left.forwardslash.chevron.right"
-        case "gemini": "diamond"
-        default: "terminal"
-        }
-    }
-
-    func tint(_ id: String) -> Color {
-        switch id {
-        case "claude": .orange
-        case "codex": .teal
-        case "gemini": .indigo
-        default: .gray
         }
     }
 
