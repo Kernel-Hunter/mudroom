@@ -104,7 +104,7 @@ public enum NetworkCheck {
           [res, ok] = await tcp('2606:4700:4700::1111', 443); add('direct-ipv6', 'TCP [2606:4700:4700::1111]:443, ignoring the proxy', res, ok === true);
           [res, ok] = await udpDNS('8.8.8.8'); add('direct-udp', 'UDP DNS query to 8.8.8.8:53', res, ok);
           if (GATEWAY) { [res, ok] = await tcp(GATEWAY, 7000, 3000);
-            add('mac-services', `TCP ${GATEWAY}:7000 (the network gateway; macOS often listens on 7000)`, res, ok === true || ok === 'refused'); }
+            add('mac-services', `TCP ${GATEWAY}:7000 (the host on the sandbox network; macOS often listens on 7000)`, res, ok === true || ok === 'refused'); }
           console.log('MUDROOM_CHECK ' + JSON.stringify(out));
         })();
         """
@@ -141,7 +141,11 @@ public enum NetworkCheck {
         let net = try NetworkSetup(mode: mode, allowlist: list, backend: backend, logURL: nil)
         defer { net.stop() }
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-        let gateway = net.plan.proxyHost ?? (try? backend.hostOnlyNetwork())?.map(\.gateway) ?? nil
+        // The host as the sandbox network sees it. Docker's internal network
+        // has no host address, so probe the default bridge's gateway.
+        let gateway = [net.plan.proxyHost, (try? backend.hostOnlyNetwork())?.map(\.gateway),
+                       (try? backend.defaultNetwork())?.map(\.gateway)]
+            .compactMap { $0 }.first { !$0.isEmpty }
         let spec = SandboxSpec(name: "mudroom-check-\(UInt16.random(in: 0...0xffff))", image: image, workspace: scratch,
                                command: ["node", "-e", script(allowed: allowed, blocked: blocked,
                                                               gateway: mode == .open ? nil : gateway)],

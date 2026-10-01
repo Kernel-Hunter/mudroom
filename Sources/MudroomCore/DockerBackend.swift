@@ -16,8 +16,9 @@ import Foundation
 ///
 /// Networks:
 /// - open: the runtime's default bridge.
-/// - offline: `mudroom-internal`, created with `network create --internal`.
-///   No route out at all.
+/// - offline: `mudroom-internal`, created with `network create --internal`
+///   (and, on Docker, without a host address on the bridge). No route out
+///   at all, not even to the host.
 /// - locked: the same internal network, plus a small forwarder container
 ///   ("sidecar") attached to both the internal network and the default
 ///   bridge. The sidecar only forwards TCP to Mudroom's proxy on the host,
@@ -179,11 +180,36 @@ public struct DockerBackend: SandboxBackend {
 
     // MARK: Networks
 
+    /// Docker option that leaves the internal bridge without an address on
+    /// the host. Containers on it can still reach each other (the agent
+    /// reaches the forwarder), but have no route to any host address, so
+    /// services listening on the host are out of reach too.
+    static let noHostAddress = "com.docker.network.bridge.inhibit_ipv4"
+
     public func hostOnlyNetwork() throws -> SandboxNetwork? {
         try checkAvailable()
         let exe = executable!
-        if let net = try inspectNetwork(Self.networkName, exe) { return net.hostOnly ? net : nil }
-        let created = try ProcessRunner.capture(exe, ["network", "create", "--internal", "--label", Self.label, Self.networkName])
+        if let net = try inspectNetwork(Self.networkName, exe) {
+            guard net.hostOnly else { return nil }
+            // Made by an older Mudroom without the option: replace it if
+            // nothing is using it.
+            if flavor == .docker && !net.gateway.isEmpty,
+               try ProcessRunner.capture(exe, ["network", "rm", Self.networkName]).status == 0 {
+                return try createInternalNetwork(exe)
+            }
+            return net
+        }
+        return try createInternalNetwork(exe)
+    }
+
+    func createInternalNetwork(_ exe: String) throws -> SandboxNetwork? {
+        let base = ["network", "create", "--internal", "--label", Self.label]
+        var created = try ProcessRunner.capture(exe, base + (flavor == .docker ? ["--opt", "\(Self.noHostAddress)=true"] : [])
+                                                + [Self.networkName])
+        if created.status != 0 && flavor == .docker, try inspectNetwork(Self.networkName, exe) == nil {
+            // Very old Docker without the option.
+            created = try ProcessRunner.capture(exe, base + [Self.networkName])
+        }
         if created.status != 0, try inspectNetwork(Self.networkName, exe) == nil {
             throw MudroomError.commandFailed("\(name) network create", created.status, created.stderr)
         }
@@ -260,8 +286,9 @@ public struct DockerBackend: SandboxBackend {
     public static func sidecarArguments(name: String, image: String, bridge: String, hostAlias: String,
                                         upstreamPort: UInt16, addHostGateway: Bool) -> [String] {
         var args = ["run", "--detach", "--rm", "--name", name, "--label", label, "--network", bridge,
-                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only",
-                    "--memory", "128m", "--pids-limit", "64"]
+                    // No --memory or --pids-limit: they fail where cgroup
+                    // controllers aren't delegated (rootless, nested).
+                    "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only"]
         if addHostGateway { args += ["--add-host", "\(hostAlias):host-gateway"] }
         args += ["--env", "MUDROOM_UPSTREAM_HOST=\(hostAlias)", "--env", "MUDROOM_UPSTREAM_PORT=\(upstreamPort)",
                  image, "node", "-e", forwarderScript]
