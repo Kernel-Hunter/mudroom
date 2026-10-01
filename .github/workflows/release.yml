@@ -1,0 +1,40 @@
+name: Release
+
+# Push a tag like v0.4.0 to build Mudroom-0.4.0.zip and attach it, with its
+# .sha256, to the GitHub release for that tag (created if it doesn't exist).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # build-app.sh uses the commit count as the build number
+
+      - name: Toolchain
+        run: swift --version
+
+      - name: Test
+        run: swift test
+
+      - name: Build release zip
+        run: scripts/release.sh "${GITHUB_REF_NAME#v}"
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          files=("dist/Mudroom-$version.zip" "dist/Mudroom-$version.zip.sha256")
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" --title "Mudroom $version" --generate-notes
+          fi
+          cat "dist/Mudroom-$version.zip.sha256"

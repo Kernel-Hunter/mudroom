@@ -1,0 +1,19 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Mudroom targets macOS 26 and needs the Xcode 26 toolchain (Swift 6.2+).
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
