@@ -71,6 +71,8 @@ struct SidebarView: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 10)
             }
+            // Rows scroll under the footer; keep them from showing through.
+            .background(.bar)
         }
     }
 }
