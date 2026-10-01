@@ -38,9 +38,8 @@ public enum RuntimeSetup {
             guard let exe = ProcessRunner.which("container") else { return (.apple, .notInstalled(brew: brew())) }
             let status = try? ProcessRunner.capture(exe, ["system", "status"])
             guard status?.status == 0 else { return (.apple, .stopped(executable: exe)) }
-            let version = (try? ProcessRunner.capture(exe, ["--version"]))?.stdout
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? "container"
-            return (.apple, .running(executable: exe, version: version))
+            let out = (try? ProcessRunner.capture(exe, ["--version"]))?.stdout ?? ""
+            return (.apple, .running(executable: exe, version: containerVersionLabel(out)))
         case .docker, .podman:
             let name = resolved.rawValue
             guard let exe = ProcessRunner.which(name) else { return (resolved, .notInstalled(brew: nil)) }
@@ -48,6 +47,15 @@ public enum RuntimeSetup {
             guard info?.status == 0 else { return (resolved, .stopped(executable: exe)) }
             return (resolved, .running(executable: exe, version: "\(name) \(info!.stdout.trimmingCharacters(in: .whitespacesAndNewlines))"))
         }
+    }
+
+    /// "container CLI version 1.5.0 (build: release, commit: unspeci)" ->
+    /// "container 1.5.0".
+    public static func containerVersionLabel(_ output: String) -> String {
+        if let r = output.range(of: #"\d+\.\d+(\.\d+)?"#, options: .regularExpression) {
+            return "container \(output[r])"
+        }
+        return "container"
     }
 
     /// `brew install container`, output streamed line by line.

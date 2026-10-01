@@ -47,5 +47,11 @@ struct ImageStatusTests {
         #expect(AgentImageContains("opencode-ai") && AgentImageContains("aider-chat"))
     }
 
+    @Test("the container version is shown short")
+    func containerVersion() {
+        #expect(RuntimeSetup.containerVersionLabel("container CLI version 1.5.0 (build: release, commit: unspeci)\n") == "container 1.5.0")
+        #expect(RuntimeSetup.containerVersionLabel("garbage") == "container")
+    }
+
     func AgentImageContains(_ s: String) -> Bool { AgentBaseImage.containerfile.contains(s) }
 }
