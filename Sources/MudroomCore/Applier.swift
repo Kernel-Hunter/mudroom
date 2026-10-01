@@ -455,7 +455,7 @@ public struct Applier {
                 case (.modeChanged, .file(let mode, _, _)):
                     let i = try record(try backup(change.path, prior: real, applied: after, bundle: bundle))
                     try chmodOrThrow(target, mode)
-                    done(i)
+                    done(i, applied: Self.withModeOnDisk(after, at: target))
                 case (.modeChanged, .directory(let mode)):
                     done(try record(RollbackEntry(path: change.path, prior: real, applied: after)))
                     deferredDirModes.append((change.path, mode))
@@ -471,7 +471,7 @@ public struct Applier {
                         throw error
                     }
                     if let aside { try? fm.removeItem(at: aside) }
-                    done(i)
+                    done(i, applied: Self.withModeOnDisk(after, at: target))
                 }
             }
         }
@@ -854,6 +854,20 @@ public struct Applier {
     }
 
     /// Records the prior state (copying a regular file into the bundle).
+    /// `node` with the mode the volume actually kept. Disks without Unix
+    /// permissions (FAT, exFAT, some network shares) report their own, and
+    /// undo would otherwise see that as a change made after the apply.
+    static func withModeOnDisk(_ node: FileNode, at url: URL) -> FileNode {
+        var st = stat()
+        guard lstat(url.path, &st) == 0 else { return node }
+        let mode = UInt16(st.st_mode & 0o7777)
+        switch node {
+        case .file(let m, let size, let sha) where m & 0o7777 != mode: return .file(mode: mode, size: size, sha256: sha)
+        case .directory(let m) where m & 0o7777 != mode: return .directory(mode: mode)
+        default: return node
+        }
+    }
+
     private func backup(_ path: String, prior: FileNode, applied: FileNode, bundle: URL) throws -> RollbackEntry {
         var entry = RollbackEntry(path: path, prior: prior, applied: applied, backup: nil)
         if case .file = prior {

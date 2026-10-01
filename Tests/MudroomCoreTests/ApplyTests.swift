@@ -222,4 +222,14 @@ struct ApplyTests {
         #expect(exists(bundle.appendingPathComponent("manifest.json")))
         #expect(bundle.path.hasPrefix(f.handle.directory.path))
     }
+
+    @Test("undo records the mode the disk kept (FAT has no Unix modes)")
+    func modeOnDisk() throws {
+        let f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
+        let url = f.project.appendingPathComponent("a.txt")
+        chmod(url.path, 0o700)
+        let n = Applier.withModeOnDisk(.file(mode: 0o644, size: 2, sha256: "x"), at: url)
+        #expect(n == .file(mode: 0o700, size: 2, sha256: "x"))
+        #expect(Applier.withModeOnDisk(.file(mode: 0o700, size: 2, sha256: "x"), at: url) == n)
+    }
 }
