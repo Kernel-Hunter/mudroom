@@ -280,8 +280,8 @@ shell. Everything is passed by name (`container run --env NAME`, `docker run
 --env NAME`), so values don't show up in the process list.
 
 **Claude Code: your Claude account.** If the `claude` CLI is installed on your
-Mac (Mudroom looks in `~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`
-and your login shell's PATH), "Use my Claude account" in Setup, or `mudroom
+Mac (Mudroom looks on your PATH, then in `~/.local/bin`, `/opt/homebrew/bin`
+and `/usr/local/bin`, then on your login shell's PATH), "Use my Claude account" in Setup, or `mudroom
 agent login claude`, runs `claude setup-token` in a terminal of its own.
 Claude opens your browser; once you approve, Mudroom reads the long-lived
 token from Claude's output and stores it. You never see or copy it, and it is

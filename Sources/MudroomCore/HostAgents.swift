@@ -165,8 +165,9 @@ public enum HostCLI {
         [home + "/.local/bin/claude", home + "/.claude/local/claude", "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
     }
 
-    /// The host `claude` binary: the usual places first, then PATH as a
-    /// login shell sees it (an app started from Finder has a bare PATH).
+    /// The host `claude` binary: this process's PATH, then the usual places,
+    /// then PATH as a login shell sees it (an app started from Finder has a
+    /// bare PATH).
     public static func findClaude(home: String = NSHomeDirectory(),
                                   isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
                                   loginShellPath: () -> String? = HostCLI.loginShellPath,
@@ -177,14 +178,17 @@ public enum HostCLI {
 
     public static func find(_ name: String, candidates: [String], isExecutable: (String) -> Bool,
                             loginShellPath: () -> String?, path: String?) -> String? {
-        if let c = candidates.first(where: isExecutable) { return c }
-        for p in [path, loginShellPath()] {
+        func onPath(_ p: String?) -> String? {
             for dir in (p ?? "").split(separator: ":") where dir.hasPrefix("/") {
                 let c = dir + "/" + name
                 if isExecutable(c) { return c }
             }
+            return nil
         }
-        return nil
+        // PATH first, as `which` does, so a stale copy in one of the usual
+        // places (an old ~/.claude/local install) doesn't win over the one
+        // the person runs.
+        return onPath(path) ?? candidates.first(where: isExecutable) ?? onPath(loginShellPath())
     }
 
     /// PATH from the user's login shell, or nil if it can't be read quickly.

@@ -79,7 +79,7 @@ struct TokenCaptureTests {
 
 @Suite("Host agent detection")
 struct HostDetectionTests {
-    @Test("claude is found in the usual places first, then PATH, then the login shell's PATH")
+    @Test("claude is found on PATH first, then in the usual places, then on the login shell's PATH")
     func findClaude() {
         let home = "/Users/u"
         func find(_ present: Set<String>, path: String? = nil, login: String? = nil) -> String? {
@@ -90,6 +90,8 @@ struct HostDetectionTests {
         #expect(find(["/usr/local/bin/claude"]) == "/usr/local/bin/claude")
         #expect(find(["/Users/u/.claude/local/claude"]) == "/Users/u/.claude/local/claude")
         #expect(find(["/x/bin/claude"], path: "/usr/bin:/x/bin") == "/x/bin/claude")
+        #expect(find(["/x/bin/claude", "/Users/u/.claude/local/claude"], path: "/usr/bin:/x/bin") == "/x/bin/claude")
+        #expect(find(["/Users/u/.local/bin/claude", "/nvm/bin/claude"], path: "/usr/bin", login: "/nvm/bin") == "/Users/u/.local/bin/claude")
         #expect(find(["/nvm/bin/claude"], path: "/usr/bin", login: "/usr/bin:/nvm/bin") == "/nvm/bin/claude")
         // Relative PATH entries are ignored.
         #expect(find(["bin/claude"], path: "bin") == nil)
