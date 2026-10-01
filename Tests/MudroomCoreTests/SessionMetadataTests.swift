@@ -29,12 +29,16 @@ struct SessionMetadataTests {
         #expect(try f.store.list().isEmpty)
     }
 
-    @Test("running status with a dead pid is not alive")
+    @Test("a session is running while its runner lock is held, not because of a pid")
     func staleRunner() throws {
         var f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
         f.handle.session.runnerPID = getpid()
         try f.handle.setStatus(.running)
+        let lock = try #require(FileLock.tryAcquire(f.handle.runnerLockURL))
         #expect(f.handle.isRunnerAlive)
+        lock.release()
+        // Lock released: a live pid alone doesn't make it running.
+        #expect(!f.handle.isRunnerAlive)
         f.handle.session.runnerPID = 999_999
         try f.handle.setStatus(.running)
         #expect(!f.handle.isRunnerAlive)

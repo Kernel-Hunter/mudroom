@@ -147,7 +147,7 @@ func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, flags: Run
     let id = handle.session.id
     print("\nagent exited with status \(result.status). Changes in session \(id):")
     let diff = try Differ.compare(base: handle.base, work: handle.work)
-    print(DiffRenderer(base: handle.base, work: handle.work).stat(diff))
+    DiffRenderer(base: handle.base, work: handle.work).writeStat(diff) { print($0) }
     if result.network.mode == .locked {
         let blocked = result.blocked.isEmpty ? "" : "; blocked: \(result.blocked.joined(separator: ", "))"
         print("network: \(result.connections) connections\(blocked). Details: mudroom network log \(id)")
@@ -234,10 +234,15 @@ struct Hunks: ParsableCommand {
         do {
             let handle = try store().open(session)
             let applier = Applier(handle: handle)
+            let path = Applier.normalizePath(self.path)
             let diff = try Differ.compare(base: handle.base, work: handle.work)
             guard let change = diff.changes.first(where: { $0.path == path }) else {
                 throw MudroomError.invalid("no change at \(path)")
             }
+            // What you see here is what `apply --hunks` will apply.
+            var record = ReviewedChanges.load(handle) ?? ReviewedChanges([])
+            record.merge([change])
+            try? record.save(handle)
             guard let hunks = try applier.hunks(for: change) else {
                 throw MudroomError.invalid("\(path) is not a modified text file; it can only be applied as a whole")
             }
@@ -281,12 +286,17 @@ struct Diff: ParsableCommand {
             let a = try snaps.url(for: TreeRef(from)!)
             let b = try snaps.url(for: TreeRef(to)!)
             var result = try Differ.compare(base: a, work: b)
+            if TreeRef(from) == .base && TreeRef(to) == .work {
+                // `apply` later refuses paths that changed after this.
+                try? ReviewedChanges(result.changes + result.gitMetadataChanges).save(handle)
+            }
             if includeGit {
                 result.changes = (result.changes + result.gitMetadataChanges).sorted { $0.path < $1.path }
                 result.gitMetadataChanges = []
             }
             let renderer = DiffRenderer(base: a, work: b)
-            print(stat ? renderer.stat(result) : try renderer.full(result))
+            // Streamed: a big diff isn't held in memory.
+            if stat { renderer.writeStat(result) { print($0) } } else { try renderer.writeFull(result) { print($0) } }
         } catch { fail(error) }
     }
 }
@@ -337,15 +347,20 @@ struct Apply: ParsableCommand {
         let report: ApplyReport
         do {
             handle = try store().open(session)
+            try SessionGuard.ensureIdle(handle)
             let applier = Applier(handle: handle)
+            // After `mudroom diff` / `hunks` / `review`, only what was shown
+            // there is applied.
+            let reviewed = ReviewedChanges.load(handle)
             if let ids = hunkIDs {
-                report = try applier.applyHunks(path: paths[0], hunks: ids)
+                report = try applier.applyHunks(path: paths[0], hunks: ids, reviewed: reviewed)
             } else {
-                report = try applier.apply(paths: all ? nil : paths, includeGit: includeGit)
+                report = try applier.apply(paths: all ? nil : paths, includeGit: includeGit, reviewed: reviewed)
             }
         } catch { fail(error) }
 
         for p in report.applied { print("applied    \(p)") }
+        for w in report.warnings { print("note       \(w.path): check it; it \(w.reason)") }
         for p in report.alreadyApplied { print("unchanged  \(p) (project already matches)") }
         for i in report.skipped { print("skipped    \(i)") }
         for i in report.conflicts { print("CONFLICT   \(i)") }
@@ -373,11 +388,16 @@ struct Undo: ParsableCommand {
         let report: UndoReport
         do {
             handle = try store().open(session)
+            try SessionGuard.ensureIdle(handle)
             report = try Applier(handle: handle).undo(force: force)
         } catch { fail(error) }
         for p in report.restored { print("restored   \(p)") }
         for i in report.conflicts { print("CONFLICT   \(i)") }
-        try handle.setStatus(.undone)
+        if report.remaining > 0 {
+            print("\n\(report.remaining) path(s) of this apply were not restored. Put them back as they were after the apply and run undo again, or use --force.")
+        }
+        // Undone only when nothing applied is left in the project.
+        if !Applier(handle: handle).canUndo { try handle.setStatus(.undone) }
         if !report.conflicts.isEmpty { throw ExitCode(2) }
     }
 }
@@ -388,7 +408,10 @@ struct List: ParsableCommand {
     func run() throws {
         let sessions: [SessionHandle]
         do { sessions = try store().list() } catch { fail(error) }
-        if sessions.isEmpty {
+        for dir in store().brokenSessions() {
+            print("\(dir.lastPathComponent)  CORRUPT (session.json unreadable; remove with `mudroom discard \(dir.lastPathComponent)`)")
+        }
+        if sessions.isEmpty && store().brokenSessions().isEmpty {
             print("no sessions")
             return
         }
@@ -413,10 +436,15 @@ struct Discard: ParsableCommand {
 
     func run() throws {
         do {
+            if store().brokenSessions().contains(where: { $0.lastPathComponent == session }) {
+                try store().discardBroken(session)
+                print("removed \(session) (its session.json was unreadable)")
+                return
+            }
             let handle = try store().open(session)
             if handle.isRunnerAlive { throw MudroomError.invalid("session \(handle.session.id) is still running") }
             try store().discard(handle, keepRecord: keepRecord)
-            print("discarded \(handle.session.id)")
+            print("discarded \(handle.session.id). Its rollback bundles are gone too, so earlier applies can't be undone with mudroom anymore.")
         } catch { fail(error) }
     }
 }

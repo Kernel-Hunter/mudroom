@@ -31,12 +31,15 @@ struct Review: ParsableCommand {
         var state: TerminalReview
         let renderer: DiffRenderer
         let applier: Applier
+        var reviewed = ReviewedChanges([])
         do {
             handle = try store().open(session)
             guard handle.hasClones else { throw MudroomError.invalid("session \(handle.session.id) was discarded") }
             let diff = try Differ.compare(base: handle.base, work: handle.work)
             applier = Applier(handle: handle)
-            let dry = try applier.apply(paths: nil, dryRun: true)
+            let dry = try applier.preflight(diff: diff)
+            reviewed = ReviewedChanges(diff.changes + diff.gitMetadataChanges)
+            try? reviewed.save(handle)
             state = TerminalReview(changes: diff.changes, conflicts: Dictionary(dry.conflicts.map { ($0.path, $0.reason) }) { a, _ in a })
             renderer = DiffRenderer(base: handle.base, work: handle.work)
         } catch { fail(error) }
@@ -68,7 +71,8 @@ struct Review: ParsableCommand {
                 do { state.showDiff(try renderer.renderOne(state.items[i].change)) } catch { state.message = "\(error)" }
             case .apply(let paths):
                 do {
-                    let report = try applier.apply(paths: paths)
+                    try SessionGuard.ensureIdle(handle)
+                    let report = try applier.apply(paths: paths, reviewed: reviewed)
                     let conflicts = Dictionary(report.conflicts.map { ($0.path, $0.reason) }) { a, _ in a }
                     state.markApplied(report.applied + report.alreadyApplied, conflicts: conflicts)
                     if !report.applied.isEmpty { try handle.setStatus(.applied) }
