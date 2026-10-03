@@ -378,6 +378,17 @@ public struct Applier {
                 planned.append((change, real))
             }
         }
+        // A repository's .git goes in whole or not at all. Half of one (the
+        // agent's refs and objects with your index, say, after a `git
+        // status` rewrote it) is a repository state nobody made.
+        let blockedGitDirs = Set(report.conflicts.compactMap { Self.gitDirectory(of: $0.path) })
+        if !blockedGitDirs.isEmpty {
+            planned.removeAll { p in
+                guard let dir = Self.gitDirectory(of: p.change.path), blockedGitDirs.contains(dir) else { return false }
+                report.conflicts.append(PathIssue(path: p.change.path, reason: "not applied: another path in \(dir)/ conflicts, and a .git directory is applied all or nothing"))
+                return true
+            }
+        }
         for (added, _) in renames where !planned.contains(where: { $0.change.path == added }) {
             renamedAway.remove(renames[added]!.path)
             renames[added] = nil
@@ -780,6 +791,14 @@ public struct Applier {
     }
 
     // MARK: - Helpers
+
+    /// "sub/.git" for "sub/.git/refs/heads/main": the innermost .git
+    /// directory a path is in (or is). Nil outside any .git.
+    static func gitDirectory(of path: String) -> String? {
+        let parts = path.split(separator: "/")
+        guard let i = parts.lastIndex(where: { $0.count == 4 && $0.lowercased() == ".git" }) else { return nil }
+        return parts[...i].joined(separator: "/")
+    }
 
     /// The project folder must still be where the session found it. If it
     /// was moved or deleted, every path would look deleted by the user, and

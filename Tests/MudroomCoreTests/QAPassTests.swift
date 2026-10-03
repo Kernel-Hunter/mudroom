@@ -66,6 +66,37 @@ struct QAPassTests {
         #expect(merged.changes["one.txt"] != nil)
     }
 
+    @Test("--include-git applies a .git all or nothing; a `git status` that rewrote the index blocks the rest")
+    func gitAllOrNothing() throws {
+        let f = try Fixture {
+            try write("ref: refs/heads/main\n", to: $0.appendingPathComponent(".git/HEAD"))
+            try write("index v1\n", to: $0.appendingPathComponent(".git/index"))
+            try write("a\n", to: $0.appendingPathComponent("src.txt"))
+            try write("ref: refs/heads/main\n", to: $0.appendingPathComponent("sub/.git/HEAD"))
+        }
+        // The agent commits on a new branch, in both repositories.
+        try write("ref: refs/heads/feature\n", to: f.work.appendingPathComponent(".git/HEAD"))
+        try write("index v2\n", to: f.work.appendingPathComponent(".git/index"))
+        try write("0123\n", to: f.work.appendingPathComponent(".git/refs/heads/feature"))
+        try write("b\n", to: f.work.appendingPathComponent("src.txt"))
+        try write("ref: refs/heads/feature\n", to: f.work.appendingPathComponent("sub/.git/HEAD"))
+        // Meanwhile `git status` in the real project refreshed its index.
+        try write("index v1 refreshed\n", to: f.project.appendingPathComponent(".git/index"))
+
+        let report = try Applier(handle: f.handle).apply(paths: nil, includeGit: true)
+        #expect(Set(report.applied) == ["src.txt", "sub/.git/HEAD"])
+        #expect(Set(report.conflicts.map(\.path)) == [".git/index", ".git/HEAD", ".git/refs", ".git/refs/heads", ".git/refs/heads/feature"])
+        #expect(try read(f.project.appendingPathComponent(".git/HEAD")) == "ref: refs/heads/main\n")
+        #expect(!exists(f.project.appendingPathComponent(".git/refs")))
+
+        #expect(Applier.gitDirectory(of: "a/.git/refs/x") == "a/.git")
+        #expect(Applier.gitDirectory(of: ".GIT") == ".GIT")
+        #expect(Applier.gitDirectory(of: "src/git.txt") == nil)
+        #expect(Differ.hostRisk(".git/hooks/pre-commit") != nil)
+        #expect(Differ.hostRisk("sub/.git/config") != nil)
+        #expect(Differ.hostRisk("src/config") == nil)
+    }
+
     @Test("diff output spells out control characters and bidi overrides the agent put in lines and names")
     func diffShowsControlCharacters() throws {
         let f = try Fixture { try write("ok\n", to: $0.appendingPathComponent("a.sh")) }
