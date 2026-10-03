@@ -41,4 +41,14 @@ public enum MudroomError: Error, CustomStringConvertible, Equatable {
             "\(why). Repair it with `mudroom setup --repair-network` (restarts the container system) or the Repair network button in the app."
         }
     }
+
+    /// Text for a person: ours as written, Foundation's localized message
+    /// instead of an `Error Domain=NSCocoaErrorDomain Code=… UserInfo={…}` dump.
+    public static func message(_ error: Error) -> String {
+        if let e = error as? MudroomError { return e.description }
+        if error is CocoaError || error is POSIXError || type(of: error) == NSError.self {
+            return (error as NSError).localizedDescription
+        }
+        return "\(error)"
+    }
 }

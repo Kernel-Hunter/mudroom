@@ -86,6 +86,45 @@ struct CloneAndSessionTests {
         }
     }
 
+    @Test("refuses /, the home folder, folders inside the store and unreadable folders")
+    func projectProblems() throws {
+        let tmp = try TempDir()
+        let store = SessionStore(root: tmp.path("store"))
+        let home = tmp.path("home")
+        try write("x", to: home.appendingPathComponent("code/app/x"))
+        try write("x", to: tmp.path("store/sessions/1/work/x"))
+        #expect(store.projectProblem(URL(fileURLWithPath: "/"), home: home) != nil)
+        #expect(store.projectProblem(home, home: home) != nil)
+        #expect(store.projectProblem(tmp.path("store/sessions/1/work"), home: home) != nil)
+        #expect(store.projectProblem(tmp.url, home: home) != nil)
+        #expect(store.projectProblem(home.appendingPathComponent("code/app"), home: home) == nil)
+        // A path with spaces, quotes, $ and non-ASCII is just a folder.
+        let odd = tmp.path("iCloud Drive/it's $HOME — café")
+        try write("x", to: odd.appendingPathComponent("x"))
+        #expect(store.projectProblem(odd, home: home) == nil)
+
+        let locked = tmp.path("locked")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        chmod(locked.path, 0)
+        defer { chmod(locked.path, 0o755) }
+        if getuid() != 0 { #expect(store.projectProblem(locked, home: home) != nil) }
+    }
+
+    @Test("errors read as sentences, not Foundation dumps")
+    func errorMessages() throws {
+        #expect(MudroomError.message(MudroomError.invalid("no")) == "no")
+        let tmp = try TempDir()
+        do {
+            _ = try Data(contentsOf: tmp.path("missing.txt"))
+            Issue.record("read a missing file")
+        } catch {
+            let text = MudroomError.message(error)
+            #expect(!text.contains("Error Domain"))
+            #expect(!text.contains("UserInfo"))
+            #expect(text.contains("missing.txt"))
+        }
+    }
+
     @Test("rejects a project path that is not a directory")
     func notADirectory() throws {
         let tmp = try TempDir()

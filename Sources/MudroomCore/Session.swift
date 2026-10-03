@@ -195,13 +195,7 @@ public struct SessionStore: Sendable {
     public func create(project: URL, command: [String], image: String, agent: String? = nil,
                        allowClonefile: Bool = true) throws -> SessionHandle {
         let project = project.resolvingSymlinksInPath().standardizedFileURL
-        var isDir: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: project.path, isDirectory: &isDir), isDir.boolValue else {
-            throw MudroomError.notADirectory(project.path)
-        }
-        if project.path == root.standardizedFileURL.path || root.standardizedFileURL.path.hasPrefix(project.path + "/") {
-            throw MudroomError.invalid("the Mudroom store (\(root.path)) is inside the project; set MUDROOM_HOME elsewhere")
-        }
+        if let problem = projectProblem(project) { throw problem }
         try FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
         let id = Self.newID()
         let dir = sessionsDirectory.appendingPathComponent(id, isDirectory: true)
@@ -222,6 +216,32 @@ public struct SessionStore: Sendable {
             throw error
         }
         return handle
+    }
+
+    /// Why `project` can't be a session's project, or nil if it can: it must
+    /// be a readable folder, not `/` or the home folder (a copy of either is
+    /// most of the disk), and not hold, or sit inside, Mudroom's own store.
+    public func projectProblem(_ project: URL,
+                               home: URL = FileManager.default.homeDirectoryForCurrentUser) -> MudroomError? {
+        let path = project.resolvingSymlinksInPath().standardizedFileURL.path
+        let store = root.resolvingSymlinksInPath().standardizedFileURL.path
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+            return .notADirectory(path)
+        }
+        if path == "/" || path == home.resolvingSymlinksInPath().standardizedFileURL.path {
+            return .invalid("\(path) is too big to copy for a session; choose the project's own folder")
+        }
+        if path == store || store.hasPrefix(path + "/") {
+            return .invalid("the Mudroom store (\(root.path)) is inside \(path); choose the project's own folder")
+        }
+        if path.hasPrefix(store + "/") {
+            return .invalid("\(path) is inside Mudroom's own store; choose the project's own folder")
+        }
+        guard FileManager.default.isReadableFile(atPath: path), FileManager.default.isExecutableFile(atPath: path) else {
+            return .invalid("Mudroom can't read \(path); check its permissions")
+        }
+        return nil
     }
 
     static func decode(_ data: Data) throws -> Session {

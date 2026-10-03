@@ -496,6 +496,44 @@ struct ReviewDataTests {
         #expect(report.conflicts.isEmpty)
     }
 
+    @Test("selection after apply and undo: applied rows and hunks drop out, undone ones come back ticked")
+    func selectionAcrossApplyAndUndo() throws {
+        let lines = (1...40).map { "line \($0)" }
+        let f = try Fixture { root in
+            try write(lines.joined(separator: "\n") + "\n", to: root.appendingPathComponent("m.txt"))
+        }
+        var changed = lines
+        changed[1] = "first change"
+        changed[37] = "second change"
+        try write(changed.joined(separator: "\n") + "\n", to: f.work.appendingPathComponent("m.txt"))
+        try write("b\n", to: f.work.appendingPathComponent("whole.txt"))
+
+        let s0 = try ReviewSnapshot.load(f.handle)
+        var sel = ReviewSelection()
+        sel.refresh(from: nil, to: s0, keep: false)
+        let m0 = try #require(s0.entry("m.txt"))
+        #expect(m0.allowsPartial && m0.hunks.count == 2)
+        let first = m0.hunks[0].id
+        #expect(sel.hunks["m.txt"] == Set(m0.hunks.map(\.id)))
+        #expect(sel.files.contains("whole.txt"))
+
+        // Apply the first hunk and the whole file.
+        let applier = Applier(handle: f.handle)
+        _ = try applier.apply(paths: ["whole.txt"], hunks: ["m.txt": [first]], reviewed: s0.reviewed)
+        let s1 = try ReviewSnapshot.load(f.handle)
+        sel.refresh(from: s0, to: s1, keep: true)
+        #expect(sel.hunks["m.txt"] == Set(m0.hunks.map(\.id)).subtracting([first]))
+        #expect(!sel.files.contains("whole.txt"))
+
+        // The user clears what's left; undo brings back what it took out.
+        sel.set(try #require(s1.entry("m.txt")), false)
+        _ = try applier.undo()
+        let s2 = try ReviewSnapshot.load(f.handle)
+        sel.refresh(from: s1, to: s2, keep: true)
+        #expect(sel.hunks["m.txt"] == [first])
+        #expect(sel.files.contains("whole.txt"))
+    }
+
     @Test("big folders collapse into one row; added files load line counts, not lines")
     func collapse() throws {
         let f = try Fixture { root in try write("x\n", to: root.appendingPathComponent("a.txt")) }

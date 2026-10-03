@@ -399,6 +399,25 @@ public struct ReviewSelection: Sendable, Equatable {
         set(f, f.selectedByDefault)
     }
 
+    /// Carries the selection over to a reloaded review. New rows (every row
+    /// unless `keep`) start the way the review starts, and so do rows an undo
+    /// just took back out of the project; hunks an undo took back are ticked
+    /// again. Rows that can't be applied any more, and applied hunks, drop out.
+    public mutating func refresh(from previous: ReviewSnapshot?, to snap: ReviewSnapshot, keep: Bool) {
+        for f in snap.files {
+            guard keep, let old = previous?.entry(f.path), !(old.isApplied && !f.isApplied) else {
+                setDefault(f)
+                continue
+            }
+            let undone = old.appliedHunks.subtracting(f.appliedHunks)
+            if f.allowsPartial && !undone.isEmpty { hunks[f.path, default: []].formUnion(undone) }
+        }
+        for f in snap.files {
+            if !f.canApply { set(f, false) }
+            if f.allowsPartial { hunks[f.path] = (hunks[f.path] ?? []).subtracting(f.appliedHunks) }
+        }
+    }
+
     public mutating func set(_ f: FileEntry, _ on: Bool) {
         if f.allowsPartial {
             hunks[f.path] = on && f.canApply ? f.openHunks : []
