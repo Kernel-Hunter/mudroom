@@ -102,6 +102,15 @@ public struct ReviewedChanges: Codable, Sendable, Equatable {
         created = Date()
     }
 
+    /// The review record after looking at one file (`mudroom hunks`). With
+    /// no earlier review it starts from the whole diff: looking at one file
+    /// must not make `apply --all` refuse every other file as unreviewed.
+    public static func viewing(_ change: Change, in diff: DiffResult, existing: ReviewedChanges?) -> ReviewedChanges {
+        var record = existing ?? ReviewedChanges(diff.changes + diff.gitMetadataChanges)
+        record.merge([change])
+        return record
+    }
+
     /// Nil if `c` is exactly what was reviewed, else why not.
     func mismatch(_ c: Change) -> String? {
         guard let e = changes[c.path] else { return "appeared after you reviewed; review again to include it" }
@@ -222,6 +231,7 @@ public struct Applier {
 
     private func applyLocked(paths: [String]?, hunks hunkSelection: [String: Set<Int>], includeGit: Bool, dryRun: Bool,
                              reviewed: ReviewedChanges?, diff precomputed: DiffResult?) throws -> ApplyReport {
+        try requireProjectFolder()
         let diff = try precomputed ?? Differ.compare(base: handle.base, work: handle.work)
         var changes = diff.changes + (includeGit ? diff.gitMetadataChanges : [])
         var report = ApplyReport()
@@ -657,6 +667,7 @@ public struct Applier {
         guard let (bundle, manifest) = try latestBundle() else {
             throw MudroomError.nothingToUndo(handle.session.id)
         }
+        try requireProjectFolder()
         var report = UndoReport()
         var dirModes: [(String, UInt16)] = []
         var updated = manifest
@@ -769,6 +780,16 @@ public struct Applier {
     }
 
     // MARK: - Helpers
+
+    /// The project folder must still be where the session found it. If it
+    /// was moved or deleted, every path would look deleted by the user, and
+    /// new files would fail one by one with a copy error.
+    func requireProjectFolder() throws {
+        var st = stat()
+        guard stat(project.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR else {
+            throw MudroomError.invalid("the project folder \(project.path) isn't there anymore (moved, renamed or deleted?). Put it back at that path to apply or undo this session's changes.")
+        }
+    }
 
     /// A new numbered bundle. mkdir fails if the number is taken, so two
     /// processes never share one.

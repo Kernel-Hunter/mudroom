@@ -265,9 +265,7 @@ struct Hunks: ParsableCommand {
                 throw MudroomError.invalid("no change at \(path)")
             }
             // What you see here is what `apply --hunks` will apply.
-            var record = ReviewedChanges.load(handle) ?? ReviewedChanges([])
-            record.merge([change])
-            try? record.save(handle)
+            try? ReviewedChanges.viewing(change, in: diff, existing: ReviewedChanges.load(handle)).save(handle)
             guard let hunks = try applier.hunks(for: change) else {
                 throw MudroomError.invalid("\(path) is not a modified text file; it can only be applied as a whole")
             }
