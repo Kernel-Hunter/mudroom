@@ -78,6 +78,9 @@ public struct UndoReport: Sendable {
     /// Entries of this bundle still not rolled back (after conflicts). A
     /// later `undo` retries them before going further back.
     public var remaining: Int = 0
+    /// With `force`: files changed after the apply, copied here (inside the
+    /// rollback bundle) before undo replaced them.
+    public var savedAside: [String: URL] = [:]
 }
 
 /// What a person looked at: each path's before and after state at review
@@ -699,6 +702,14 @@ public struct Applier {
                     continue
                 }
                 if current != entry.prior {
+                    if case .file = current, current != entry.applied {
+                        // --force: keep the edit made after the apply, never just drop it.
+                        let dest = bundle.appendingPathComponent("forced/" + entry.path)
+                        try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+                        try? fm.removeItem(at: dest)
+                        try Cloner.cloneItem(from: target, to: dest)
+                        report.savedAside[entry.path] = dest
+                    }
                     try restore(entry, current: current, bundle: bundle, dirModes: &dirModes)
                 }
                 updated.entries[index].undone = true

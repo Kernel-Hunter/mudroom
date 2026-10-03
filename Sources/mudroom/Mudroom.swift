@@ -424,6 +424,9 @@ struct Undo: ParsableCommand {
             report = try Applier(handle: handle).undo(force: force)
         } catch { fail(error) }
         for p in report.restored { print("restored   \(TextLines.visible(p))") }
+        for (p, url) in report.savedAside.sorted(by: { $0.key < $1.key }) {
+            print("saved      your later version of \(TextLines.visible(p)) to \(url.path)")
+        }
         for i in report.conflicts { print("CONFLICT   \(i)") }
         if report.remaining > 0 {
             print("\n\(report.remaining) path(s) of this apply were not restored. Put them back as they were after the apply and run undo again, or use --force.")

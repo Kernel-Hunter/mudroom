@@ -184,6 +184,21 @@ struct QAPassTests {
         #expect(DockerBackend.failureDetail(CapturedOutput(status: 1, stdout: json, stderr: "")).count <= 403)
     }
 
+    @Test("undo --force keeps a copy of what you changed after the apply")
+    func forcedUndoKeepsEdit() throws {
+        let f = try Fixture { try write("base\n", to: $0.appendingPathComponent("f.txt")) }
+        try write("agent\n", to: f.work.appendingPathComponent("f.txt"))
+        _ = try Applier(handle: f.handle).apply(paths: nil)
+        try write("agent\nmine\n", to: f.project.appendingPathComponent("f.txt"))
+
+        #expect(try Applier(handle: f.handle).undo().conflicts.count == 1)
+        let report = try Applier(handle: f.handle).undo(force: true)
+        #expect(report.restored == ["f.txt"])
+        #expect(try read(f.project.appendingPathComponent("f.txt")) == "base\n")
+        let saved = try #require(report.savedAside["f.txt"])
+        #expect(try read(saved) == "agent\nmine\n")
+    }
+
     @Test("the summary after a run lists a limited number of paths, then the totals")
     func statLimit() throws {
         let f = try Fixture { _ in }
