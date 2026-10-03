@@ -51,6 +51,12 @@ struct FileListColumn: View {
                     .padding(.top, 10)
                     .padding(.bottom, review.lastResult == nil ? 4 : 0)
             }
+            if let error = review.loadError, review.snapshot != nil {
+                // The list below is from before; say why it didn't refresh.
+                Banner(style: .warning, title: "Couldn't refresh the changes", detail: error,
+                       actions: AnyView(Button("Try Again") { review.reload() }.controlSize(.small)))
+                    .padding(10)
+            }
             if let result = review.lastResult { resultBanner(result) }
             fileList
     }
@@ -60,7 +66,7 @@ struct FileListColumn: View {
                title: result.title, detail: result.detail,
                actions: AnyView(HStack(spacing: 6) {
                    if result.offerUndo && review.canUndo {
-                       Button("Undo") { review.undo() }.controlSize(.small)
+                       Button("Undo") { review.undo() }.controlSize(.small).disabled(review.isWorking)
                    }
                    Button { review.lastResult = nil } label: { Image(systemName: "xmark") }
                        .buttonStyle(.borderless).controlSize(.small)
@@ -78,6 +84,14 @@ struct FileListColumn: View {
         if !review.handle.hasClones {
             ContentUnavailableView("Session discarded", systemImage: "trash",
                                    description: Text("The agent's copy was deleted. Your project was not touched."))
+        } else if review.snapshot == nil, let error = review.loadError {
+            ContentUnavailableView {
+                Label("Couldn't compare the files", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error)
+            } actions: {
+                Button("Try Again") { review.reload() }
+            }
         } else if review.snapshot == nil {
             ProgressView("Comparing files…").controlSize(.small).frame(maxHeight: .infinity)
         } else if review.files.isEmpty {
@@ -197,7 +211,7 @@ struct FileRow: View {
     var body: some View {
         HStack(spacing: 8) {
             if !entry.readOnly {
-                CheckBox(state: entry.isApplied ? .on : review.checkState(entry), disabled: !entry.canApply) {
+                CheckBox(state: entry.isApplied ? .on : review.checkState(entry), disabled: !entry.canApply, name: entry.path) {
                     review.toggle(entry.path)
                 }
             }
@@ -263,7 +277,7 @@ struct FolderRow: View {
     var body: some View {
         HStack(spacing: 8) {
             if !review.isTimelineView {
-                CheckBox(state: review.folderState(folder), disabled: false) { review.toggleFolderSelection(folder) }
+                CheckBox(state: review.folderState(folder), disabled: false, name: folder.path + "/") { review.toggleFolderSelection(folder) }
             }
             Image(systemName: "folder.fill").foregroundStyle(.secondary).frame(width: 16)
             VStack(alignment: .leading, spacing: 0) {

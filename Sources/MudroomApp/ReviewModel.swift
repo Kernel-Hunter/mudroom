@@ -77,8 +77,14 @@ final class ReviewModel {
         let offerUndo: Bool
     }
 
+    @ObservationIgnored private var wasRunning: Bool
+    /// Bumped by every reload; a load that finishes after a newer one started
+    /// is dropped, so an old file list can't land over a fresh one.
+    @ObservationIgnored private var loadGeneration = 0
+
     init(handle: SessionHandle, store: SessionStore) {
         self.handle = handle
+        wasRunning = handle.isRunnerAlive
         self.configStore = ProjectConfigStore(store: store)
         // For screenshots and demos: -MudroomTab network, -MudroomFocusHost
         // host:port:false, -MudroomCompareFrom <snapshot number>.
@@ -105,7 +111,12 @@ final class ReviewModel {
     func updateHandle(_ h: SessionHandle) {
         let statusChanged = h.session.status != handle.session.status
         handle = h
-        if statusChanged && h.session.status == .finished { reload() } else if isRunning { loadNetwork() }
+        // Reload once the agent is done: when it says so, or when its runner
+        // is gone (killed before it could record the end).
+        let running = isRunning
+        let stopped = wasRunning && !running
+        wasRunning = running
+        if stopped || (statusChanged && h.session.status == .finished && !running) { reload() } else if running { loadNetwork() }
     }
 
     // MARK: Network
@@ -137,25 +148,34 @@ final class ReviewModel {
                                detail: "Sessions for \(handle.session.projectName) can reach it from now on. This session's log doesn't change.",
                                offerUndo: false)
         } catch {
-            lastResult = .init(style: .warning, title: "Couldn't update the allowlist", detail: "\(error)", offerUndo: false)
+            lastResult = .init(style: .warning, title: "Couldn't update the allowlist", detail: MudroomError.message(error), offerUndo: false)
         }
     }
 
     func removeFromProject(_ host: String) {
         guard let pattern = HostPattern(host) else { return }
-        projectConfig = try? configStore.update(handle.session.projectPath) { $0.disallow(pattern) }
+        do {
+            projectConfig = try configStore.update(handle.session.projectPath) { $0.disallow(pattern) }
+        } catch {
+            lastResult = .init(style: .warning, title: "Couldn't update the allowlist", detail: MudroomError.message(error), offerUndo: false)
+        }
     }
 
     // MARK: Loading
 
-    func reload(keepSelection: Bool = true) {
+    /// Returns the load, for callers that need the new list before going on.
+    @discardableResult
+    func reload(keepSelection: Bool = true) -> Task<Void, Never>? {
         loadNetwork()
+        loadGeneration += 1
+        let generation = loadGeneration
         guard handle.hasClones else {
             snapshot = .empty
             baseSnapshot = snapshot
             timeline = []
+            isLoading = false
             rebuildRows()
-            return
+            return nil
         }
         timeline = SnapshotStore(handle: handle).list()
         if compareFrom != 0 && compareSnapshot == nil { compareFrom = 0 }
@@ -163,11 +183,12 @@ final class ReviewModel {
         let h = handle
         if let from = compareSnapshot?.directory {
             let n = compareFrom
-            Task {
+            return Task {
                 let needBase = baseSnapshot == nil
                 let (result, base) = await Task.detached(priority: .userInitiated) { () -> (Result<ReviewSnapshot, Error>, ReviewSnapshot?) in
                     (Result { try ReviewSnapshot.loadTimeline(h, from: from) }, needBase ? try? ReviewSnapshot.load(h) : nil)
                 }.value
+                guard generation == loadGeneration else { return }
                 if let base, baseSnapshot == nil {
                     // Selections are set up from the base comparison.
                     let shown = snapshot
@@ -184,15 +205,15 @@ final class ReviewModel {
                     rebuildRows()
                     loadError = nil
                 case .failure(let error):
-                    loadError = "\(error)"
+                    loadError = MudroomError.message(error)
                 }
             }
-            return
         }
-        Task {
+        return Task {
             let result = await Task.detached(priority: .userInitiated) { () -> Result<ReviewSnapshot, Error> in
                 Result { try ReviewSnapshot.load(h) }
             }.value
+            guard generation == loadGeneration else { return }
             isLoading = false
             guard compareFrom == 0 else { return }
             switch result {
@@ -200,7 +221,7 @@ final class ReviewModel {
                 apply(snapshot: snap, keepSelection: keepSelection && baseSnapshot != nil)
                 loadError = nil
             case .failure(let error):
-                loadError = "\(error)"
+                loadError = MudroomError.message(error)
             }
         }
     }
@@ -210,19 +231,10 @@ final class ReviewModel {
         snapshot = snap
         baseSnapshot = snap
         detailHunks = [:]
-        var sel = selection
         // New files (and everything on first load) start selected, unless
         // they can't be applied or are flagged (host-run files, setuid).
-        // So do files an undo just took back out of the project.
-        for f in snap.files where !keepSelection || previous?.entry(f.path) == nil
-            || (previous?.entry(f.path)?.isApplied == true && !f.isApplied) {
-            sel.setDefault(f)
-        }
-        // Drop selections that can no longer be applied.
-        for f in snap.files {
-            if !f.canApply { sel.set(f, false) }
-            if f.allowsPartial { sel.hunks[f.path] = (sel.hunks[f.path] ?? []).subtracting(f.appliedHunks) }
-        }
+        var sel = selection
+        sel.refresh(from: previous, to: snap, keep: keepSelection)
         selection = sel
         if snap.entry(focusedPath) == nil && focusedFolder == nil {
             // `-MudroomFocus <path>` on the command line picks the first file shown
@@ -368,7 +380,6 @@ final class ReviewModel {
                     return report
                 }
             }.value
-            isWorking = false
             var h = h0
             switch result {
             case .success(let report):
@@ -388,10 +399,14 @@ final class ReviewModel {
                     lastResult = .init(style: c == 0 ? .success : .warning, title: "\(verb) \(files)",
                                        detail: detail, offerUndo: n > 0)
                 }
-                reload()
             case .failure(let error):
-                lastResult = .init(style: .warning, title: "Apply failed", detail: "\(error)", offerUndo: false)
+                lastResult = .init(style: .warning, title: "Apply failed", detail: MudroomError.message(error), offerUndo: false)
             }
+            // Stay busy until the list shows what landed: until then the
+            // applied rows still look selected and Undo isn't offered yet.
+            // A failed apply may have written some paths too.
+            await reload()?.value
+            isWorking = false
         }
     }
 
@@ -400,34 +415,47 @@ final class ReviewModel {
         isWorking = true
         let h0 = handle
         Task {
-            let result = await Task.detached { () -> Result<UndoReport, Error> in
+            let result = await Task.detached { () -> Result<(UndoReport, Bool), Error> in
                 Result {
                     var h = h0
                     try SessionGuard.ensureIdle(h)
                     let applier = Applier(handle: h)
                     let report = try applier.undo()
-                    if !applier.canUndo { try h.setStatus(.undone) }
-                    return report
+                    let more = applier.canUndo
+                    if !more { try h.setStatus(.undone) }
+                    return (report, more)
                 }
             }.value
-            isWorking = false
             var h = h0
             switch result {
-            case .success(let report):
+            case .success(let (report, more)):
                 try? h.reload()
                 handle = h
-                let c = report.conflicts.count
-                lastResult = .init(style: c == 0 ? .info : .warning,
-                                   // Conflicted paths stay in the bundle: undo again once they're back.
-                                   title: "Undid last apply",
-                                   detail: c == 0 ? "Restored \(report.restored.count) \(report.restored.count == 1 ? "path" : "paths") in your project."
-                                       : "\(c) \(c == 1 ? "path was" : "paths were") changed after the apply and kept as is.",
-                                   offerUndo: false)
-                reload()
+                lastResult = Self.undoBanner(report, more: more)
             case .failure(let error):
-                lastResult = .init(style: .warning, title: "Undo failed", detail: "\(error)", offerUndo: false)
+                lastResult = .init(style: .warning, title: "Undo failed", detail: MudroomError.message(error), offerUndo: false)
             }
+            await reload()?.value
+            isWorking = false
         }
+    }
+
+    /// Says what an undo did. Each apply is undone on its own, so after an
+    /// earlier apply the session stays "Applied"; the banner says so and
+    /// offers the next undo.
+    static func undoBanner(_ report: UndoReport, more: Bool) -> ResultBanner {
+        let r = report.restored.count, c = report.conflicts.count
+        let paths = { (n: Int) in n == 1 ? "1 path" : "\(n) paths" }
+        if c > 0 {
+            // Conflicted paths stay in the bundle: undo again once they're back.
+            let kept = "\(paths(c)) changed in your project after the apply, so Mudroom left \(c == 1 ? "it" : "them") as \(c == 1 ? "it is" : "they are")."
+            return .init(style: .warning, title: r == 0 ? "Nothing was undone" : "Undid part of the last apply",
+                         detail: (r == 0 ? "" : "Restored \(paths(r)). ") + kept + " Put back the applied version to undo \(c == 1 ? "it" : "them") too.",
+                         offerUndo: false)
+        }
+        return .init(style: .info, title: "Undid last apply",
+                     detail: "Restored \(paths(r)) in your project." + (more ? " An earlier apply is still in place; Undo again to take it out too." : ""),
+                     offerUndo: more)
     }
 
     func revealInFinder(_ path: String? = nil) {

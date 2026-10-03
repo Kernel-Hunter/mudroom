@@ -91,6 +91,8 @@ struct AgentIcon: View {
 struct CheckBox: View {
     let state: CheckState
     var disabled = false
+    /// What it selects, for VoiceOver: a file name, "Hunk 2"...
+    var name = ""
     let action: () -> Void
 
     var body: some View {
@@ -103,7 +105,8 @@ struct CheckBox: View {
         }
         .buttonStyle(.plain)
         .disabled(disabled)
-        .accessibilityLabel(state == .on ? "Selected" : state == .mixed ? "Partly selected" : "Not selected")
+        .accessibilityLabel(name.isEmpty ? "Select" : "Select \(name)")
+        .accessibilityValue(state == .on ? "Selected" : state == .mixed ? "Partly selected" : "Not selected")
     }
 
     var symbol: String {

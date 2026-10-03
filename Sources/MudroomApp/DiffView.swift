@@ -175,7 +175,7 @@ private struct HunkHeaderRow: View {
         HStack(spacing: 8) {
             if partial {
                 CheckBox(state: applied || review.isHunkSelected(entry.path, hunk.id) ? .on : .off,
-                         disabled: applied || !entry.canApply) {
+                         disabled: applied || !entry.canApply, name: "hunk \(hunk.id) of \(count)") {
                     review.toggleHunk(entry.path, hunk.id)
                 }
                 .help("Include this hunk in Apply Selected")
