@@ -147,4 +147,18 @@ struct HostDetectionTests {
         let st = try JSONSerialization.jsonObject(with: Data(contentsOf: h.hostDirectory.appendingPathComponent("settings.json"))) as? [String: Any]
         #expect(st?["skipDangerousModePermissionPrompt"] as? Bool == true)
     }
+
+    @Test("keys set in ~/.zshrc count for the app (sessions run in a Terminal that reads it); a slow shell gives none")
+    func terminalKeyNames() throws {
+        guard FileManager.default.isExecutableFile(atPath: "/bin/zsh") else { return }
+        let tmp = try TempDir()
+        try write("export OPENROUTER_API_KEY=sk-or-x\nexport GROQ_API_KEY=\necho noise\n", to: tmp.path(".zshrc"))
+        let env = ["HOME": tmp.url.path, "ZDOTDIR": tmp.url.path, "OPENROUTER_API_KEY": "", "GROQ_API_KEY": ""]
+        let names = AgentEnvironment.terminalNames(environment: env)
+        #expect(names.contains("OPENROUTER_API_KEY") && !names.contains("GROQ_API_KEY") && !names.contains("noise"))
+        try write("sleep 30\n", to: tmp.path(".zshrc"))
+        let start = Date()
+        #expect(AgentEnvironment.terminalNames(timeout: 1, environment: env).isEmpty)
+        #expect(Date().timeIntervalSince(start) < 10)
+    }
 }

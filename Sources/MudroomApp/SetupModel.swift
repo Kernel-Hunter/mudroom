@@ -38,6 +38,15 @@ final class SetupModel {
     private(set) var hostClaude: String?
     private(set) var keyError: String?
     var login: LoginConsole?
+    /// Key variables set in the Terminal sessions run in (~/.zshrc), which
+    /// an app opened from the Finder doesn't see itself.
+    private(set) var terminalKeys: [String] = []
+
+    /// The environment a session's `mudroom start` sees, as far as sign-in
+    /// goes. Values of terminal-only variables are placeholders.
+    var sessionEnvironment: [String: String] {
+        ProcessInfo.processInfo.environment.merging(terminalKeys.map { ($0, "set in your shell") }) { mine, _ in mine }
+    }
 
     /// The card to scroll to when the window opens.
     var focus: String?
@@ -86,6 +95,7 @@ final class SetupModel {
         let (resolved, state) = await Task.detached { RuntimeSetup.detect(choice) }.value
         resolvedBackend = resolved
         runtime = state
+        terminalKeys = await Task.detached { AgentEnvironment.terminalNames() }.value
         refreshSignIn()
         guard state.isReady, let backend = try? Backends.make(choice) else {
             image = nil
@@ -99,7 +109,7 @@ final class SetupModel {
     func refreshSignIn() {
         hostClaude = HostCLI.findClaude(loginShellPath: { nil })
         var s: [String: SignInStatus] = [:]
-        for p in AgentPreset.all { s[p.id] = SignInStatus.check(p, store: store, tokens: tokens) }
+        for p in AgentPreset.all { s[p.id] = SignInStatus.check(p, store: store, tokens: tokens, environment: sessionEnvironment) }
         signIn = s
         keys = Set(APIKeys.storedNames(tokens))
     }

@@ -180,6 +180,22 @@ public enum AgentEnvironment {
                                names: [String] = passthrough) -> [String] {
         names.filter { env[$0].map { !$0.isEmpty } ?? false }
     }
+
+    /// Credential and provider-key variables that are set in the terminal
+    /// the app starts sessions in (a zsh login shell that also reads
+    /// ~/.zshrc, as `TerminalLauncher` writes it). An app opened from the
+    /// Finder doesn't have them in its own environment. Names only: no
+    /// value leaves the shell. Empty if the shell takes longer than
+    /// `timeout`.
+    public static func terminalNames(shell: String = "/bin/zsh", timeout: TimeInterval = 5,
+                                     environment: [String: String] = [:]) -> [String] {
+        let names = (passthrough + APIKeys.providers.map(\.variable)).reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+        let script = "[[ -f ~/.zshrc ]] && source ~/.zshrc >/dev/null 2>&1; for n in \(names.joined(separator: " ")); do [[ -n ${(P)n} ]] && print -r -- $n; done; true"
+        guard FileManager.default.isExecutableFile(atPath: shell),
+              let out = try? ProcessRunner.capture(shell, ["-l", "-c", script], environment: environment, timeout: timeout), out.status == 0 else { return [] }
+        let set = Set(out.stdout.split(whereSeparator: \.isNewline).map(String.init))
+        return names.filter(set.contains)
+    }
 }
 
 /// Runs the agent through Apple's `container` CLI (github.com/apple/container),

@@ -29,7 +29,8 @@ struct NewSessionSheet: View {
     /// nil for custom commands (we can't tell what they need).
     var signIn: SignInStatus? {
         guard let preset else { return nil }
-        return app.setup.status(preset.id) ?? SignInStatus.check(preset, store: app.store, tokens: app.setup.tokens)
+        return app.setup.status(preset.id)
+            ?? SignInStatus.check(preset, store: app.store, tokens: app.setup.tokens, environment: app.setup.sessionEnvironment)
     }
 
     /// Signed in, or an agent that can run on local models with them on.
