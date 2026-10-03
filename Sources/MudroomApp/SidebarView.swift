@@ -22,7 +22,7 @@ struct SidebarView: View {
                                     Button("Start Agent in Terminal") { app.runAgain(h) }
                                 }
                                 Divider()
-                                Button("Remove from List…", role: .destructive) { app.removeFromList(h) }
+                                Button("Remove from List…", role: .destructive) { app.confirmRemove = h }
                                     .disabled(h.isRunnerAlive)
                             }
                     }
@@ -33,8 +33,17 @@ struct SidebarView: View {
             }
         }
         .modifier(SidebarListStyle(forSnapshot: forSnapshot))
+        .confirmationDialog("Remove this session from the list?",
+                            isPresented: .init(get: { app.confirmRemove != nil }, set: { if !$0 { app.confirmRemove = nil } }),
+                            presenting: app.confirmRemove) { h in
+            Button("Remove Session", role: .destructive) { app.removeFromList(h) }
+        } message: { h in
+            Text(SessionPhase(h) == .discarded
+                 ? "Its record is deleted."
+                 : "The agent's copy and its changes are deleted. Anything you already applied stays in your project, but can no longer be undone with Mudroom.")
+        }
         .overlay {
-            if app.sessions.isEmpty {
+            if app.sessions.isEmpty && app.creatingSession == nil {
                 VStack(spacing: 8) {
                     Image(systemName: "tray").font(.system(size: 26, weight: .light)).foregroundStyle(.tertiary)
                     Text("No sessions").font(.system(size: 12, weight: .medium)).foregroundStyle(.secondary)
@@ -43,6 +52,15 @@ struct SidebarView: View {
         }
         .safeAreaInset(edge: .bottom) {
             VStack(alignment: .leading, spacing: 0) {
+                if let name = app.creatingSession {
+                    HStack(spacing: 7) {
+                        ProgressView().controlSize(.small)
+                        Text("Copying \(name) for the agent…").font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    Divider().padding(.horizontal, 10)
+                }
                 if let problem = app.setup.problems.first, !forSnapshot {
                     Button { app.openSetup(focus: app.setupFocus) } label: {
                         HStack(spacing: 7) {

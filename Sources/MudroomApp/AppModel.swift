@@ -47,10 +47,15 @@ final class AppModel {
     private(set) var review: ReviewModel?
     var showingNewSession = false
     var confirmDiscard = false
+    /// Session to remove from the list, waiting for confirmation.
+    var confirmRemove: SessionHandle?
+    /// Name of the project being copied for a new session.
+    private(set) var creatingSession: String?
     let setup: SetupModel
     /// Bumped to open the Setup window (RootView watches it).
     private(set) var setupRequest = 0
     var errorMessage: String?
+    @ObservationIgnored private var listError: String?
     private var reviews: [String: ReviewModel] = [:]
     private var pollTask: Task<Void, Never>?
 
@@ -114,8 +119,12 @@ final class AppModel {
     func refresh() {
         do {
             sessions = try store.list()
+            listError = nil
         } catch {
-            errorMessage = "\(error)"
+            // Polled every 1.5 s: say it once, not again after each OK.
+            let message = "Couldn't read the session list: \(MudroomError.message(error))"
+            if message != listError { errorMessage = message }
+            listError = message
         }
         for h in sessions { reviews[h.session.id]?.updateHandle(h) }
         if review?.handle.session.id != selectedSessionID { syncReview(reload: false) }
@@ -138,23 +147,27 @@ final class AppModel {
         let command = preset?.command ?? AgentPreset.parseCommand(customCommand)
         let agent = preset?.name ?? command.first.map { "Custom: \($0)" }
         let store = self.store
+        // The sheet is gone by now and a big project takes a while to copy;
+        // the sidebar shows this until the session appears.
+        creatingSession = project.lastPathComponent
         Task {
             let result = await Task.detached(priority: .userInitiated) { () -> Result<SessionHandle, Error> in
                 Result { try store.create(project: project, command: command, image: image, agent: agent) }
             }.value
+            creatingSession = nil
             switch result {
             case .success(let handle):
                 refresh()
                 selectedSessionID = handle.session.id
-                do { try TerminalLauncher.launch(handle) } catch { errorMessage = "\(error)" }
+                do { try TerminalLauncher.launch(handle) } catch { errorMessage = "Couldn't open Terminal: \(MudroomError.message(error))" }
             case .failure(let error):
-                errorMessage = "Couldn't create the session: \(error)"
+                errorMessage = "Couldn't create the session: \(MudroomError.message(error))"
             }
         }
     }
 
     func runAgain(_ handle: SessionHandle) {
-        do { try TerminalLauncher.launch(handle) } catch { errorMessage = "\(error)" }
+        do { try TerminalLauncher.launch(handle) } catch { errorMessage = "Couldn't open Terminal: \(MudroomError.message(error))" }
     }
 
     func discardSelected() {
@@ -165,7 +178,7 @@ final class AppModel {
             review = nil
             refresh()
         } catch {
-            errorMessage = "Couldn't discard: \(error)"
+            errorMessage = "Couldn't discard: \(MudroomError.message(error))"
         }
     }
 
@@ -177,7 +190,7 @@ final class AppModel {
             if selectedSessionID == h.session.id { selectedSessionID = nil }
             refresh()
         } catch {
-            errorMessage = "Couldn't remove: \(error)"
+            errorMessage = "Couldn't remove: \(MudroomError.message(error))"
         }
     }
 }
@@ -202,10 +215,6 @@ enum TerminalLauncher {
         return candidates.first { fm.isExecutableFile(atPath: $0.path) }
     }
 
-    static func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
     static func launch(_ handle: SessionHandle) throws {
         guard let cli = cliURL() else {
             throw MudroomError.invalid("the mudroom command-line tool was not found inside the app or on PATH")
@@ -213,26 +222,9 @@ enum TerminalLauncher {
         let script = handle.directory.appendingPathComponent("run.command")
         // The settings this app runs with, so the session uses the same
         // store, token store and backend.
-        var env = ""
-        for name in ["MUDROOM_HOME", "MUDROOM_TOKEN_STORE", "MUDROOM_BACKEND", "MUDROOM_OCI_RUNTIME"] {
-            if let v = ProcessInfo.processInfo.environment[name], !v.isEmpty {
-                env += "export \(name)=\(shellQuote(v))\n"
-            }
-        }
-        let text = """
-        #!/bin/zsh -l
-        # Written by Mudroom.app: runs the agent for session \(handle.session.id).
-        # A login shell, plus ~/.zshrc, so PATH and API keys match your usual terminal.
-        [[ -f ~/.zshrc ]] && source ~/.zshrc >/dev/null 2>&1
-        \(env)clear
-        \(shellQuote(cli.path)) start \(shellQuote(handle.session.id))
-        rc=$?
-        echo
-        echo "Review the changes in Mudroom. You can close this window."
-        open -b \(Bundle.main.bundleIdentifier ?? "io.github.kernel-hunter.mudroom") 2>/dev/null
-        exit $rc
-
-        """
+        let text = RunScript.text(cli: cli.path, sessionID: handle.session.id,
+                                  environment: ProcessInfo.processInfo.environment,
+                                  appBundleID: Bundle.main.bundleIdentifier ?? "io.github.kernel-hunter.mudroom")
         try text.write(to: script, atomically: true, encoding: .utf8)
         chmod(script.path, 0o700)
         // `open -F` starts Terminal fresh: if it wasn't running, it doesn't

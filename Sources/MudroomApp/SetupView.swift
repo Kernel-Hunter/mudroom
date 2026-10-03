@@ -74,8 +74,9 @@ struct SetupView: View {
             Spacer()
             Button("Check Again") { Task { await model.refresh() } }
                 .disabled(model.checking)
+            // No Return shortcut: Return in the sign-in code or a key field
+            // would close the window, cancelling the sign-in or losing the key.
             Button("Done", action: onDone)
-                .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
         }
         .padding(.horizontal, 24)
@@ -125,14 +126,15 @@ struct SetupView: View {
     }
 
     var imageCard: some View {
+        // nil and not checking: the check couldn't run (no spinner forever).
         let status: StepStatus = model.imageBusy ? .working : !model.runtimeReady ? .waiting
-            : model.image == nil ? .checking : model.image == .current ? .done : .todo
+            : model.image == nil ? (model.checking ? .checking : .todo) : model.image == .current ? .done : .todo
         let detail: String = switch (model.imageBusy, model.image) {
         case (true, _): model.imageStep
         case (_, .current?): "\(AgentBaseImage.tag) is built and up to date."
         case (_, .outdated?): "This image was built by an older Mudroom. Rebuild it to get the current agents."
         case (_, .missing?): "Node and the agent CLIs (Claude Code, Codex, Gemini CLI, opencode, Aider). A few minutes, about 2 GB."
-        default: model.runtimeReady ? "Checking…" : "Needs the VM runtime first."
+        default: !model.runtimeReady ? "Needs the VM runtime first." : model.checking ? "Checking…" : "Not checked yet. Press Check Again."
         }
         return StepCard(number: 2, title: "Agent image", status: status, detail: detail) {
             if model.runtimeReady, !model.imageBusy, let image = model.image, image != .current {
@@ -148,10 +150,11 @@ struct SetupView: View {
     var networkCard: some View {
         let r = model.network
         let status: StepStatus = model.networkBusy ? .working : !(model.runtimeReady && model.image != nil && model.image != .missing) ? .waiting
-            : r == nil ? .checking : r!.isOK ? .done : .todo
+            : r == nil ? (model.checking ? .checking : .todo) : r!.isOK ? .done : .todo
         let detail: String = if model.networkBusy { model.networkStep ?? "Checking…" }
             else if let r { r.isOK ? "A VM reaches Mudroom's network proxy on this Mac." : r.summary.prefix(1).uppercased() + r.summary.dropFirst() + "." }
             else if status == .waiting { "Needs the runtime and image first." }
+            else if model.checking { "Checking…" }
             else { "Not checked yet." }
         return StepCard(number: 3, title: "VM network", status: status, detail: detail) {
             if status != .waiting && !model.networkBusy {
@@ -521,10 +524,9 @@ struct APIKeysCard: View {
                         .textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
                         .frame(width: 150)
                     SecureField("Value", text: $customValue).textFieldStyle(.roundedBorder)
-                    Button("Save") {
-                        if model.saveKey(customName, customValue) { customName = ""; customValue = "" }
-                    }
-                    .disabled(customName.isEmpty || customValue.isEmpty)
+                        .onSubmit(saveCustom)
+                    Button("Save", action: saveCustom)
+                        .disabled(customName.isEmpty || customValue.isEmpty)
                 }
             }
         }
@@ -545,11 +547,20 @@ struct APIKeysCard: View {
             } else {
                 SecureField("Paste key", text: Binding(get: { values[name] ?? "" }, set: { values[name] = $0 }))
                     .textFieldStyle(.roundedBorder)
-                Button("Save") {
-                    if model.saveKey(name, values[name] ?? "") { values[name] = nil }
-                }
-                .disabled((values[name] ?? "").isEmpty)
+                    .onSubmit { save(name) }
+                Button("Save") { save(name) }
+                    .disabled((values[name] ?? "").isEmpty)
             }
         }
+    }
+
+    func save(_ name: String) {
+        guard let value = values[name], !value.isEmpty else { return }
+        if model.saveKey(name, value) { values[name] = nil }
+    }
+
+    func saveCustom() {
+        guard !customName.isEmpty, !customValue.isEmpty else { return }
+        if model.saveKey(customName, customValue) { customName = ""; customValue = "" }
     }
 }

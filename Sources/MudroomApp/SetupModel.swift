@@ -137,7 +137,7 @@ final class SetupModel {
             do {
                 try RuntimeSetup.install(brew: brew) { line in Task { @MainActor in self?.appendRuntime(line) } }
                 return nil
-            } catch { return "\(error)" }
+            } catch { return MudroomError.message(error) }
         }.value
         runtimeBusy = false
         runtimeError = result
@@ -155,7 +155,7 @@ final class SetupModel {
             do {
                 try RuntimeSetup.start(resolved, executable: exe) { line in Task { @MainActor in self?.appendRuntime(line) } }
                 return nil
-            } catch { return "\(error)" }
+            } catch { return MudroomError.message(error) }
         }.value
         runtimeBusy = false
         runtimeError = result
@@ -181,7 +181,7 @@ final class SetupModel {
                     Task { @MainActor in self?.buildLine(line) }
                 }
                 return nil
-            } catch { return "\(error)" }
+            } catch { return MudroomError.message(error) }
         }.value
         imageBusy = false
         imageError = result
@@ -234,7 +234,7 @@ final class SetupModel {
         networkStep = nil
         switch result {
         case .success(let r): network = r
-        case .failure(let e): networkError = "\(e)"
+        case .failure(let e): networkError = MudroomError.message(e)
         }
     }
 
@@ -267,7 +267,7 @@ final class SetupModel {
             try source.importInto(home)
             keyError = nil
         } catch {
-            keyError = "Couldn't copy the \(agent) sign-in: \(error)"
+            keyError = "Couldn't copy the \(agent) sign-in: \(MudroomError.message(error))"
         }
         refreshSignIn()
     }
@@ -328,7 +328,7 @@ enum HelperCLI {
         p.standardInput = input == nil ? FileHandle.nullDevice : inPipe
         p.standardOutput = outPipe
         p.standardError = outPipe
-        do { try p.run() } catch { return Output(status: 127, output: "\(error)") }
+        do { try p.run() } catch { return Output(status: 127, output: MudroomError.message(error)) }
         if let input {
             inPipe.fileHandleForWriting.write(Data(input.utf8))
             try? inPipe.fileHandleForWriting.close()
@@ -387,7 +387,7 @@ final class LoginConsole {
                 await MainActor.run { c.claudeFinished(token) }
             }
         } catch {
-            c.fail("Couldn't run claude setup-token: \(error)")
+            c.fail("Couldn't run claude setup-token: \(MudroomError.message(error))")
         }
         return c
     }
@@ -407,7 +407,7 @@ final class LoginConsole {
                 await MainActor.run { c.vmFinished(status) }
             }
         } catch {
-            c.fail("Couldn't start the sign-in: \(error)")
+            c.fail("Couldn't start the sign-in: \(MudroomError.message(error))")
         }
         return c
     }

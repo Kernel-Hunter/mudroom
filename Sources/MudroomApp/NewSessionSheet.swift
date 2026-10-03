@@ -17,6 +17,8 @@ struct NewSessionSheet: View {
     @State private var projectHosts: [String] = []
     @State private var checkingNetwork = false
     @State private var networkProblem: NetworkProbe.Result?
+    /// Set on the first click, so a double-click starts one session.
+    @State private var starting = false
 
     private let customID = "custom"
 
@@ -39,7 +41,14 @@ struct NewSessionSheet: View {
         return preset.isMultiProvider && localModels && networkMode == .locked
     }
 
-    var canStart: Bool { project != nil && !command.isEmpty && isReady && !checkingNetwork }
+    /// Why the chosen folder can't be used (/, the home folder, Mudroom's store...).
+    var projectProblem: String? {
+        guard let project, let problem = app.store.projectProblem(project) else { return nil }
+        let text = problem.description
+        return text.prefix(1).uppercased() + text.dropFirst() + "."
+    }
+
+    var canStart: Bool { project != nil && projectProblem == nil && !command.isEmpty && isReady && !checkingNetwork && !starting }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -77,6 +86,11 @@ struct NewSessionSheet: View {
                 }
                 .padding(8)
                 .background(RoundedRectangle(cornerRadius: 7).fill(.quaternary.opacity(0.5)))
+                if let problem = projectProblem {
+                    Label(problem, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11.5)).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             section("Agent") {
@@ -183,7 +197,11 @@ struct NewSessionSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Start Session") { Task { await start() } }
+                Button("Start Session") {
+                    guard !starting else { return }
+                    starting = true
+                    Task { await start() }
+                }
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 .disabled(!canStart)
@@ -220,7 +238,7 @@ struct NewSessionSheet: View {
     /// Checks the VM network first (locked mode), so a broken one is
     /// repaired here instead of in a session that can't reach its API.
     func start() async {
-        guard let project else { return }
+        guard let project else { starting = false; return }
         saveNetwork(project)
         if networkMode == .locked {
             checkingNetwork = true
@@ -228,6 +246,7 @@ struct NewSessionSheet: View {
             checkingNetwork = false
             if r.needsRepair {
                 networkProblem = r
+                starting = false
                 return
             }
         }
@@ -251,7 +270,7 @@ struct NewSessionSheet: View {
                 $0.localModels = localModels
             }
         } catch {
-            app.errorMessage = "Couldn't save the network setting: \(error)"
+            app.errorMessage = "Couldn't save the network setting: \(MudroomError.message(error))"
         }
     }
 
