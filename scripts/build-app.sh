@@ -55,4 +55,9 @@ codesign --force --sign - --timestamp=none "$APP/Contents/Helpers/mudroom"
 codesign --force --sign - --timestamp=none "$APP"
 codesign --verify --strict "$APP"
 
+# Keep dev builds out of Spotlight and the app launcher, so they don't show up
+# next to an installed copy.
+touch "$(dirname "$APP")/.metadata_never_index"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$APP" 2>/dev/null || true
+
 echo "built $APP ($VERSION, build $BUILD, $CONFIG)"
