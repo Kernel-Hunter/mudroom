@@ -33,6 +33,8 @@ public struct SandboxSpec: Sendable, Equatable {
     /// name. Only the names go on the command line (`--env NAME`); the
     /// values are set in the runtime CLI's own environment, never in argv.
     public var secretEnvironment: [String: String] = [:]
+    /// For `capture`: stop waiting after this many seconds.
+    public var timeout: TimeInterval?
 
     /// Every name passed with `--env NAME`.
     public var passedNames: [String] {
@@ -328,7 +330,7 @@ public struct AppleContainerBackend: SandboxBackend {
     public func capture(_ spec: SandboxSpec) throws -> CapturedOutput {
         try checkAvailable()
         return try ProcessRunner.capture(executable!, ["run", "--progress", "none"] + Self.runArguments(for: spec).dropFirst(),
-                                         environment: spec.secretEnvironment)
+                                         environment: spec.secretEnvironment, timeout: spec.timeout)
     }
 
     public func buildImage(containerfile: URL, context: URL, tag: String) throws {

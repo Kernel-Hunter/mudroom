@@ -95,6 +95,30 @@ struct NetworkProbeTests {
         #expect(NetworkRepair.runningMudroomContainers(Data("not json".utf8)).isEmpty)
     }
 
+    /// A runtime whose `run` never returns, as a wedged container system does.
+    struct HangingBackend: SandboxBackend {
+        let name = "hanging"
+        func checkAvailable() throws {}
+        func run(_ spec: SandboxSpec) throws -> Int32 { 0 }
+        func capture(_ spec: SandboxSpec) throws -> CapturedOutput {
+            try ProcessRunner.capture("/bin/sleep", ["30"], timeout: spec.timeout)
+        }
+        func buildImage(containerfile: URL, context: URL, tag: String) throws {}
+        func hostOnlyNetwork() throws -> SandboxNetwork? {
+            SandboxNetwork(name: "n", hostOnly: true, gateway: "127.0.0.1", subnet: "127.0.0.0/8")
+        }
+        func defaultNetwork() throws -> SandboxNetwork? { nil }
+    }
+
+    @Test("a probe VM that never finishes gives up in time, and a restart is offered")
+    func stuckRuntime() throws {
+        let tmp = try TempDir()
+        let start = Date()
+        let r = NetworkProbe.run(backend: HangingBackend(), scratch: tmp.path("probe"), timeout: 2)
+        #expect(Date().timeIntervalSince(start) < 15)
+        #expect(r == .stuck(seconds: 2) && r.needsRepair && r.summary.contains("stuck"))
+    }
+
     @Test("an unreachable network stops a session before it starts, with the repair hint")
     func errorText() {
         let e = MudroomError.networkUnreachable(NetworkProbe.Result.unreachable(code: "EHOSTUNREACH", proxy: "192.168.128.1:1").summary)
