@@ -102,4 +102,20 @@ struct APIKeyTests {
         try write("{}", to: codexHome.hostDirectory.appendingPathComponent("auth.json"))
         #expect(SignInStatus.check(.codex, store: store, tokens: tokens, environment: [:]).method == "ChatGPT login")
     }
+
+    @Test("Aider with no model and no key it picks one from is stopped before it waits on an OpenRouter login")
+    func aiderNeedsModel() throws {
+        let tmp = try TempDir()
+        let aider = AgentPreset.aider.command
+        #expect(AgentPreset.aiderModelProblem(command: aider, keys: [], workspace: tmp.url) != nil)
+        // Keys Aider can't pick a default from don't help either.
+        #expect(AgentPreset.aiderModelProblem(command: aider, keys: ["GROQ_API_KEY"], workspace: tmp.url) != nil)
+        #expect(AgentPreset.aiderModelProblem(command: aider, keys: ["OPENROUTER_API_KEY"], workspace: tmp.url) == nil)
+        #expect(AgentPreset.aiderModelProblem(command: aider + ["--model", "ollama_chat/q"], keys: [], workspace: tmp.url) == nil)
+        #expect(AgentPreset.aiderModelProblem(command: aider + ["--model=ollama_chat/q"], keys: [], workspace: tmp.url) == nil)
+        #expect(AgentPreset.aiderModelProblem(command: ["opencode"], keys: [], workspace: tmp.url) == nil)
+        // A project config may name the model.
+        try write("model: ollama_chat/q\n", to: tmp.path(".aider.conf.yml"))
+        #expect(AgentPreset.aiderModelProblem(command: aider, keys: [], workspace: tmp.url) == nil)
+    }
 }

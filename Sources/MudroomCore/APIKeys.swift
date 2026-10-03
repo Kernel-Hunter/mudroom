@@ -95,6 +95,33 @@ extension AgentPreset {
 
     /// True for agents that can talk to many providers.
     public var isMultiProvider: Bool { apiKeys == nil }
+
+    /// Keys Aider picks its default model from when no model is given.
+    static let aiderDefaultModelKeys = ["OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "DEEPSEEK_API_KEY", "OPENAI_API_KEY",
+                                        "GEMINI_API_KEY", "VERTEXAI_PROJECT"]
+    /// Aider's own switches that choose a model.
+    static let aiderModelFlags: Set<String> = ["--opus", "--sonnet", "--haiku", "--4", "-4", "--4o", "--mini", "--4-turbo",
+                                               "--35turbo", "--deepseek", "--o1-mini", "--o1-preview"]
+
+    /// Why Aider can't start, or nil. With no model and none of the keys
+    /// it picks one from, Aider offers an OpenRouter sign-in (accepted by
+    /// --yes-always) and waits five minutes for a callback on the VM's
+    /// localhost that no browser can reach. A project .aider.conf.yml or
+    /// .env may name a model or key, so those are left to Aider.
+    public static func aiderModelProblem(command: [String], keys: Set<String>, workspace: URL) -> String? {
+        guard let exe = command.first, URL(fileURLWithPath: exe).lastPathComponent == "aider" else { return nil }
+        if command.dropFirst().contains(where: { $0 == "--model" || $0.hasPrefix("--model=") || aiderModelFlags.contains($0) }) { return nil }
+        if aiderDefaultModelKeys.contains(where: keys.contains) { return nil }
+        for f in [".aider.conf.yml", ".env"] where FileManager.default.fileExists(atPath: workspace.appendingPathComponent(f).path) {
+            return nil
+        }
+        return """
+            Aider has no model: no --model, and none of the keys it picks one from \
+            (\(aiderDefaultModelKeys.dropLast().joined(separator: ", "))) reaches the session. It would wait five \
+            minutes for an OpenRouter sign-in that can't finish inside the VM. Add a key (mudroom keys set \
+            OPENROUTER_API_KEY), or name a model, e.g. with local models on: aider --model ollama_chat/qwen2.5:7b-instruct
+            """
+    }
 }
 
 /// The secrets a session gets, worked out from what is stored and what the

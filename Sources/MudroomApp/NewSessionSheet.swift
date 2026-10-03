@@ -37,7 +37,13 @@ struct NewSessionSheet: View {
     var isReady: Bool {
         guard let preset, let signIn else { return true }
         if signIn.isSignedIn { return true }
-        return preset.isMultiProvider && localModels && networkMode == .locked
+        return preset.isMultiProvider && localModels && networkMode == .locked && !aiderNeedsModel
+    }
+
+    /// Aider on local models only: it has to be told the model (Custom).
+    var aiderNeedsModel: Bool {
+        guard let project else { return false }
+        return AgentPreset.aiderModelProblem(command: command, keys: [], workspace: project) != nil
     }
 
     var canStart: Bool { project != nil && !command.isEmpty && isReady && !checkingNetwork }
@@ -112,7 +118,9 @@ struct NewSessionSheet: View {
                     } else {
                         HStack(spacing: 8) {
                             Image(systemName: "person.crop.circle.badge.exclamationmark").foregroundStyle(.orange)
-                            Text(p.isMultiProvider ? "\(p.name) needs an API key (or local models, below)." : "\(p.name) isn't signed in yet.")
+                            Text(localModels && aiderNeedsModel
+                                 ? "For local models, use Custom with the model named: aider --yes-always --no-auto-commits --model ollama_chat/<model>"
+                                 : p.isMultiProvider ? "\(p.name) needs an API key (or local models, below)." : "\(p.name) isn't signed in yet.")
                                 .font(.system(size: 11.5))
                             Spacer()
                             Button(p.isMultiProvider ? "Add a Key" : "Sign In First") {

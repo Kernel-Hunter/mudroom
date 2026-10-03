@@ -207,6 +207,10 @@ public struct SessionRunner {
         }
         let secrets = SessionSecrets.resolve(preset: preset, store: options.tokenStore, passthrough: passNames)
         let keyNames = Set(passNames + secrets.keys)
+        if options.commandOverride == nil,
+           let why = AgentPreset.aiderModelProblem(command: s.command, keys: keyNames, workspace: handle.work) {
+            throw MudroomError.invalid(why)
+        }
         let allowlist = Allowlist(config.allowlist(agent: preset?.id, keys: keyNames.sorted()).patterns + options.extraHosts)
         let localModels = config.localModels && mode == .locked
         if config.localModels && mode != .locked {
