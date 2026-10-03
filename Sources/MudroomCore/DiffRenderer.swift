@@ -59,9 +59,15 @@ public struct DiffRenderer: Sendable {
         return out.joined(separator: "\n")
     }
 
-    /// Streams the stat lines, one call per line.
-    public func writeStat(_ result: DiffResult, _ emit: (String) -> Void) {
-        for c in result.changes { emit(statLine(c)) }
+    /// Streams the stat lines, one call per line. With `limit`, at most that
+    /// many paths are listed (an `npm install` adds tens of thousands, which
+    /// would push the agent's own output out of the terminal's scrollback).
+    public func writeStat(_ result: DiffResult, limit: Int? = nil, _ emit: (String) -> Void) {
+        let shown = limit.map { min($0, result.changes.count) } ?? result.changes.count
+        for c in result.changes.prefix(shown) { emit(statLine(c)) }
+        if shown < result.changes.count {
+            emit("... and \(result.changes.count - shown) more (all of them: mudroom diff <session> --stat)")
+        }
         if !result.gitMetadataChanges.isEmpty {
             emit("git metadata changed (\(Self.entries(result.gitMetadataChanges.count)) under .git/)")
         }

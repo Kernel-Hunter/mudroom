@@ -169,7 +169,7 @@ func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, flags: Run
     let id = handle.session.id
     print("\nagent exited with status \(result.status). Changes in session \(id):")
     let diff = try Differ.compare(base: handle.base, work: handle.work)
-    DiffRenderer(base: handle.base, work: handle.work).writeStat(diff) { print($0) }
+    DiffRenderer(base: handle.base, work: handle.work).writeStat(diff, limit: 200) { print($0) }
     if result.network.mode == .locked {
         let blocked = result.blocked.isEmpty ? "" : "; blocked: \(result.blocked.joined(separator: ", "))"
         print("network: \(result.connections) connections\(blocked). Details: mudroom network log \(id)")

@@ -97,6 +97,18 @@ struct QAPassTests {
         #expect(Differ.hostRisk("src/config") == nil)
     }
 
+    @Test("the summary after a run lists a limited number of paths, then the totals")
+    func statLimit() throws {
+        let f = try Fixture { _ in }
+        for i in 0..<30 { try write("\(i)\n", to: f.work.appendingPathComponent("node_modules/f\(i).js")) }
+        let diff = try f.diff()
+        var lines: [String] = []
+        DiffRenderer(base: f.handle.base, work: f.work).writeStat(diff, limit: 10) { lines.append($0) }
+        #expect(lines.count == 12)
+        #expect(lines[10] == "... and 21 more (all of them: mudroom diff <session> --stat)")
+        #expect(lines[11] == "31 added")
+    }
+
     @Test("diff output spells out control characters and bidi overrides the agent put in lines and names")
     func diffShowsControlCharacters() throws {
         let f = try Fixture { try write("ok\n", to: $0.appendingPathComponent("a.sh")) }
