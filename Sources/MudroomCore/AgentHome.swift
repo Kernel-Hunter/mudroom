@@ -80,7 +80,9 @@ extension AgentPreset {
     public var environment: [String: String] {
         switch id {
         // No auto-updater, telemetry or error reporting: fewer hosts to allow.
-        case "claude": ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"]
+        // The claude.ai connectors (MCP through mcp-proxy.anthropic.com)
+        // stay off too: the locked network blocks them, and Claude retries.
+        case "claude": ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "ENABLE_CLAUDEAI_MCP_SERVERS": "false"]
         case "gemini": ["NO_BROWSER": "true"]
         // History files go to the home directory, not the project copy.
         case "aider": ["AIDER_CHAT_HISTORY_FILE": "/home/node/.aider.chat.history.md",
