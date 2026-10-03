@@ -137,6 +137,9 @@ extension AgentHome {
         let copy = handle.agentHomeCopy
         if !FileManager.default.fileExists(atPath: copy.path) {
             try create()
+            // Whatever way the agent was signed in, skip Claude's first-run
+            // screens: without hasCompletedOnboarding it asks to sign in again.
+            try seedClaudeOnboarding()
             try Cloner.cloneTree(from: hostDirectory, to: copy)
             chmod(copy.path, 0o700)
         }
@@ -150,14 +153,7 @@ extension AgentHome {
     @discardableResult
     public func syncBack(from handle: SessionHandle) -> [String] {
         let copy = handle.agentHomeCopy
-        var updated: [String] = []
-        for name in credentialFiles {
-            guard let data = try? SafeFS.readBeneath(copy, name, limit: 1 << 20),
-                  (try? JSONSerialization.jsonObject(with: data)) is [String: Any] else { continue }
-            let dest = hostDirectory.appendingPathComponent(name)
-            if (try? Data(contentsOf: dest)) == data { continue }
-            if (try? Self.writePrivate(data, to: dest)) != nil { updated.append(name) }
-        }
+        var updated = syncCredentials(from: copy)
         if agent == "claude",
            let data = try? SafeFS.readBeneath(copy, ".claude.json", limit: 8 << 20),
            let theirs = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
@@ -180,6 +176,47 @@ extension AgentHome {
             }
         }
         return updated
+    }
+
+    /// Copies the sign-in files from `directory` to the shared directory,
+    /// but only ones newer than the shared copy. Claude rotates its refresh
+    /// token, so an older file would undo a newer session's refresh and
+    /// leave every later session signed out.
+    @discardableResult
+    func syncCredentials(from directory: URL) -> [String] {
+        var updated: [String] = []
+        for name in credentialFiles {
+            guard let data = try? SafeFS.readBeneath(directory, name, limit: 1 << 20),
+                  let theirs = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { continue }
+            let dest = hostDirectory.appendingPathComponent(name)
+            if let current = try? Data(contentsOf: dest) {
+                if current == data { continue }
+                let ours = (try? JSONSerialization.jsonObject(with: current)) as? [String: Any]
+                if let a = Self.expiry(theirs), let b = ours.flatMap(Self.expiry) {
+                    if a <= b { continue }
+                } else if Self.modified(directory.appendingPathComponent(name)) <= Self.modified(dest) {
+                    continue
+                }
+            }
+            if (try? Self.writePrivate(data, to: dest)) != nil { updated.append(name) }
+        }
+        return updated
+    }
+
+    /// Before a new session: takes the newest sign-in left in any other
+    /// session's copy, running or not, in case it refreshed the token.
+    public func adoptNewestCredentials(from sessions: [SessionHandle]) {
+        for h in sessions where FileManager.default.fileExists(atPath: h.agentHomeCopy.path) {
+            syncCredentials(from: h.agentHomeCopy)
+        }
+    }
+
+    private static func expiry(_ json: [String: Any]) -> Double? {
+        ((json["claudeAiOauth"] as? [String: Any])?["expiresAt"] as? NSNumber)?.doubleValue
+    }
+
+    private static func modified(_ url: URL) -> Date {
+        ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date) ?? .distantPast
     }
 
     static func writePrivate(_ data: Data, to dest: URL) throws {

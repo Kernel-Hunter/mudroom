@@ -243,6 +243,7 @@ public struct SessionRunner {
         var home: AgentHome?
         if options.persistAgentConfig, let id = preset?.id, let h = AgentHome(store: store, agent: id) {
             // A copy per session; only the login is carried back afterwards.
+            h.adoptNewestCredentials(from: ((try? store.list()) ?? []).filter { $0.directory != handle.directory })
             mounts.append(try h.sessionCopy(for: handle))
             env.merge(h.environment) { _, new in new }
             home = h
@@ -270,7 +271,20 @@ public struct SessionRunner {
         let log = self.log
         handoff?.start { url in AuthLinkHandoff.deliver(url) { log($0) } }
         let backend = self.backend
+        // A token refreshed mid-session reaches the shared sign-in right
+        // away, not only when the session ends, so sessions started
+        // meanwhile don't get one that was already rotated out.
+        var credentialTimer: DispatchSourceTimer?
+        if let home {
+            let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
+            t.schedule(deadline: .now() + 15, repeating: 15)
+            let copy = handle.agentHomeCopy
+            t.setEventHandler { home.syncCredentials(from: copy) }
+            t.resume()
+            credentialTimer = t
+        }
         defer {
+            credentialTimer?.cancel()
             handoff?.stop()
             // If the runtime CLI went away but the sandbox didn't, stop it.
             if backend.isRunning(spec.name) { backend.stop(spec.name) }

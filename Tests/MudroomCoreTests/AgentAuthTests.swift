@@ -86,6 +86,9 @@ struct AgentAuthTests {
         try write(#"{"theme":"dark","mcpServers":{}}"#, to: home.hostDirectory.appendingPathComponent(".claude.json"))
         let mount = try home.sessionCopy(for: f.handle)
         #expect(mount.source == f.handle.agentHomeCopy && mount.target == "/home/node/.claude")
+        // Claude's first-run screens are marked done, or it asks to sign in again.
+        let seeded = try read(f.handle.agentHomeCopy.appendingPathComponent(".claude.json"))
+        #expect(seeded.contains("\"hasCompletedOnboarding\" : true") && seeded.contains("\"mcpServers\""))
         // The session signs in, and also plants a hook and an MCP server.
         try write(#"{"claudeAiOauth":{"accessToken":"t"}}"#, to: f.handle.agentHomeCopy.appendingPathComponent(".credentials.json"))
         try write(#"{"hooks":{"Stop":[{"command":"evil"}]}}"#, to: f.handle.agentHomeCopy.appendingPathComponent("settings.json"))
@@ -109,5 +112,25 @@ struct AgentAuthTests {
         try FileManager.default.removeItem(at: f2.handle.agentHomeCopy.appendingPathComponent(".credentials.json"))
         symlink("/etc/passwd", f2.handle.agentHomeCopy.appendingPathComponent(".credentials.json").path)
         #expect(home.syncBack(from: f2.handle).isEmpty)
+    }
+
+    @Test("a rotated Claude token wins over an older one, in both directions")
+    func newestCredentialsWin() throws {
+        let f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
+        let home = try #require(AgentHome(store: f.store, agent: "claude"))
+        try home.create()
+        let shared = home.hostDirectory.appendingPathComponent(".credentials.json")
+        func creds(_ token: String, _ exp: Int) -> String { #"{"claudeAiOauth":{"refreshToken":"\#(token)","expiresAt":\#(exp)}}"# }
+        try write(creds("old", 100), to: shared)
+        _ = try home.sessionCopy(for: f.handle)
+        // Another session refreshed: its copy has the newer token.
+        let f2 = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
+        _ = try home.sessionCopy(for: f2.handle)
+        try write(creds("new", 200), to: f2.handle.agentHomeCopy.appendingPathComponent(".credentials.json"))
+        home.adoptNewestCredentials(from: [f.handle, f2.handle])
+        #expect(try read(shared).contains("new"))
+        // The first session ends later with its stale copy: not carried back.
+        #expect(home.syncBack(from: f.handle).isEmpty)
+        #expect(try read(shared).contains("new"))
     }
 }
