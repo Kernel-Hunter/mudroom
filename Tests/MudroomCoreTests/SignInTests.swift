@@ -161,4 +161,14 @@ struct HostDetectionTests {
         #expect(AgentEnvironment.terminalNames(timeout: 1, environment: env).isEmpty)
         #expect(Date().timeIntervalSince(start) < 10)
     }
+
+    @Test("Codex gets the OpenAI key as CODEX_API_KEY unless it has a login")
+    func codexKeyAlias() {
+        #expect(SessionSecrets.codexKey(secrets: ["OPENAI_API_KEY": "k"], passthrough: [], hasLogin: false) == "k")
+        #expect(SessionSecrets.codexKey(secrets: [:], passthrough: ["OPENAI_API_KEY"], hasLogin: false,
+                                        environment: ["OPENAI_API_KEY": "s"]) == "s")
+        #expect(SessionSecrets.codexKey(secrets: ["OPENAI_API_KEY": "k"], passthrough: [], hasLogin: true) == nil)
+        #expect(SessionSecrets.codexKey(secrets: ["OPENAI_API_KEY": "k"], passthrough: ["CODEX_API_KEY"], hasLogin: false) == nil)
+        #expect(SessionSecrets.codexKey(secrets: [:], passthrough: [], hasLogin: false, environment: ["OPENAI_API_KEY": "s"]) == nil)
+    }
 }

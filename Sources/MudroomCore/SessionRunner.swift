@@ -205,7 +205,12 @@ public struct SessionRunner {
             passNames += AgentEnvironment.present(in: ProcessInfo.processInfo.environment, names: APIKeys.providers.map(\.variable))
                 .filter { !passNames.contains($0) }
         }
-        let secrets = SessionSecrets.resolve(preset: preset, store: options.tokenStore, passthrough: passNames)
+        var secrets = SessionSecrets.resolve(preset: preset, store: options.tokenStore, passthrough: passNames)
+        if preset?.id == "codex",
+           let key = SessionSecrets.codexKey(secrets: secrets, passthrough: passNames,
+                                             hasLogin: AgentHome(store: store, agent: "codex")?.hasCredentials == true) {
+            secrets["CODEX_API_KEY"] = key
+        }
         let keyNames = Set(passNames + secrets.keys)
         if options.commandOverride == nil,
            let why = AgentPreset.aiderModelProblem(command: s.command, keys: keyNames, workspace: handle.work) {

@@ -147,4 +147,14 @@ public enum SessionSecrets {
         }
         return out
     }
+
+    /// Codex reads its API key from CODEX_API_KEY and ignores OPENAI_API_KEY
+    /// ("Missing bearer" 401s), so a Codex session with an OpenAI key and no
+    /// ChatGPT login gets it under that name as well.
+    public static func codexKey(secrets: [String: String], passthrough: [String], hasLogin: Bool,
+                                environment: [String: String] = ProcessInfo.processInfo.environment) -> String? {
+        if hasLogin || secrets["CODEX_API_KEY"] != nil || passthrough.contains("CODEX_API_KEY") { return nil }
+        let key = secrets["OPENAI_API_KEY"] ?? (passthrough.contains("OPENAI_API_KEY") ? environment["OPENAI_API_KEY"] : nil)
+        return key.flatMap { $0.isEmpty ? nil : $0 }
+    }
 }
