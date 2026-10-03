@@ -230,15 +230,38 @@ next_steps() {
     say ""
     if command -v container >/dev/null 2>&1; then
         container_version=$(container --version 2>/dev/null | sed -n 's/.*version \([0-9][0-9.]*\).*/\1/p' | head -n 1)
-        say "Found Apple's container CLI${container_version:+ $container_version}. Mudroom needs 1.5 or later."
-    else
+        major=${container_version%%.*}
+        minor=${container_version#*.}
+        minor=${minor%%.*}
+        case "$major$minor" in
+            '' | *[!0-9]*) say "Found Apple's container CLI. Mudroom needs 1.5 or later." ;;
+            *)
+                if [ "$major" -lt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -lt 5 ]; }; then
+                    warn "Apple's container CLI $container_version is too old; Mudroom needs 1.5 or later."
+                    if command -v brew >/dev/null 2>&1; then
+                        warn "Update it with: brew upgrade container"
+                    else
+                        warn "Get the latest installer from https://github.com/apple/container/releases"
+                    fi
+                else
+                    say "Found Apple's container CLI $container_version."
+                fi
+                ;;
+        esac
+    elif command -v brew >/dev/null 2>&1; then
         say "Mudroom runs agents with Apple's container CLI, which isn't installed yet."
         say "Setup installs it for you (brew install container)."
+    else
+        say "Mudroom runs agents with Apple's container CLI, which isn't installed yet."
+        say "Install it from https://github.com/apple/container/releases (the signed .pkg), then run Setup."
     fi
+    # Before the shell picks up a new PATH entry, the full path works.
+    cli=mudroom
+    on_path "$bin_dir" || cli="\"$link\""
     say ""
     say "Next: open Mudroom and follow the Setup window, or run Setup in a terminal:"
     say "  open \"$target\""
-    say "  mudroom setup               # runtime, agent image (a few minutes, once), network, sign-in"
+    say "  $cli setup               # runtime, agent image (a few minutes, once), network, sign-in"
     say ""
     say "Uninstall: curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | sh -s -- --uninstall"
 }
@@ -284,6 +307,23 @@ uninstall() {
         say ""
         say "Kept your sessions and settings in ~/Library/Application Support/Mudroom."
         say "Delete that folder yourself if you don't need them."
+    fi
+    uninstall_leftovers
+}
+
+# What neither this script nor 'brew uninstall' removes: sign-in tokens and
+# API keys in the Keychain, and the agent image in the VM runtime.
+uninstall_leftovers() {
+    if security find-generic-password -s "$BUNDLE_ID" >/dev/null 2>&1; then
+        say ""
+        say "Mudroom's tokens and API keys are still in your login Keychain (service $BUNDLE_ID)."
+        say "Remove them with (repeat until it says the item could not be found):"
+        say "  security delete-generic-password -s $BUNDLE_ID"
+    fi
+    if command -v container >/dev/null 2>&1 && container image inspect mudroom/agent-base:latest >/dev/null 2>&1; then
+        say ""
+        say "The agent image (mudroom/agent-base, about 1.5 GB) is still in Apple's container runtime."
+        say "Remove it with: container image delete mudroom/agent-base:latest"
     fi
 }
 
