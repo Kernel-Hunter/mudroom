@@ -13,12 +13,19 @@ public struct CapturedOutput: Sendable {
     public let stderr: String
 }
 
+/// Lets a timer stop a child that is waited on elsewhere.
+private struct UncheckedProcess: @unchecked Sendable {
+    let process: Process
+    init(_ process: Process) { self.process = process }
+}
+
 public enum ProcessRunner {
     /// Runs a program to completion and captures its output.
     /// `environment` adds variables to the child's environment (on top of
-    /// this process's), never to its arguments.
+    /// this process's), never to its arguments. With `timeout`, a child
+    /// still running after that many seconds is terminated.
     public static func capture(_ executable: String, _ arguments: [String], cwd: URL? = nil,
-                               environment: [String: String] = [:]) throws -> CapturedOutput {
+                               environment: [String: String] = [:], timeout: TimeInterval? = nil) throws -> CapturedOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -47,6 +54,10 @@ public enum ProcessRunner {
         process.standardError = errHandle
         process.standardInput = FileHandle.nullDevice
         try process.run()
+        if let timeout {
+            let p = UncheckedProcess(process)
+            DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.process.isRunning { p.process.terminate() } }
+        }
         process.waitUntilExit()
         return CapturedOutput(
             status: process.terminationStatus,

@@ -31,14 +31,21 @@ struct NewSessionSheet: View {
     /// nil for custom commands (we can't tell what they need).
     var signIn: SignInStatus? {
         guard let preset else { return nil }
-        return app.setup.status(preset.id) ?? SignInStatus.check(preset, store: app.store, tokens: app.setup.tokens)
+        return app.setup.status(preset.id)
+            ?? SignInStatus.check(preset, store: app.store, tokens: app.setup.tokens, environment: app.setup.sessionEnvironment)
     }
 
     /// Signed in, or an agent that can run on local models with them on.
     var isReady: Bool {
         guard let preset, let signIn else { return true }
         if signIn.isSignedIn { return true }
-        return preset.isMultiProvider && localModels && networkMode == .locked
+        return preset.isMultiProvider && localModels && networkMode == .locked && !aiderNeedsModel
+    }
+
+    /// Aider on local models only: it has to be told the model (Custom).
+    var aiderNeedsModel: Bool {
+        guard let project else { return false }
+        return AgentPreset.aiderModelProblem(command: command, keys: [], workspace: project) != nil
     }
 
     /// Why the chosen folder can't be used (/, the home folder, Mudroom's store...).
@@ -125,7 +132,9 @@ struct NewSessionSheet: View {
                     } else {
                         HStack(spacing: 8) {
                             Image(systemName: "person.crop.circle.badge.exclamationmark").foregroundStyle(.orange)
-                            Text(p.isMultiProvider ? "\(p.name) needs an API key (or local models, below)." : "\(p.name) isn't signed in yet.")
+                            Text(localModels && aiderNeedsModel
+                                 ? "For local models, use Custom with the model named: aider --yes-always --no-auto-commits --model ollama_chat/<model>"
+                                 : p.isMultiProvider ? "\(p.name) needs an API key (or local models, below)." : "\(p.name) isn't signed in yet.")
                                 .font(.system(size: 11.5))
                             Spacer()
                             Button(p.isMultiProvider ? "Add a Key" : "Sign In First") {

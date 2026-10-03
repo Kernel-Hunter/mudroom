@@ -152,9 +152,10 @@ public enum NetworkDefaults {
         case "gemini":
             ["generativelanguage.googleapis.com", "cloudcode-pa.googleapis.com",
              "oauth2.googleapis.com", "www.googleapis.com"]
-        // Its model catalog; providers come from the keys that are set.
+        // Its model catalog (models.opencode.ai since 1.x, models.dev
+        // before); providers come from the keys that are set.
         case "opencode":
-            ["models.dev"]
+            ["models.opencode.ai", "models.dev"]
         default:
             []
         }

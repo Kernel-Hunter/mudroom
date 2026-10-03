@@ -91,7 +91,11 @@ struct SetupCommand: ParsableCommand {
             }
         }
         guard case .running(_, let version) = state else {
-            say("   not running. Start it with `container system start --enable-kernel-install`.")
+            switch resolved {
+            case .docker: say("   not running. Start Docker Desktop (or the Docker daemon), or run `mudroom setup --yes`.")
+            case .podman: say("   not running. Start it with `podman machine start`, or run `mudroom setup --yes`.")
+            case .apple, .auto: say("   not running. Start it with `container system start --enable-kernel-install`, or run `mudroom setup --yes`.")
+            }
             throw ExitCode(1)
         }
         say("   ok: \(version), running")
@@ -126,17 +130,27 @@ struct SetupCommand: ParsableCommand {
         } else {
             let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mudroom-probe-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: scratch) }
+            say("   checking that a VM reaches Mudroom's proxy (a few seconds)")
             var result = NetworkProbe.run(backend: backend, scratch: scratch)
             NetworkProbe.remember(result, store: store())
             say("   \(result.isOK ? "ok: " : "")\(result.summary)")
+            var offered = false
             if (result.needsRepair || repairNetwork) && !check {
                 if backend.name == "apple-container",
                    confirm("   Repair it? This restarts Apple's container system.", yes: yes || repairNetwork) {
                     result = repairAndProbe(backend)
                     say("   \(result.isOK ? "ok: " : "still failing: ")\(result.summary)")
+                    offered = true
                 } else if backend.name != "apple-container" {
                     say("   restart \(backend.name) (Docker Desktop: Troubleshoot > Restart) and run setup again")
+                    offered = true
                 }
+            }
+            // --check, no terminal to ask in, or the repair was declined.
+            if result.needsRepair && !offered {
+                say(backend.name == "apple-container"
+                    ? "   fix: mudroom setup --repair-network   (restarts Apple's container system, about 10 seconds)"
+                    : "   fix: restart \(backend.name) (Docker Desktop: Troubleshoot > Restart) and run setup again")
             }
             if !result.isOK { problems += 1 }
         }
@@ -176,6 +190,7 @@ struct SetupCommand: ParsableCommand {
         case "claude": "not signed in: mudroom agent login claude"
         case "codex": HostLogin.forAgent("codex")?.isAvailable == true ? "not signed in: mudroom agent import codex" : "not signed in: mudroom agent login codex"
         case "gemini": HostLogin.forAgent("gemini")?.isAvailable == true ? "not signed in: mudroom agent import gemini" : "not signed in: mudroom agent login gemini, or mudroom keys set GEMINI_API_KEY"
+        case "aider": "needs an API key (mudroom keys set OPENROUTER_API_KEY, or another provider) or a local model (mudroom network local-models on, then aider --model ollama_chat/<model>)"
         default: "needs an API key (mudroom keys set OPENROUTER_API_KEY, or another provider) or local models (mudroom network local-models on)"
         }
     }
@@ -416,6 +431,7 @@ extension NetworkCommand {
                 let backend = try backendOptions.make()
                 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mudroom-probe-\(UUID().uuidString)")
                 defer { try? FileManager.default.removeItem(at: scratch) }
+                say("checking that a VM reaches Mudroom's proxy (a few seconds)")
                 var r = NetworkProbe.run(backend: backend, scratch: scratch)
                 NetworkProbe.remember(r, store: store())
                 print(r.isOK ? "ok: \(r.summary)" : "FAILED: \(r.summary)")

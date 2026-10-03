@@ -207,12 +207,17 @@ public struct SessionRunner {
         }
         let secrets = SessionSecrets.resolve(preset: preset, store: options.tokenStore, passthrough: passNames)
         let keyNames = Set(passNames + secrets.keys)
+        if options.commandOverride == nil,
+           let why = AgentPreset.aiderModelProblem(command: s.command, keys: keyNames, workspace: handle.work) {
+            throw MudroomError.invalid(why)
+        }
         let allowlist = Allowlist(config.allowlist(agent: preset?.id, keys: keyNames.sorted()).patterns + options.extraHosts)
         let localModels = config.localModels && mode == .locked
         if config.localModels && mode != .locked {
             log("local models: only available in locked mode (they go through Mudroom's proxy)")
         }
         if options.probeNetwork && mode == .locked {
+            if !NetworkProbe.passedRecently(store: store) { log("network check: a quick VM to test the proxy route") }
             let probe = NetworkProbe.check(backend: backend, store: store, image: s.image)
             if !probe.isOK {
                 if probe.needsRepair { throw MudroomError.networkUnreachable(probe.summary) }
@@ -354,6 +359,17 @@ public struct SessionRunner {
         case "gemini":
             let hasOAuth = FileManager.default.fileExists(atPath: dir.appendingPathComponent("oauth_creds.json").path)
             let hasKey = secrets["GEMINI_API_KEY"] != nil || passNames.contains("GEMINI_API_KEY")
+            // No update checks (npm) or usage statistics (play.googleapis.com):
+            // the locked network blocks both, and they would show up as
+            // blocked connections in every session.
+            AgentHome.updateJSON(dir.appendingPathComponent("settings.json")) { c in
+                var general = c["general"] as? [String: Any] ?? [:]
+                for k in ["enableAutoUpdate", "enableAutoUpdateNotification"] where general[k] == nil { general[k] = false }
+                c["general"] = general
+                var privacy = c["privacy"] as? [String: Any] ?? [:]
+                if privacy["usageStatisticsEnabled"] == nil { privacy["usageStatisticsEnabled"] = false }
+                c["privacy"] = privacy
+            }
             guard hasOAuth || hasKey else { return }
             AgentHome.updateJSON(dir.appendingPathComponent("settings.json")) { c in
                 var security = c["security"] as? [String: Any] ?? [:]

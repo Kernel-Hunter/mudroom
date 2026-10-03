@@ -17,13 +17,15 @@ public enum NetworkProbe {
         case refused(proxy: String)
         /// The probe VM didn't run (no image, runtime stopped...).
         case failed(String)
+        /// The probe VM didn't even finish: the runtime itself is stuck.
+        case stuck(seconds: Int)
 
         public var isOK: Bool { if case .ok = self { true } else { false } }
 
         /// True when restarting the container system is likely to fix it.
         public var needsRepair: Bool {
             switch self {
-            case .unreachable, .timeout: true
+            case .unreachable, .timeout, .stuck: true
             default: false
             }
         }
@@ -35,6 +37,7 @@ public enum NetworkProbe {
             case .timeout(let p): "the VM got no answer from the Mac at \(p)"
             case .refused(let p): "the Mac refused the VM's connection to \(p); a firewall may be blocking Mudroom"
             case .failed(let why): "the check couldn't run: \(why)"
+            case .stuck(let s): "the check's VM didn't finish within \(s) seconds; the container system seems stuck"
             }
         }
     }
@@ -70,7 +73,8 @@ public enum NetworkProbe {
 
     /// Starts a proxy the way a locked session does and checks a VM can
     /// connect to it. Takes a few seconds (one small VM).
-    public static func run(backend: SandboxBackend, image: String = AgentBaseImage.tag, scratch: URL) -> Result {
+    public static func run(backend: SandboxBackend, image: String = AgentBaseImage.tag, scratch: URL,
+                           timeout: TimeInterval = 45) -> Result {
         do {
             try backend.checkAvailable()
             let net = try NetworkSetup(mode: .locked, allowlist: Allowlist(strings: []), backend: backend, logURL: nil)
@@ -81,10 +85,20 @@ public enum NetworkProbe {
                 return .ok(proxy: "none")
             }
             try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
-            let spec = SandboxSpec(name: "mudroom-probe-\(UInt16.random(in: 0...0xffff))", image: image, workspace: scratch,
+            var spec = SandboxSpec(name: "mudroom-probe-\(UInt16.random(in: 0...0xffff))", image: image, workspace: scratch,
                                    command: ["node", "-e", script(host: host, port: UInt16(port))],
                                    interactive: false, tty: false, environment: net.environment, network: net.plan.vmNetwork)
-            return classify(try backend.capture(spec), proxy: "\(host):\(port)")
+            // A wedged runtime can leave `container run` waiting forever,
+            // with setup (or a session about to start) silent all along.
+            spec.timeout = timeout
+            let started = Date()
+            let out = try backend.capture(spec)
+            let result = classify(out, proxy: "\(host):\(port)")
+            if case .failed = result, Date().timeIntervalSince(started) >= timeout - 1 {
+                if backend.isRunning(spec.name) { backend.stop(spec.name) }
+                return .stuck(seconds: Int(timeout))
+            }
+            return result
         } catch {
             return .failed("\(error)")
         }

@@ -74,6 +74,8 @@ struct APIKeyTests {
         #expect(!aider.allows("api.groq.com") && !aider.allows("api.x.ai"))
         #expect(c.allowlist(agent: "opencode", keys: ["XAI_API_KEY"]).allows("api.x.ai"))
         #expect(c.allowlist(agent: "opencode", keys: []).allows("models.dev"))
+        // opencode 1.18 fetches its model catalog from here.
+        #expect(c.allowlist(agent: "opencode", keys: []).allows("models.opencode.ai"))
         #expect(c.allowlist(agent: nil, keys: ["GROQ_API_KEY"]).allows("api.groq.com"))
         // Single-provider agents keep their own hosts only.
         let claude = c.allowlist(agent: "claude", keys: keys)
@@ -101,5 +103,21 @@ struct APIKeyTests {
         let codexHome = try #require(AgentHome(store: store, agent: "codex"))
         try write("{}", to: codexHome.hostDirectory.appendingPathComponent("auth.json"))
         #expect(SignInStatus.check(.codex, store: store, tokens: tokens, environment: [:]).method == "ChatGPT login")
+    }
+
+    @Test("Aider with no model and no key it picks one from is stopped before it waits on an OpenRouter login")
+    func aiderNeedsModel() throws {
+        let tmp = try TempDir()
+        let aider = AgentPreset.aider.command
+        #expect(AgentPreset.aiderModelProblem(command: aider, keys: [], workspace: tmp.url) != nil)
+        // Keys Aider can't pick a default from don't help either.
+        #expect(AgentPreset.aiderModelProblem(command: aider, keys: ["GROQ_API_KEY"], workspace: tmp.url) != nil)
+        #expect(AgentPreset.aiderModelProblem(command: aider, keys: ["OPENROUTER_API_KEY"], workspace: tmp.url) == nil)
+        #expect(AgentPreset.aiderModelProblem(command: aider + ["--model", "ollama_chat/q"], keys: [], workspace: tmp.url) == nil)
+        #expect(AgentPreset.aiderModelProblem(command: aider + ["--model=ollama_chat/q"], keys: [], workspace: tmp.url) == nil)
+        #expect(AgentPreset.aiderModelProblem(command: ["opencode"], keys: [], workspace: tmp.url) == nil)
+        // A project config may name the model.
+        try write("model: ollama_chat/q\n", to: tmp.path(".aider.conf.yml"))
+        #expect(AgentPreset.aiderModelProblem(command: aider, keys: [], workspace: tmp.url) == nil)
     }
 }
