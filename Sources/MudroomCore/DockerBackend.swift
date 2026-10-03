@@ -171,7 +171,7 @@ public struct DockerBackend: SandboxBackend {
         try checkAvailable()
         try ensureImage(spec.image)
         return try ProcessRunner.capture(executable!, Self.runArguments(for: spec, host: .current(self), ociRuntime: ociRuntime),
-                                         environment: spec.secretEnvironment)
+                                         environment: spec.secretEnvironment, timeout: spec.timeout)
     }
 
     /// Mudroom's own image is never on a registry; say how to build it

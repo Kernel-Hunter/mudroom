@@ -119,6 +119,63 @@ struct QAPassTests {
         #expect(handle.session.status == .created)
     }
 
+    @Test("capture stops a program that runs past its timeout")
+    func captureTimeout() throws {
+        let start = Date()
+        let out = try ProcessRunner.capture("/bin/sleep", ["30"], timeout: 0.5)
+        #expect(out.timedOut)
+        #expect(Date().timeIntervalSince(start) < 10)
+        #expect(try !ProcessRunner.capture("/bin/echo", ["hi"], timeout: 10).timedOut)
+        // A stuck probe VM is reported, not waited on forever.
+        let r = NetworkProbe.classify(CapturedOutput(status: 143, stdout: "", stderr: "", timedOut: true), proxy: "p")
+        #expect(!r.isOK && !r.needsRepair && r.summary.contains("didn't finish"))
+    }
+
+    @Test("a child that ignores the forwarded SIGTERM (a stuck `container run`) is killed after a grace period")
+    func attachedChildKilledAfterGrace() throws {
+        let start = Date()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { kill(getpid(), SIGTERM) }
+        let status = try ProcessRunner.runAttached("/bin/sh", ["-c", "trap '' TERM HUP; sleep 30"], killAfter: 0.5)
+        #expect(status == 128 + SIGKILL)
+        #expect(Date().timeIntervalSince(start) < 10)
+    }
+
+    @Test("repair kills Mudroom's stuck VM helpers (only those) when `container system stop` hangs")
+    func repairWedgedRuntime() throws {
+        let list = """
+        PID\tStatus\tLabel
+        37425\t0\tcom.apple.container.container-runtime-linux.mudroom-20261003-200636-a64e
+        -\t0\tcom.apple.container.container-runtime-linux.mudroom-20261003-111111-dead
+        4242\t0\tcom.apple.container.container-runtime-linux.someone-elses
+        555\t0\tcom.apple.container.apiserver
+        """
+        let helpers = NetworkRepair.mudroomHelpers(launchctlList: list)
+        #expect(helpers.map(\.pid) == [37425])
+
+        var stops = 0
+        var killed = 0
+        var steps: [NetworkRepair.Step] = []
+        let run: NetworkRepair.Runner = { args in
+            if args == ["system", "stop"] {
+                stops += 1
+                return CapturedOutput(status: 143, stdout: "", stderr: "", timedOut: stops == 1)
+            }
+            return CapturedOutput(status: 0, stdout: args == ["list", "--format", "json"] ? "[]" : "", stderr: "")
+        }
+        let r = try NetworkRepair.repair(run: run, progress: { steps.append($0) }, killHelpers: { killed += 1; return ["x"] },
+                                         probe: { .ok(proxy: "p") })
+        #expect(r.isOK && stops == 2 && killed == 1)
+        #expect(steps.prefix(2) == [.stopping, .killingStuckHelpers])
+
+        // Still hanging after that: say so instead of going on.
+        let stuck: NetworkRepair.Runner = { args in
+            CapturedOutput(status: 143, stdout: "[]", stderr: "", timedOut: args == ["system", "stop"])
+        }
+        #expect(throws: MudroomError.self) {
+            try NetworkRepair.repair(run: stuck, killHelpers: { [] }, probe: { .ok(proxy: "p") })
+        }
+    }
+
     @Test("the summary after a run lists a limited number of paths, then the totals")
     func statLimit() throws {
         let f = try Fixture { _ in }

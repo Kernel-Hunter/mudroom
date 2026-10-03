@@ -11,14 +11,18 @@ public struct CapturedOutput: Sendable {
     public let status: Int32
     public let stdout: String
     public let stderr: String
+    /// Stopped by `capture`'s timeout.
+    public var timedOut: Bool = false
 }
 
 public enum ProcessRunner {
     /// Runs a program to completion and captures its output.
     /// `environment` adds variables to the child's environment (on top of
-    /// this process's), never to its arguments.
+    /// this process's), never to its arguments. With `timeout`, a program
+    /// still running after that many seconds is stopped (SIGTERM, then
+    /// SIGKILL) and the result has `timedOut` set.
     public static func capture(_ executable: String, _ arguments: [String], cwd: URL? = nil,
-                               environment: [String: String] = [:]) throws -> CapturedOutput {
+                               environment: [String: String] = [:], timeout: TimeInterval? = nil) throws -> CapturedOutput {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -47,11 +51,27 @@ public enum ProcessRunner {
         process.standardError = errHandle
         process.standardInput = FileHandle.nullDevice
         try process.run()
-        process.waitUntilExit()
+        let timedOut = LockedBox(false)
+        if let timeout {
+            let pid = process.processIdentifier
+            let finished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                guard finished.wait(timeout: .now() + timeout) == .timedOut else { return }
+                timedOut.value = true
+                kill(pid, SIGTERM)
+                if finished.wait(timeout: .now() + 3) == .timedOut { kill(pid, SIGKILL) }
+            }
+            process.waitUntilExit()
+            finished.signal()
+            finished.signal()
+        } else {
+            process.waitUntilExit()
+        }
         return CapturedOutput(
             status: process.terminationStatus,
             stdout: String(decoding: try Data(contentsOf: outURL), as: UTF8.self),
-            stderr: String(decoding: try Data(contentsOf: errURL), as: UTF8.self)
+            stderr: String(decoding: try Data(contentsOf: errURL), as: UTF8.self),
+            timedOut: timedOut.value
         )
     }
 
@@ -66,7 +86,8 @@ public enum ProcessRunner {
     ///
     /// Descriptors opened without O_CLOEXEC (the session's runner lock) are
     /// inherited by the child on purpose.
-    public static func runAttached(_ executable: String, _ arguments: [String], environment: [String: String] = [:]) throws -> Int32 {
+    public static func runAttached(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
+                                   killAfter: TimeInterval = 10) throws -> Int32 {
         let argv = [executable] + arguments
         var cArgs: [UnsafeMutablePointer<CChar>?] = argv.map { strdup($0) }
         cArgs.append(nil)
@@ -82,6 +103,7 @@ public enum ProcessRunner {
             signal(SIGTERM, oldTerm)
             signal(SIGHUP, oldHup)
             attachedChild = 0
+            forwardedSignal = 0
         }
 
         // The child gets default signal handling back.
@@ -113,9 +135,22 @@ public enum ProcessRunner {
         guard rc == 0 else { throw MudroomError.posix("posix_spawn", executable, rc) }
         attachedChild = pid
 
+        // A child that ignores the forwarded SIGTERM/SIGHUP (a `container
+        // run` whose VM is stuck does) is killed after `killAfter` seconds,
+        // so this process still gets to clean up and exit. Polled, because the
+        // signal may be handled on another thread and not interrupt waitpid.
         var status: Int32 = 0
-        while waitpid(pid, &status, 0) < 0 {
-            if errno != EINTR { throw MudroomError.posix("waitpid", executable, errno) }
+        var deadline: Date?
+        while true {
+            let r = waitpid(pid, &status, WNOHANG)
+            if r == pid { break }
+            if r < 0 && errno != EINTR { throw MudroomError.posix("waitpid", executable, errno) }
+            if deadline == nil, forwardedSignal != 0 { deadline = Date().addingTimeInterval(killAfter) }
+            if let d = deadline, Date() >= d {
+                kill(pid, SIGKILL)
+                deadline = .distantFuture
+            }
+            usleep(50_000)
         }
         // WIFEXITED / WEXITSTATUS are macros Swift can't import.
         let low = status & 0x7f
@@ -182,8 +217,13 @@ public enum ProcessRunner {
 
 /// The child `runAttached` is waiting for; signals are passed on to it.
 nonisolated(unsafe) private var attachedChild: pid_t = 0
+/// The last signal passed on to it (0: none yet).
+nonisolated(unsafe) private var forwardedSignal: Int32 = 0
 
 private let forwardSignal: @convention(c) (Int32) -> Void = { sig in
     let pid = attachedChild
-    if pid > 0 { kill(pid, sig) }
+    if pid > 0 {
+        forwardedSignal = sig
+        kill(pid, sig)
+    }
 }

@@ -289,6 +289,8 @@ public struct SessionRunner {
         // A token refreshed mid-session reaches the shared sign-in right
         // away, not only when the session ends, so sessions started
         // meanwhile don't get one that was already rotated out.
+        // The runtime CLI was killed (exit 137), so `run --rm` didn't clean up.
+        var runnerKilled = false
         var credentialTimer: DispatchSourceTimer?
         if let home {
             let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
@@ -301,8 +303,9 @@ public struct SessionRunner {
         defer {
             credentialTimer?.cancel()
             handoff?.stop()
-            // If the runtime CLI went away but the sandbox didn't, stop it.
-            if backend.isRunning(spec.name) { backend.stop(spec.name) }
+            // If the runtime CLI went away but the sandbox didn't, stop it
+            // (and remove it: a killed `container run` leaves it behind).
+            if runnerKilled || backend.isRunning(spec.name) { backend.stop(spec.name) }
             if let home, !home.syncBack(from: handle).isEmpty { log("kept the \(home.agent) sign-in from this session for later ones") }
         }
 
@@ -326,6 +329,7 @@ public struct SessionRunner {
         let status: Int32
         do {
             status = try backend.run(runSpec)
+            runnerKilled = status == 128 + SIGKILL
         } catch {
             _ = snapshotter?.finish()
             if runsSession {
