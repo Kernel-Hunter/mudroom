@@ -74,6 +74,8 @@ struct APIKeyTests {
         #expect(!aider.allows("api.groq.com") && !aider.allows("api.x.ai"))
         #expect(c.allowlist(agent: "opencode", keys: ["XAI_API_KEY"]).allows("api.x.ai"))
         #expect(c.allowlist(agent: "opencode", keys: []).allows("models.dev"))
+        // opencode 1.18 fetches its model catalog from here.
+        #expect(c.allowlist(agent: "opencode", keys: []).allows("models.opencode.ai"))
         #expect(c.allowlist(agent: nil, keys: ["GROQ_API_KEY"]).allows("api.groq.com"))
         // Single-provider agents keep their own hosts only.
         let claude = c.allowlist(agent: "claude", keys: keys)
