@@ -199,11 +199,18 @@ public struct AppleContainerBackend: SandboxBackend {
             throw MudroomError.backendUnavailable(
                 "the `container` CLI was not found. Install it with `brew install container`, then run `container system start`.")
         }
+        if try ProcessRunner.capture(exe, ["system", "status"]).status == 0 { return }
+        // The services stop after a reboot or `container system stop`.
+        // Starting them takes a few seconds, so do it rather than fail.
+        FileHandle.standardError.write(Data("mudroom: starting the VM runtime...\n".utf8))
+        let help = (try? ProcessRunner.capture(exe, ["system", "start", "--help"]))?.stdout ?? ""
+        let started = try ProcessRunner.capture(exe, NetworkRepair.startArguments(help: help))
         let status = try ProcessRunner.capture(exe, ["system", "status"])
         if status.status != 0 {
-            let detail = (status.stderr + status.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = (started.stderr + started.stdout + status.stderr + status.stdout)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             throw MudroomError.backendUnavailable(
-                "container services are not running (\(detail)). Start them with `container system start`.")
+                "container services are not running and could not be started (\(detail)). Open Mudroom > Setup and click Start.")
         }
     }
 
