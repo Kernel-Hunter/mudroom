@@ -190,6 +190,7 @@ struct SetupCommand: ParsableCommand {
         case "claude": "not signed in: mudroom agent login claude"
         case "codex": HostLogin.forAgent("codex")?.isAvailable == true ? "not signed in: mudroom agent import codex" : "not signed in: mudroom agent login codex"
         case "gemini": HostLogin.forAgent("gemini")?.isAvailable == true ? "not signed in: mudroom agent import gemini" : "not signed in: mudroom agent login gemini, or mudroom keys set GEMINI_API_KEY"
+        case "aider": "needs an API key (mudroom keys set OPENROUTER_API_KEY, or another provider) or a local model (mudroom network local-models on, then aider --model ollama_chat/<model>)"
         default: "needs an API key (mudroom keys set OPENROUTER_API_KEY, or another provider) or local models (mudroom network local-models on)"
         }
     }
