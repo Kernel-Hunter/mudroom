@@ -144,5 +144,7 @@ struct HostDetectionTests {
         #expect(c?["theme"] as? String == "light" && c?["userID"] as? String == "u1")
         #expect(c?["hasCompletedOnboarding"] as? Bool == true && c?["bypassPermissionsModeAccepted"] as? Bool == true)
         #expect(((c?["projects"] as? [String: Any])?["/workspace"] as? [String: Any])?["hasTrustDialogAccepted"] as? Bool == true)
+        let st = try JSONSerialization.jsonObject(with: Data(contentsOf: h.hostDirectory.appendingPathComponent("settings.json"))) as? [String: Any]
+        #expect(st?["skipDangerousModePermissionPrompt"] as? Bool == true)
     }
 }

@@ -235,8 +235,15 @@ enum TerminalLauncher {
         """
         try text.write(to: script, atomically: true, encoding: .utf8)
         chmod(script.path, 0o700)
-        let terminal = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Terminal")
-            ?? URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app")
-        NSWorkspace.shared.open([script], withApplicationAt: terminal, configuration: NSWorkspace.OpenConfiguration())
+        // `open -F` starts Terminal fresh: if it wasn't running, it doesn't
+        // also bring back the windows of its last run.
+        let open = Process()
+        open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        open.arguments = ["-F", "-b", "com.apple.Terminal", script.path]
+        try open.run()
+        open.waitUntilExit()
+        guard open.terminationStatus == 0 else {
+            throw MudroomError.commandFailed("open -F -b com.apple.Terminal", open.terminationStatus, "")
+        }
     }
 }

@@ -309,6 +309,14 @@ extension AgentHome {
         config["projects"] = projects
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys])
         try Self.writePrivate(data, to: url)
+        // Newer Claude Code reads the bypass-permissions consent from
+        // settings.json; without it every session opens on that warning.
+        let settingsURL = hostDirectory.appendingPathComponent("settings.json")
+        var settings = ((try? Data(contentsOf: settingsURL)).flatMap { try? JSONSerialization.jsonObject(with: $0) } as? [String: Any]) ?? [:]
+        if settings["skipDangerousModePermissionPrompt"] == nil {
+            settings["skipDangerousModePermissionPrompt"] = true
+            try Self.writePrivate(try JSONSerialization.data(withJSONObject: settings, options: [.prettyPrinted, .sortedKeys]), to: settingsURL)
+        }
     }
 }
 

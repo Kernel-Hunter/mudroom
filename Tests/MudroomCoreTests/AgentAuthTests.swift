@@ -97,7 +97,7 @@ struct AgentAuthTests {
         let updated = home.syncBack(from: f.handle)
         #expect(Set(updated) == [".credentials.json", ".claude.json"])
         #expect(home.hasCredentials)
-        #expect(!exists(home.hostDirectory.appendingPathComponent("settings.json")))
+        #expect(try !read(home.hostDirectory.appendingPathComponent("settings.json")).contains("evil"))
         let shared = try read(home.hostDirectory.appendingPathComponent(".claude.json"))
         #expect(shared.contains("oauthAccount") && !shared.contains("evil"))
         // A session that only wrote Claude's first-start fields didn't sign in.
