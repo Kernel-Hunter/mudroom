@@ -55,6 +55,15 @@ struct RunFlags: ParsableArguments {
     @Flag(help: "Start even if the agent isn't signed in, and sign in inside the session.")
     var signInInSession = false
 
+    /// Runs before `run` clones the project, so a typo doesn't leave a
+    /// session behind (or hang the VM runtime, for --cpus 0).
+    func validate() throws {
+        if let why = RunOptions.resourceProblem(cpus: cpus, memory: memory) { throw ValidationError(why) }
+        for raw in allow where HostPattern(raw) == nil {
+            throw ValidationError("not a host name or *.suffix pattern: \(raw)")
+        }
+    }
+
     func options(tty: Bool) throws -> RunOptions {
         var hosts: [HostPattern] = []
         for raw in allow {

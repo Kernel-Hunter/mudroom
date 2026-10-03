@@ -97,6 +97,28 @@ struct QAPassTests {
         #expect(Differ.hostRisk("src/config") == nil)
     }
 
+    @Test("--cpus and --memory values the VM runtime hangs or fails on are refused before a session starts")
+    func resourceLimits() throws {
+        #expect(RunOptions.resourceProblem(cpus: nil, memory: nil, hostCPUs: 8) == nil)
+        #expect(RunOptions.resourceProblem(cpus: 4, memory: "4G", hostCPUs: 8) == nil)
+        #expect(RunOptions.resourceProblem(cpus: 8, memory: "512m", hostCPUs: 8) == nil)
+        #expect(RunOptions.resourceProblem(cpus: 0, memory: nil, hostCPUs: 8) != nil)
+        #expect(RunOptions.resourceProblem(cpus: 999, memory: nil, hostCPUs: 8) != nil)
+        #expect(RunOptions.resourceProblem(cpus: -1, memory: nil, hostCPUs: 8) != nil)
+        for bad in ["1Q", "", "4 G", "0", "-4G", "4GB", "four"] {
+            #expect(RunOptions.resourceProblem(cpus: nil, memory: bad, hostCPUs: 8) != nil, "\(bad)")
+        }
+
+        // The runner refuses them too (the app and `start` don't go through the CLI's checks).
+        let f = try Fixture { _ in }
+        var handle = f.handle
+        let runner = SessionRunner(backend: AppleContainerBackend(), store: f.store) { _ in }
+        #expect(throws: MudroomError.self) {
+            _ = try runner.run(&handle, options: RunOptions(tty: false, cpus: 0, environmentNames: []))
+        }
+        #expect(handle.session.status == .created)
+    }
+
     @Test("the summary after a run lists a limited number of paths, then the totals")
     func statLimit() throws {
         let f = try Fixture { _ in }
