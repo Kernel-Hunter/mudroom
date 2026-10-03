@@ -176,6 +176,14 @@ struct QAPassTests {
         }
     }
 
+    @Test("docker not running: the error is docker's message, not the empty info JSON it prints too")
+    func dockerUnreachableMessage() {
+        let json = "{\"ID\":\"\"," + String(repeating: "\"x\":null,", count: 500) + "}"
+        let out = CapturedOutput(status: 1, stdout: json, stderr: "failed to connect to the docker API at unix:///x.sock\n")
+        #expect(DockerBackend.failureDetail(out) == "failed to connect to the docker API at unix:///x.sock")
+        #expect(DockerBackend.failureDetail(CapturedOutput(status: 1, stdout: json, stderr: "")).count <= 403)
+    }
+
     @Test("the summary after a run lists a limited number of paths, then the totals")
     func statLimit() throws {
         let f = try Fixture { _ in }

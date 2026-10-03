@@ -69,12 +69,20 @@ public struct DockerBackend: SandboxBackend {
         }
         let out = try ProcessRunner.capture(exe, ["info", "--format", "{{json .}}"])
         if out.status != 0 {
-            let detail = (out.stderr + out.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
+            let detail = Self.failureDetail(out)
             let hint = flavor == .docker
                 ? "Start the Docker daemon (or Docker Desktop) first."
                 : "On macOS, start the Podman VM with `podman machine start`."
             throw MudroomError.backendUnavailable("\(name) is not reachable (\(detail)). \(hint)")
         }
+    }
+
+    /// Why `info` failed: its stderr. Docker still prints an empty JSON
+    /// info object (a few KB) on stdout then, which is no help.
+    static func failureDetail(_ out: CapturedOutput) -> String {
+        let err = out.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = err.isEmpty ? out.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : err
+        return text.count > 400 ? String(text.prefix(400)) + "..." : text
     }
 
     /// True for rootless Podman, which needs `--userns keep-id` so files in
