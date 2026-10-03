@@ -354,6 +354,17 @@ public struct SessionRunner {
         case "gemini":
             let hasOAuth = FileManager.default.fileExists(atPath: dir.appendingPathComponent("oauth_creds.json").path)
             let hasKey = secrets["GEMINI_API_KEY"] != nil || passNames.contains("GEMINI_API_KEY")
+            // No update checks (npm) or usage statistics (play.googleapis.com):
+            // the locked network blocks both, and they would show up as
+            // blocked connections in every session.
+            AgentHome.updateJSON(dir.appendingPathComponent("settings.json")) { c in
+                var general = c["general"] as? [String: Any] ?? [:]
+                for k in ["enableAutoUpdate", "enableAutoUpdateNotification"] where general[k] == nil { general[k] = false }
+                c["general"] = general
+                var privacy = c["privacy"] as? [String: Any] ?? [:]
+                if privacy["usageStatisticsEnabled"] == nil { privacy["usageStatisticsEnabled"] = false }
+                c["privacy"] = privacy
+            }
             guard hasOAuth || hasKey else { return }
             AgentHome.updateJSON(dir.appendingPathComponent("settings.json")) { c in
                 var security = c["security"] as? [String: Any] ?? [:]

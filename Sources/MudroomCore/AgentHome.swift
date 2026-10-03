@@ -83,7 +83,9 @@ extension AgentPreset {
         // The claude.ai connectors (MCP through mcp-proxy.anthropic.com)
         // stay off too: the locked network blocks them, and Claude retries.
         case "claude": ["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1", "ENABLE_CLAUDEAI_MCP_SERVERS": "false"]
-        case "gemini": ["NO_BROWSER": "true"]
+        // Gemini CLI turns --yolo off in a folder it doesn't trust, and
+        // headless runs (-p) refuse to start there; /workspace is a copy.
+        case "gemini": ["NO_BROWSER": "true", "GEMINI_CLI_TRUST_WORKSPACE": "true"]
         // History files go to the home directory, not the project copy.
         case "aider": ["AIDER_CHAT_HISTORY_FILE": "/home/node/.aider.chat.history.md",
                        "AIDER_INPUT_HISTORY_FILE": "/home/node/.aider.input.history"]

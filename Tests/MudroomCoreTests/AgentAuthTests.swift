@@ -133,4 +133,20 @@ struct AgentAuthTests {
         #expect(home.syncBack(from: f.handle).isEmpty)
         #expect(try read(shared).contains("new"))
     }
+
+    @Test("Gemini CLI trusts /workspace and makes no update or usage-statistics calls")
+    func geminiFirstRun() throws {
+        // Without the trust variable, --yolo is turned off and -p refuses to run.
+        #expect(AgentPreset.gemini.environment["GEMINI_CLI_TRUST_WORKSPACE"] == "true")
+        let f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
+        let home = try #require(AgentHome(store: f.store, agent: "gemini"))
+        _ = try home.sessionCopy(for: f.handle)
+        // Even before any sign-in: these calls would only be blocked.
+        SessionRunner(store: f.store).prepareAgentCopy(handle: f.handle, preset: .gemini, secrets: [:], passNames: [])
+        let settings = try read(f.handle.agentHomeCopy.appendingPathComponent("settings.json"))
+        #expect(settings.contains(#""enableAutoUpdate" : false"#) && settings.contains(#""enableAutoUpdateNotification" : false"#))
+        #expect(settings.contains(#""usageStatisticsEnabled" : false"#) && !settings.contains("selectedType"))
+        SessionRunner(store: f.store).prepareAgentCopy(handle: f.handle, preset: .gemini, secrets: ["GEMINI_API_KEY": "k"], passNames: [])
+        #expect(try read(f.handle.agentHomeCopy.appendingPathComponent("settings.json")).contains("gemini-api-key"))
+    }
 }
