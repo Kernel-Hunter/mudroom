@@ -49,7 +49,7 @@ public struct RollbackManifest: Codable, Sendable {
 public struct PathIssue: Sendable, Equatable, CustomStringConvertible {
     public let path: String
     public let reason: String
-    public var description: String { "\(path): \(reason)" }
+    public var description: String { "\(TextLines.visible(path)): \(reason)" }
 
     public init(path: String, reason: String) {
         self.path = path

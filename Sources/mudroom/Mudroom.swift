@@ -270,7 +270,7 @@ struct Hunks: ParsableCommand {
                 throw MudroomError.invalid("\(path) is not a modified text file; it can only be applied as a whole")
             }
             let applied = try applier.appliedHunks(for: change)
-            print("--- a/\(path)\n+++ b/\(path)")
+            print("--- a/\(TextLines.visible(path))\n+++ b/\(TextLines.visible(path))")
             print(LineDiff.numberedText(hunks))
             if !applied.isEmpty {
                 print("\nalready applied: \(applied.sorted().map(String.init).joined(separator: ", "))")
@@ -382,9 +382,9 @@ struct Apply: ParsableCommand {
             }
         } catch { fail(error) }
 
-        for p in report.applied { print("applied    \(p)") }
-        for w in report.warnings { print("note       \(w.path): check it; it \(w.reason)") }
-        for p in report.alreadyApplied { print("unchanged  \(p) (project already matches)") }
+        for p in report.applied { print("applied    \(TextLines.visible(p))") }
+        for w in report.warnings { print("note       \(TextLines.visible(w.path)): check it; it \(w.reason)") }
+        for p in report.alreadyApplied { print("unchanged  \(TextLines.visible(p)) (project already matches)") }
         for i in report.skipped { print("skipped    \(i)") }
         for i in report.conflicts { print("CONFLICT   \(i)") }
         if !report.applied.isEmpty {
@@ -414,7 +414,7 @@ struct Undo: ParsableCommand {
             try SessionGuard.ensureIdle(handle)
             report = try Applier(handle: handle).undo(force: force)
         } catch { fail(error) }
-        for p in report.restored { print("restored   \(p)") }
+        for p in report.restored { print("restored   \(TextLines.visible(p))") }
         for i in report.conflicts { print("CONFLICT   \(i)") }
         if report.remaining > 0 {
             print("\n\(report.remaining) path(s) of this apply were not restored. Put them back as they were after the apply and run undo again, or use --force.")

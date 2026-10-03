@@ -37,7 +37,37 @@ public struct TextLines: Sendable, Equatable {
         var end = line.endIndex
         if end > line.startIndex, line[line.index(before: end)] == 0x0A { end = line.index(before: end) }
         if end > line.startIndex, line[line.index(before: end)] == 0x0D { end = line.index(before: end) }
-        return String(decoding: line[line.startIndex..<end], as: UTF8.self)
+        return visible(String(decoding: line[line.startIndex..<end], as: UTF8.self))
+    }
+
+    /// `s` with characters that change how text is drawn spelled out:
+    /// control characters (an escape sequence or a carriage return could
+    /// redraw a terminal line and hide what follows) as `\x1b`, `\r`, `\n`,
+    /// and bidirectional overrides (which reorder what is shown, the
+    /// "Trojan Source" trick) as `<U+202E>`. Tabs stay. Used for every line
+    /// and path a review shows, since the agent chose those bytes.
+    public static func visible(_ s: String) -> String {
+        guard s.unicodeScalars.contains(where: needsEscape) else { return s }
+        var out = ""
+        for u in s.unicodeScalars {
+            guard needsEscape(u) else { out.unicodeScalars.append(u); continue }
+            switch u {
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            default:
+                out += u.value < 0x100 ? "\\x" + String(format: "%02x", u.value) : String(format: "<U+%04X>", u.value)
+            }
+        }
+        return out
+    }
+
+    static func needsEscape(_ u: Unicode.Scalar) -> Bool {
+        switch u.value {
+        case 0x09: false
+        case 0x00...0x1F, 0x7F...0x9F: true
+        case 0x200E, 0x200F, 0x202A...0x202E, 0x2066...0x2069: true
+        default: false
+        }
     }
 
     public static func hasNewline(_ line: Data) -> Bool { line.last == 0x0A }

@@ -26,15 +26,15 @@ public struct DiffRenderer: Sendable {
 
     /// One line per change, e.g. "M  src/app.swift".
     public func statLine(_ c: Change) -> String {
-        var line = "\(Self.code(c.kind))  \(c.path)\(c.after.isDirectory || (c.kind == .deleted && c.before.isDirectory) ? "/" : "")"
+        var line = "\(Self.code(c.kind))  \(TextLines.visible(c.path))\(c.after.isDirectory || (c.kind == .deleted && c.before.isDirectory) ? "/" : "")"
         if let m1 = c.before.mode, let m2 = c.after.mode, m1 != m2 {
             line += "  (mode \(Self.octal(m1)) -> \(Self.octal(m2)))"
         }
         switch (c.kind, c.before, c.after) {
         case (.symlinkChanged, .symlink(let t1), .symlink(let t2)):
-            line += "  (\(t1) -> \(t2))"
+            line += "  (\(TextLines.visible(t1)) -> \(TextLines.visible(t2)))"
         case (.added, _, .symlink(let t)):
-            line += "  -> \(t)"
+            line += "  -> \(TextLines.visible(t))"
         case (.typeChanged, let b, let a):
             line += "  (\(b.kindName) -> \(a.kindName))"
         case (.unreadable, .unreadable(let why), _), (.unreadable, _, .unreadable(let why)):
@@ -109,7 +109,8 @@ public struct DiffRenderer: Sendable {
             return header + "\n    binary " + Self.sizeChange(c, beforeFile: beforeFile, afterFile: afterFile)
         }
         let hunks = LineDiff.hunks(base: old, work: new)
-        var lines = ["diff --git a/\(c.path) b/\(c.path)"]
+        let shown = TextLines.visible(c.path)
+        var lines = ["diff --git a/\(shown) b/\(shown)"]
         if !beforeFile, let m = c.after.mode { lines.append("new file mode 100\(Self.octal(m & 0o777))") }
         if !afterFile, let m = c.before.mode { lines.append("deleted file mode 100\(Self.octal(m & 0o777))") }
         if beforeFile, afterFile, let a = c.before.mode, let b = c.after.mode, a & 0o7777 != b & 0o7777 {
@@ -120,8 +121,8 @@ public struct DiffRenderer: Sendable {
             lines.append("(empty file)")
             return lines.joined(separator: "\n")
         }
-        lines.append(beforeFile ? "--- a/\(c.path)" : "--- /dev/null")
-        lines.append(afterFile ? "+++ b/\(c.path)" : "+++ /dev/null")
+        lines.append(beforeFile ? "--- a/\(shown)" : "--- /dev/null")
+        lines.append(afterFile ? "+++ b/\(shown)" : "+++ /dev/null")
         lines.append(Self.unifiedBody(hunks))
         return lines.joined(separator: "\n")
     }
