@@ -233,6 +233,7 @@ final class SetupModel {
                     case .starting: "Starting it again…"
                     case .recreatingNetwork: "Recreating Mudroom's VM network…"
                     case .checking: "Checking again…"
+                    case .killingStuckHelpers: "Stopping stuck VM helpers…"
                     }
                     Task { @MainActor in self?.networkStep = text }
                 }, probe: { NetworkProbe.run(backend: AppleContainerBackend(), scratch: scratch) })

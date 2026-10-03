@@ -174,7 +174,7 @@ public struct TerminalReview: Sendable {
     public enum Style: Sendable { case bold, added, deleted, hunk, cursor, dim }
 
     static func clip(_ s: String, _ width: Int) -> String {
-        let clean = s.replacingOccurrences(of: "\t", with: "    ")
+        let clean = TextLines.visible(s).replacingOccurrences(of: "\t", with: "    ")
         return clean.count > width ? String(clean.prefix(max(0, width - 1))) + "~" : clean
     }
 }

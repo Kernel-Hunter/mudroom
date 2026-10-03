@@ -33,7 +33,7 @@ public struct SandboxSpec: Sendable, Equatable {
     /// name. Only the names go on the command line (`--env NAME`); the
     /// values are set in the runtime CLI's own environment, never in argv.
     public var secretEnvironment: [String: String] = [:]
-    /// For `capture`: stop waiting after this many seconds.
+    /// For `capture`: stop the sandbox after this many seconds.
     public var timeout: TimeInterval?
 
     /// Every name passed with `--env NAME`.
@@ -217,13 +217,18 @@ public struct AppleContainerBackend: SandboxBackend {
             throw MudroomError.backendUnavailable(
                 "the `container` CLI was not found. Install it with `brew install container`, then run `container system start`.")
         }
-        if try ProcessRunner.capture(exe, ["system", "status"]).status == 0 { return }
+        let current = try ProcessRunner.capture(exe, ["system", "status"], timeout: 30)
+        if current.timedOut {
+            throw MudroomError.backendUnavailable(
+                "the VM runtime isn't answering (`container system status` hung for 30 seconds). Repair it with `mudroom setup --repair-network` or the Repair button in Setup.")
+        }
+        if current.status == 0 { return }
         // The services stop after a reboot or `container system stop`.
         // Starting them takes a few seconds, so do it rather than fail.
         FileHandle.standardError.write(Data("mudroom: starting the VM runtime...\n".utf8))
-        let help = (try? ProcessRunner.capture(exe, ["system", "start", "--help"]))?.stdout ?? ""
-        let started = try ProcessRunner.capture(exe, NetworkRepair.startArguments(help: help))
-        let status = try ProcessRunner.capture(exe, ["system", "status"])
+        let help = (try? ProcessRunner.capture(exe, ["system", "start", "--help"], timeout: 15))?.stdout ?? ""
+        let started = try ProcessRunner.capture(exe, NetworkRepair.startArguments(help: help), timeout: 120)
+        let status = try ProcessRunner.capture(exe, ["system", "status"], timeout: 30)
         if status.status != 0 {
             let detail = (started.stderr + started.stdout + status.stderr + status.stdout)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -265,7 +270,7 @@ public struct AppleContainerBackend: SandboxBackend {
     }
 
     public func isRunning(_ name: String) -> Bool {
-        guard let exe = executable, let out = try? ProcessRunner.capture(exe, ["inspect", name]), out.status == 0 else { return false }
+        guard let exe = executable, let out = try? ProcessRunner.capture(exe, ["inspect", name], timeout: 30), out.status == 0 else { return false }
         return Self.parseRunning(Data(out.stdout.utf8))
     }
 
@@ -279,9 +284,13 @@ public struct AppleContainerBackend: SandboxBackend {
         }
     }
 
+    /// Stops and removes the container. `run --rm` removes it on its own,
+    /// except when the `container run` process was killed; then it stays
+    /// behind, stopped.
     public func stop(_ name: String) {
         guard let exe = executable else { return }
-        _ = try? ProcessRunner.capture(exe, ["stop", name])
+        _ = try? ProcessRunner.capture(exe, ["stop", name], timeout: 30)
+        _ = try? ProcessRunner.capture(exe, ["rm", name], timeout: 30)
     }
 
     public func stopHint(_ name: String) -> String { "container stop \(name)" }

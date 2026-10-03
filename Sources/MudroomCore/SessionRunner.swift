@@ -48,6 +48,20 @@ public struct RunOptions: Sendable {
         self.snapshots = snapshots
         self.tokenStore = tokenStore
     }
+
+    /// Why `cpus` or `memory` can't work, or nil. Apple's `container run`
+    /// hangs for good with `--cpus 0` or more CPUs than the Mac has, and
+    /// fails only after booting with a memory size it can't parse.
+    public static func resourceProblem(cpus: Int?, memory: String?,
+                                       hostCPUs: Int = ProcessInfo.processInfo.activeProcessorCount) -> String? {
+        if let cpus, !(1...max(1, hostCPUs)).contains(cpus) {
+            return "--cpus takes 1 to \(hostCPUs) (the CPUs this computer has), not \(cpus)"
+        }
+        if let memory, memory.range(of: "^[1-9][0-9]*[KMGTP]?$", options: [.regularExpression, .caseInsensitive]) == nil {
+            return "--memory takes a size like 4G or 512M, not '\(memory)'"
+        }
+        return nil
+    }
 }
 
 /// How one run will reach the network, worked out before the VM starts.
@@ -194,6 +208,7 @@ public struct SessionRunner {
 
     public func run(_ handle: inout SessionHandle, options: RunOptions) throws -> Result {
         guard handle.hasClones else { throw MudroomError.invalid("session \(handle.session.id) was discarded") }
+        if let why = RunOptions.resourceProblem(cpus: options.cpus, memory: options.memory) { throw MudroomError.invalid(why) }
         let s = handle.session
         let preset = AgentPreset.matching(agent: s.agent, command: s.command)
         let config = try ProjectConfigStore(store: store).load(s.projectPath)
@@ -284,6 +299,8 @@ public struct SessionRunner {
         // A token refreshed mid-session reaches the shared sign-in right
         // away, not only when the session ends, so sessions started
         // meanwhile don't get one that was already rotated out.
+        // The runtime CLI was killed (exit 137), so `run --rm` didn't clean up.
+        var runnerKilled = false
         var credentialTimer: DispatchSourceTimer?
         if let home {
             let t = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
@@ -296,8 +313,9 @@ public struct SessionRunner {
         defer {
             credentialTimer?.cancel()
             handoff?.stop()
-            // If the runtime CLI went away but the sandbox didn't, stop it.
-            if backend.isRunning(spec.name) { backend.stop(spec.name) }
+            // If the runtime CLI went away but the sandbox didn't, stop it
+            // (and remove it: a killed `container run` leaves it behind).
+            if runnerKilled || backend.isRunning(spec.name) { backend.stop(spec.name) }
             if let home, !home.syncBack(from: handle).isEmpty { log("kept the \(home.agent) sign-in from this session for later ones") }
         }
 
@@ -321,6 +339,7 @@ public struct SessionRunner {
         let status: Int32
         do {
             status = try backend.run(runSpec)
+            runnerKilled = status == 128 + SIGKILL
         } catch {
             _ = snapshotter?.finish()
             if runsSession {

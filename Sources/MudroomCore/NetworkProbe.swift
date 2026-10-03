@@ -1,3 +1,10 @@
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#endif
 import Foundation
 
 /// A quick check that a VM can reach Mudroom's proxy on the host. Locked
@@ -54,8 +61,16 @@ public enum NetworkProbe {
         """
     }
 
+    /// How long the probe VM may take. It needs a few seconds; a VM runtime
+    /// that is stuck would otherwise hold up the session start for good,
+    /// with nothing on screen.
+    static let timeout: TimeInterval = 90
+
     /// Reads the probe VM's output.
     public static func classify(_ out: CapturedOutput, proxy: String) -> Result {
+        if out.timedOut {
+            return .failed("the check VM didn't finish within \(Int(timeout)) seconds; the VM runtime may be stuck (`container list` shows what it is running)")
+        }
         let line = (out.stdout + "\n" + out.stderr).split(separator: "\n").last { $0.hasPrefix(marker) }
         guard let line else {
             let detail = (out.stderr + out.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -91,14 +106,12 @@ public enum NetworkProbe {
             // A wedged runtime can leave `container run` waiting forever,
             // with setup (or a session about to start) silent all along.
             spec.timeout = timeout
-            let started = Date()
             let out = try backend.capture(spec)
-            let result = classify(out, proxy: "\(host):\(port)")
-            if case .failed = result, Date().timeIntervalSince(started) >= timeout - 1 {
-                if backend.isRunning(spec.name) { backend.stop(spec.name) }
+            if out.timedOut {
+                backend.stop(spec.name)
                 return .stuck(seconds: Int(timeout))
             }
-            return result
+            return classify(out, proxy: "\(host):\(port)")
         } catch {
             return .failed("\(error)")
         }
@@ -174,19 +187,59 @@ public enum NetworkRepair {
 
     public enum Step: Sendable, Equatable {
         case stopping, starting, recreatingNetwork, checking
+        /// `container system stop` hung; killing the VM helpers of Mudroom
+        /// containers that keep the runtime stuck.
+        case killingStuckHelpers
+    }
+
+    /// launchd label prefix of the per-container helper that Apple's
+    /// runtime starts for a Mudroom container. One stuck helper (seen with
+    /// `--cpus 0`, which it can't apply) blocks every `container` command,
+    /// `container system stop` included.
+    static let helperLabelPrefix = "com.apple.container.container-runtime-linux.mudroom-"
+
+    /// PIDs and labels of running Mudroom container helpers, from
+    /// `launchctl list` ("PID\tStatus\tLabel" lines; "-" for no PID).
+    public static func mudroomHelpers(launchctlList: String) -> [(pid: Int32, label: String)] {
+        launchctlList.split(separator: "\n").compactMap { line in
+            let f = line.split(separator: "\t", omittingEmptySubsequences: false)
+            guard f.count >= 3, let pid = Int32(f[0]), pid > 1,
+                  f[2].hasPrefix(helperLabelPrefix) else { return nil }
+            return (pid, String(f[2]))
+        }
+    }
+
+    /// Kills every Mudroom container helper (never other containers').
+    /// Returns their labels.
+    public static func killMudroomHelpers() -> [String] {
+        guard let out = try? ProcessRunner.capture("/bin/launchctl", ["list"], timeout: 20), out.status == 0 else { return [] }
+        return mudroomHelpers(launchctlList: out.stdout).map { h in
+            kill(h.pid, SIGKILL)
+            return h.label
+        }
     }
 
     /// Restarts the container system and probes again; recreates the
     /// host-only network if the first restart didn't help. Refuses while
     /// Mudroom containers run, unless `force`.
+    /// If `container system stop` doesn't return (a wedged runtime), the
+    /// Mudroom container helpers are killed (`killHelpers`) and it is tried
+    /// once more.
     public static func repair(run: Runner, force: Bool = false, progress: (Step) -> Void = { _ in },
+                              killHelpers: () -> [String] = { killMudroomHelpers() },
                               probe: () -> NetworkProbe.Result) throws -> NetworkProbe.Result {
         let busy = running(run)
         if !busy.isEmpty && !force {
             throw MudroomError.invalid("these Mudroom containers are still running and would be stopped: \(busy.joined(separator: ", ")). Finish those sessions first.")
         }
         progress(.stopping)
-        _ = try run(["system", "stop"])
+        if try run(["system", "stop"]).timedOut {
+            progress(.killingStuckHelpers)
+            _ = killHelpers()
+            if try run(["system", "stop"]).timedOut {
+                throw MudroomError.invalid("`container system stop` doesn't finish, even after stopping Mudroom's VM helpers. Restarting the Mac clears it.")
+            }
+        }
         progress(.starting)
         let help = (try? run(["system", "start", "--help"]))?.stdout ?? ""
         let started = try run(startArguments(help: help))
@@ -205,7 +258,13 @@ public enum NetworkRepair {
     }
 
     /// The runner for the real `container` CLI.
-    public static func containerRunner(_ exe: String) -> Runner {
-        { args in try ProcessRunner.capture(exe, args) }
+    /// Every command but `system start` (which may download a kernel the
+    /// first time) gets `timeout` seconds, so a wedged runtime is reported
+    /// instead of hanging the repair.
+    public static func containerRunner(_ exe: String, timeout: TimeInterval = 60) -> Runner {
+        { args in
+            let starts = args.starts(with: ["system", "start"]) && !args.contains("--help")
+            return try ProcessRunner.capture(exe, args, timeout: starts ? nil : timeout)
+        }
     }
 }

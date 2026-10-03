@@ -93,7 +93,7 @@ struct Review: ParsableCommand {
         let selected = state.selectedPaths.count
         let header: String
         if case .diff = state.mode, let path = state.items.indices.contains(state.cursor) ? state.items[state.cursor].path : nil {
-            header = "\(title)  \(path)"
+            header = "\(title)  \(TextLines.visible(path))"
         } else {
             header = "\(title)  \(state.items.count) changes, \(selected) selected"
         }

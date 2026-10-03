@@ -55,6 +55,15 @@ struct RunFlags: ParsableArguments {
     @Flag(help: "Start even if the agent isn't signed in, and sign in inside the session.")
     var signInInSession = false
 
+    /// Runs before `run` clones the project, so a typo doesn't leave a
+    /// session behind (or hang the VM runtime, for --cpus 0).
+    func validate() throws {
+        if let why = RunOptions.resourceProblem(cpus: cpus, memory: memory) { throw ValidationError(why) }
+        for raw in allow where HostPattern(raw) == nil {
+            throw ValidationError("not a host name or *.suffix pattern: \(raw)")
+        }
+    }
+
     func options(tty: Bool) throws -> RunOptions {
         var hosts: [HostPattern] = []
         for raw in allow {
@@ -169,7 +178,7 @@ func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, flags: Run
     let id = handle.session.id
     print("\nagent exited with status \(result.status). Changes in session \(id):")
     let diff = try Differ.compare(base: handle.base, work: handle.work)
-    DiffRenderer(base: handle.base, work: handle.work).writeStat(diff) { print($0) }
+    DiffRenderer(base: handle.base, work: handle.work).writeStat(diff, limit: 200) { print($0) }
     if result.network.mode == .locked {
         let blocked = result.blocked.isEmpty ? "" : "; blocked: \(result.blocked.joined(separator: ", "))"
         print("network: \(result.connections) connections\(blocked). Details: mudroom network log \(id)")
@@ -265,14 +274,12 @@ struct Hunks: ParsableCommand {
                 throw MudroomError.invalid("no change at \(path)")
             }
             // What you see here is what `apply --hunks` will apply.
-            var record = ReviewedChanges.load(handle) ?? ReviewedChanges([])
-            record.merge([change])
-            try? record.save(handle)
+            try? ReviewedChanges.viewing(change, in: diff, existing: ReviewedChanges.load(handle)).save(handle)
             guard let hunks = try applier.hunks(for: change) else {
                 throw MudroomError.invalid("\(path) is not a modified text file; it can only be applied as a whole")
             }
             let applied = try applier.appliedHunks(for: change)
-            print("--- a/\(path)\n+++ b/\(path)")
+            print("--- a/\(TextLines.visible(path))\n+++ b/\(TextLines.visible(path))")
             print(LineDiff.numberedText(hunks))
             if !applied.isEmpty {
                 print("\nalready applied: \(applied.sorted().map(String.init).joined(separator: ", "))")
@@ -384,9 +391,9 @@ struct Apply: ParsableCommand {
             }
         } catch { fail(error) }
 
-        for p in report.applied { print("applied    \(p)") }
-        for w in report.warnings { print("note       \(w.path): check it; it \(w.reason)") }
-        for p in report.alreadyApplied { print("unchanged  \(p) (project already matches)") }
+        for p in report.applied { print("applied    \(TextLines.visible(p))") }
+        for w in report.warnings { print("note       \(TextLines.visible(w.path)): check it; it \(w.reason)") }
+        for p in report.alreadyApplied { print("unchanged  \(TextLines.visible(p)) (project already matches)") }
         for i in report.skipped { print("skipped    \(i)") }
         for i in report.conflicts { print("CONFLICT   \(i)") }
         if !report.applied.isEmpty {
@@ -416,7 +423,10 @@ struct Undo: ParsableCommand {
             try SessionGuard.ensureIdle(handle)
             report = try Applier(handle: handle).undo(force: force)
         } catch { fail(error) }
-        for p in report.restored { print("restored   \(p)") }
+        for p in report.restored { print("restored   \(TextLines.visible(p))") }
+        for (p, url) in report.savedAside.sorted(by: { $0.key < $1.key }) {
+            print("saved      your later version of \(TextLines.visible(p)) to \(url.path)")
+        }
         for i in report.conflicts { print("CONFLICT   \(i)") }
         if report.remaining > 0 {
             print("\n\(report.remaining) path(s) of this apply were not restored. Put them back as they were after the apply and run undo again, or use --force.")

@@ -253,6 +253,7 @@ func repairAndProbe(_ backend: SandboxBackend) -> NetworkProbe.Result {
             case .starting: say("   starting it again")
             case .recreatingNetwork: say("   recreating Mudroom's VM network")
             case .checking: say("   checking again")
+            case .killingStuckHelpers: say("   it hangs; stopping Mudroom's stuck VM helpers")
             }
         }, probe: { NetworkProbe.run(backend: AppleContainerBackend(), scratch: scratch) })
         NetworkProbe.remember(r, store: store())

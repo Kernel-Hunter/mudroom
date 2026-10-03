@@ -77,6 +77,13 @@ public enum Differ {
         if parts.dropLast().contains(where: { $0 == ".husky" || $0 == ".githooks" }) {
             return "a git hook script that runs on the host"
         }
+        // Inside .git (applied only with --include-git).
+        if parent == ".git", name == "config" {
+            return "git runs commands this file names (core.fsmonitor, core.hooksPath, aliases)"
+        }
+        if parent == "hooks", parts.dropLast(2).last == ".git" {
+            return "a git hook script that runs on the host"
+        }
         return nil
     }
 
