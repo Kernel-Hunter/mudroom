@@ -431,6 +431,7 @@ extension NetworkCommand {
                 let backend = try backendOptions.make()
                 let scratch = FileManager.default.temporaryDirectory.appendingPathComponent("mudroom-probe-\(UUID().uuidString)")
                 defer { try? FileManager.default.removeItem(at: scratch) }
+                say("checking that a VM reaches Mudroom's proxy (a few seconds)")
                 var r = NetworkProbe.run(backend: backend, scratch: scratch)
                 NetworkProbe.remember(r, store: store())
                 print(r.isOK ? "ok: \(r.summary)" : "FAILED: \(r.summary)")

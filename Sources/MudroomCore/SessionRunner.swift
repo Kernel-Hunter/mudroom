@@ -217,6 +217,7 @@ public struct SessionRunner {
             log("local models: only available in locked mode (they go through Mudroom's proxy)")
         }
         if options.probeNetwork && mode == .locked {
+            if !NetworkProbe.passedRecently(store: store) { log("network check: a quick VM to test the proxy route") }
             let probe = NetworkProbe.check(backend: backend, store: store, image: s.image)
             if !probe.isOK {
                 if probe.needsRepair { throw MudroomError.networkUnreachable(probe.summary) }
