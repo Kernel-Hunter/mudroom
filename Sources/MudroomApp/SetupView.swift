@@ -36,7 +36,7 @@ struct SetupView: View {
             footer
         }
         .frame(minWidth: 640, idealWidth: 720, minHeight: 600, idealHeight: 860)
-        .confirmationDialog("Restart the container system?", isPresented: $confirmRepair) {
+        .confirmationDialog("Restart the VM runtime?", isPresented: $confirmRepair) {
             Button("Restart and Repair", role: .destructive) { Task { await model.repairNetwork(force: true) } }
         } message: {
             Text(runningSessions > 0
@@ -133,7 +133,7 @@ struct SetupView: View {
         case (true, _): model.imageStep
         case (_, .current?): "\(AgentBaseImage.tag) is built and up to date."
         case (_, .outdated?): "This image was built by an older Mudroom. Rebuild it to get the current agents."
-        case (_, .missing?): "Node and the agent CLIs (Claude Code, Codex, Gemini CLI, opencode, Aider). A few minutes, about 2 GB."
+        case (_, .missing?): "Node and the agent CLIs (Claude Code, Codex, Gemini CLI, opencode, Aider). A few minutes, about 1.5 GB."
         default: !model.runtimeReady ? "Needs the VM runtime first." : model.checking ? "Checking…" : "Not checked yet. Press Check Again."
         }
         return StepCard(number: 2, title: "Agent image", status: status, detail: detail) {
@@ -153,7 +153,7 @@ struct SetupView: View {
             : r == nil ? (model.checking ? .checking : .todo) : r!.isOK ? .done : .todo
         let detail: String = if model.networkBusy { model.networkStep ?? "Checking…" }
             else if let r { r.isOK ? "A VM reaches Mudroom's network proxy on this Mac." : r.summary.prefix(1).uppercased() + r.summary.dropFirst() + "." }
-            else if status == .waiting { "Needs the runtime and image first." }
+            else if status == .waiting { "Needs the VM runtime and agent image first." }
             else if model.checking { "Checking…" }
             else { "Not checked yet." }
         return StepCard(number: 3, title: "VM network", status: status, detail: detail) {
@@ -412,7 +412,7 @@ struct AgentSignInCard: View {
                     .buttonStyle(.borderedProminent)
                 Caption(preset.id == "codex"
                         ? "Shows a code here and opens the ChatGPT page in your browser. Or add an OPENAI_API_KEY below."
-                        : "Choose \"Login with Google\" (press Send), finish in your browser. Or add a GEMINI_API_KEY below.")
+                        : "Starts Gemini CLI's sign-in in a VM. Press Send to pick \"Login with Google\", then finish in your browser. Or add a GEMINI_API_KEY below.")
             }
         default:
             EmptyView()
@@ -439,10 +439,10 @@ struct OtherAgentsCard: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("opencode and Aider").font(.system(size: 13, weight: .semibold))
                     if let m = model.status("aider")?.method { SignedInBadge(method: m) }
-                    else { Text("Need an API key").font(.system(size: 11)).foregroundStyle(.secondary) }
+                    else { Text("Need an API key or local models").font(.system(size: 11)).foregroundStyle(.secondary) }
                 }
             }
-            Caption("They use any provider key you add below (OpenRouter covers most models), or local models from Ollama or LM Studio, which you turn on per project in New Session.")
+            Caption("They use any provider key you add below (OpenRouter covers most models), or local models from Ollama or LM Studio, which you turn on per project in New Session. Aider on local models needs the model named, so start it as a Custom command with --model.")
             Button("Add a Key") { model.focus = nil; DispatchQueue.main.async { model.focus = "keys" } }
                 .buttonStyle(.link).font(.system(size: 11))
         }

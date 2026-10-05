@@ -360,7 +360,7 @@ extension Agent {
             Reads the token from standard input without showing it, and keeps it in the macOS \
             Keychain (service io.github.kernel-hunter.mudroom), or on Linux in a 0600 file in \
             Mudroom's data directory. Sessions get it as CLAUDE_CODE_OAUTH_TOKEN (codex: \
-            OPENAI_API_KEY, gemini: GEMINI_API_KEY), passed by name: the value is never on a \
+            OPENAI_API_KEY and CODEX_API_KEY, gemini: GEMINI_API_KEY), passed by name: the value is never on a \
             command line. Example: claude setup-token, then mudroom agent token claude.
             """)
         @Argument(help: "claude, codex or gemini.")
