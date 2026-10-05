@@ -26,6 +26,8 @@ Linux and Intel Macs.
    curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/mudroom/main/install.sh | sh
    ```
 
+   Or with Homebrew: `brew install --cask kernel-hunter/tap/mudroom`
+
 2. Open Mudroom and work through the Setup window: install and start the VM
    runtime, build the agent image (a few minutes, once), and sign in an
    agent. `mudroom setup` does the same in a terminal.
