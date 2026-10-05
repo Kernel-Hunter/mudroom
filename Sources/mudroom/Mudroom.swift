@@ -126,6 +126,7 @@ struct Run: ParsableCommand {
             backend = try backendOptions.make()
             try backend.checkAvailable()
         } catch { fail(error) }
+        if let why = backend.missingImageProblem(image) { fail(why) }
 
         if !flags.signInInSession, let why = signInProblem(agent: nil, command: command) { fail(why) }
 
@@ -243,6 +244,7 @@ struct Start: ParsableCommand {
             try backend.checkAvailable()
         } catch { fail(error) }
         if handle.isRunnerAlive { fail(MudroomError.invalid("session \(handle.session.id) is already running")) }
+        if let why = backend.missingImageProblem(handle.session.image) { fail(why) }
         if !flags.signInInSession, let why = signInProblem(agent: handle.session.agent, command: handle.session.command) {
             fail(why)
         }

@@ -147,12 +147,20 @@ final class AppModel {
         let command = preset?.command ?? AgentPreset.parseCommand(customCommand)
         let agent = preset?.name ?? command.first.map { "Custom: \($0)" }
         let store = self.store
+        let choice = setup.choice
         // The sheet is gone by now and a big project takes a while to copy;
         // the sidebar shows this until the session appears.
         creatingSession = project.lastPathComponent
         Task {
             let result = await Task.detached(priority: .userInitiated) { () -> Result<SessionHandle, Error> in
-                Result { try store.create(project: project, command: command, image: image, agent: agent) }
+                Result {
+                    // Before the copy: a missing image would otherwise only
+                    // fail in Terminal (a registry error), after the session exists.
+                    let backend = try Backends.make(choice)
+                    try backend.checkAvailable()
+                    if let why = backend.missingImageProblem(image) { throw why }
+                    return try store.create(project: project, command: command, image: image, agent: agent)
+                }
             }.value
             creatingSession = nil
             switch result {
