@@ -11,7 +11,7 @@ enum SessionPhase: Equatable {
         switch h.session.status {
         case .created: self = .notStarted
         case .running: self = h.isRunnerAlive ? .running : .readyToReview
-        case .finished, .undone: self = .readyToReview
+        case .finished, .interrupted, .undone: self = .readyToReview
         case .applied: self = .applied
         case .discarded: self = .discarded
         }
@@ -147,12 +147,20 @@ final class AppModel {
         let command = preset?.command ?? AgentPreset.parseCommand(customCommand)
         let agent = preset?.name ?? command.first.map { "Custom: \($0)" }
         let store = self.store
+        let choice = setup.choice
         // The sheet is gone by now and a big project takes a while to copy;
         // the sidebar shows this until the session appears.
         creatingSession = project.lastPathComponent
         Task {
             let result = await Task.detached(priority: .userInitiated) { () -> Result<SessionHandle, Error> in
-                Result { try store.create(project: project, command: command, image: image, agent: agent) }
+                Result {
+                    // Before the copy: a missing image would otherwise only
+                    // fail in Terminal (a registry error), after the session exists.
+                    let backend = try Backends.make(choice)
+                    try backend.checkAvailable()
+                    if let why = backend.missingImageProblem(image) { throw why }
+                    return try store.create(project: project, command: command, image: image, agent: agent)
+                }
             }.value
             creatingSession = nil
             switch result {
@@ -172,25 +180,34 @@ final class AppModel {
 
     func discardSelected() {
         guard let h = selectedHandle, !h.isRunnerAlive else { return }
-        do {
-            try store.discard(h, keepRecord: true)
-            reviews[h.session.id] = nil
-            review = nil
-            refresh()
-        } catch {
-            errorMessage = "Couldn't discard: \(MudroomError.message(error))"
+        let store = self.store
+        Task {
+            // Off the main thread: checking the sandbox asks the runtime.
+            let result = await Task.detached { Result { try SessionGuard.ensureIdle(h); try store.discard(h, keepRecord: true) } }.value
+            switch result {
+            case .success:
+                reviews[h.session.id] = nil
+                review = nil
+                refresh()
+            case .failure(let error):
+                errorMessage = "Couldn't discard: \(MudroomError.message(error))"
+            }
         }
     }
 
     func removeFromList(_ h: SessionHandle) {
         guard !h.isRunnerAlive else { return }
-        do {
-            try store.discard(h, keepRecord: false)
-            reviews[h.session.id] = nil
-            if selectedSessionID == h.session.id { selectedSessionID = nil }
-            refresh()
-        } catch {
-            errorMessage = "Couldn't remove: \(MudroomError.message(error))"
+        let store = self.store
+        Task {
+            let result = await Task.detached { Result { try SessionGuard.ensureIdle(h); try store.discard(h, keepRecord: false) } }.value
+            switch result {
+            case .success:
+                reviews[h.session.id] = nil
+                if selectedSessionID == h.session.id { selectedSessionID = nil }
+                refresh()
+            case .failure(let error):
+                errorMessage = "Couldn't remove: \(MudroomError.message(error))"
+            }
         }
     }
 }

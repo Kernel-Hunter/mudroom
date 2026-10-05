@@ -167,6 +167,19 @@ extension SandboxBackend {
                            onLine: @escaping @Sendable (String) -> Void) throws {
         try buildImage(containerfile: containerfile, context: context, tag: tag)
     }
+
+    /// Why a session can't start from `image`, or nil if the image is here.
+    /// Checked before the project is cloned: otherwise `run` tries to pull
+    /// it and fails with a registry error after the session exists.
+    public func missingImageProblem(_ image: String) -> MudroomError? {
+        guard imageLabels(image) == nil else { return nil }
+        if image == AgentBaseImage.tag {
+            return .backendUnavailable(
+                "\(image) isn't built for \(name) yet. Run `mudroom setup`, or open Setup in the Mudroom app, to build it.")
+        }
+        let pull = name == "apple-container" ? "container image pull \(image)" : "\(name) pull \(image)"
+        return .backendUnavailable("the image \(image) isn't on this computer for \(name). Pull it (`\(pull)`) or build it first.")
+    }
 }
 
 public enum AgentEnvironment {

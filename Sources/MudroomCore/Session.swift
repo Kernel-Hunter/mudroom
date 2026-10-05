@@ -13,6 +13,9 @@ public enum SessionStatus: String, Codable, Sendable {
     case running
     /// The agent exited; see `exitCode`.
     case finished
+    /// Marked running, but the runner died without recording the end; the
+    /// sandbox was stopped with `mudroom stop`.
+    case interrupted
     /// Changes (some or all) were applied to the real project.
     case applied
     /// The last apply was rolled back.
@@ -340,13 +343,40 @@ public enum SessionGuard {
     /// `backend` defaults to the one the session last ran with.
     public static func ensureIdle(_ handle: SessionHandle, backend: SandboxBackend? = nil) throws {
         if handle.isRunnerAlive {
-            throw MudroomError.invalid("session \(handle.session.id) is still running; let the agent finish (or quit it) first")
+            throw MudroomError.invalid("session \(handle.session.id) is still running; let the agent finish (or quit it) first, or stop it with `mudroom stop \(handle.session.id)`")
         }
         guard handle.session.started != nil else { return }
         let b = backend ?? handle.session.backend.flatMap(BackendChoice.init(backendName:)).flatMap { try? Backends.make($0) }
         if let b, b.isRunning(handle.containerName) {
-            throw MudroomError.invalid("the sandbox \(handle.containerName) is still running; stop it first (\(b.stopHint(handle.containerName)))")
+            throw MudroomError.invalid("the sandbox \(handle.containerName) is still running; stop it first with `mudroom stop \(handle.session.id)` (or `\(b.stopHint(handle.containerName))`)")
         }
+    }
+
+    /// Stops the session's sandbox, e.g. one left running after `mudroom
+    /// start` was killed, and records a session still marked running with
+    /// no runner left as interrupted. Returns whether a sandbox was running.
+    @discardableResult
+    public static func stop(_ handle: inout SessionHandle, backend: SandboxBackend,
+                            wait: TimeInterval = 10) throws -> Bool {
+        let name = handle.containerName
+        let wasRunning = backend.isRunning(name)
+        if wasRunning {
+            backend.stop(name)
+            if backend.isRunning(name) {
+                throw MudroomError.invalid("the sandbox \(name) didn't stop; try `\(backend.stopHint(name))`")
+            }
+            // The runtime CLI that ran it holds the runner lock until it exits.
+            let deadline = Date().addingTimeInterval(wait)
+            while handle.isRunnerAlive && Date() < deadline { usleep(100_000) }
+        }
+        // A live runner records the end itself.
+        try handle.reload()
+        if handle.session.status == .running && !handle.isRunnerAlive {
+            handle.session.runnerPID = nil
+            handle.session.finished = Date()
+            try handle.setStatus(.interrupted)
+        }
+        return wasRunning
     }
 }
 
