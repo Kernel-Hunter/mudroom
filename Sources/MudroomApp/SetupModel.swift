@@ -72,7 +72,7 @@ final class SetupModel {
         var p: [String] = []
         if !runtimeReady { p.append("The VM runtime isn't running") }
         else if !imageReady { p.append(image == .outdated ? "The agent image is out of date" : "The agent image isn't built") }
-        else if !networkReady { p.append("The VM can't reach the network proxy") }
+        else if !networkReady { p.append("A VM can't reach Mudroom's network proxy") }
         if !anySignedIn { p.append("No agent is signed in") }
         return p
     }
@@ -229,7 +229,7 @@ final class SetupModel {
             return Result {
                 let r = try NetworkRepair.repair(run: NetworkRepair.containerRunner(exe), force: force, progress: { step in
                     let text: String = switch step {
-                    case .stopping: "Stopping the container system…"
+                    case .stopping: "Stopping the VM runtime…"
                     case .starting: "Starting it again…"
                     case .recreatingNetwork: "Recreating Mudroom's VM network…"
                     case .checking: "Checking again…"

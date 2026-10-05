@@ -133,7 +133,7 @@ struct NewSessionSheet: View {
                         HStack(spacing: 8) {
                             Image(systemName: "person.crop.circle.badge.exclamationmark").foregroundStyle(.orange)
                             Text(localModels && aiderNeedsModel
-                                 ? "For local models, use Custom with the model named: aider --yes-always --no-auto-commits --model ollama_chat/<model>"
+                                 ? "Aider needs a model name to use local models. Pick Custom and run: aider --yes-always --no-auto-commits --model ollama_chat/<model>"
                                  : p.isMultiProvider ? "\(p.name) needs an API key (or local models, below)." : "\(p.name) isn't signed in yet.")
                                 .font(.system(size: 11.5))
                             Spacer()
@@ -180,7 +180,7 @@ struct NewSessionSheet: View {
 
             if let problem = networkProblem {
                 Banner(style: .warning, title: "The VM network isn't working",
-                       detail: problem.summary.prefix(1).uppercased() + problem.summary.dropFirst() + ". Restarting the container system usually fixes it.",
+                       detail: problem.summary.prefix(1).uppercased() + problem.summary.dropFirst() + ". Restarting the VM runtime usually fixes it.",
                        actions: AnyView(
                         Button(app.setup.networkBusy ? "Repairing…" : "Repair Network") {
                             Task {
@@ -233,7 +233,8 @@ struct NewSessionSheet: View {
         case .locked:
             let agentHosts = NetworkDefaults.hosts(forAgent: preset?.id)
             var parts: [String] = []
-            if !agentHosts.isEmpty { parts.append("\(preset?.name ?? "the agent")'s API") }
+            if preset?.isMultiProvider ?? true { parts.append("the API hosts of the provider keys you set") }
+            else if !agentHosts.isEmpty { parts.append("\(preset?.name ?? "the agent")'s API") }
             if !projectHosts.isEmpty { parts.append("\(projectHosts.count) host\(projectHosts.count == 1 ? "" : "s") you allowed") }
             let what = parts.isEmpty ? "nothing (add hosts from the Network tab)" : parts.joined(separator: " and ")
             return "The VM can only reach \(what). Blocked attempts show up in the review."

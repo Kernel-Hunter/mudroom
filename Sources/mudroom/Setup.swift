@@ -34,7 +34,7 @@ struct SetupCommand: ParsableCommand {
         discussion: """
         Checks each step and fixes what it can: installs Apple's `container` with Homebrew \
         and starts it (with its recommended kernel), builds the agent image, checks that a VM \
-        reaches Mudroom's proxy (and restarts the container system if not), then signs agents in. \
+        reaches Mudroom's proxy (and restarts the VM runtime if not), then signs agents in. \
         Run it again any time; steps that are done are skipped.
         """)
 
@@ -47,7 +47,7 @@ struct SetupCommand: ParsableCommand {
     @Flag(help: "Only report what is missing; change nothing.")
     var check = false
 
-    @Flag(help: "Restart the container system even if the network check passes.")
+    @Flag(help: "Restart the VM runtime even if the network check passes.")
     var repairNetwork = false
 
     @OptionGroup var backendOptions: BackendOptions
@@ -83,7 +83,7 @@ struct SetupCommand: ParsableCommand {
             break
         }
         if case .stopped(let exe) = state {
-            if !check, confirm("   \(resolved == .apple ? "container services are" : "\(resolved.rawValue) is") not running. Start now?", yes: yes) {
+            if !check, confirm("   \(resolved == .apple ? "The VM runtime" : resolved.rawValue) isn't running. Start it now?", yes: yes) {
                 do {
                     try RuntimeSetup.start(resolved, executable: exe) { say("   | \($0)") }
                 } catch { fail(error) }
@@ -137,7 +137,7 @@ struct SetupCommand: ParsableCommand {
             var offered = false
             if (result.needsRepair || repairNetwork) && !check {
                 if backend.name == "apple-container",
-                   confirm("   Repair it? This restarts Apple's container system.", yes: yes || repairNetwork) {
+                   confirm("   Repair it? This restarts the VM runtime (about 10 seconds).", yes: yes || repairNetwork) {
                     result = repairAndProbe(backend)
                     say("   \(result.isOK ? "ok: " : "still failing: ")\(result.summary)")
                     offered = true
@@ -149,7 +149,7 @@ struct SetupCommand: ParsableCommand {
             // --check, no terminal to ask in, or the repair was declined.
             if result.needsRepair && !offered {
                 say(backend.name == "apple-container"
-                    ? "   fix: mudroom setup --repair-network   (restarts Apple's container system, about 10 seconds)"
+                    ? "   fix: mudroom setup --repair-network   (restarts the VM runtime, about 10 seconds)"
                     : "   fix: restart \(backend.name) (Docker Desktop: Troubleshoot > Restart) and run setup again")
             }
             if !result.isOK { problems += 1 }
@@ -177,7 +177,7 @@ struct SetupCommand: ParsableCommand {
         if signInMissing && !noSignIn { problems += 1 }
 
         if problems == 0 && signInMissing {
-            say("\nThe runtime, image and network are ready. Sign an agent in when you want to: mudroom setup, or Setup in the app.")
+            say("\nThe VM runtime, agent image and VM network are ready. Sign an agent in when you want to: mudroom setup, or Setup in the app.")
         } else {
             say(problems == 0 ? "\nAll set. Start a session in the app, or: mudroom run <project> -- claude --dangerously-skip-permissions"
                               : "\n\(problems) \(problems == 1 ? "step still needs" : "steps still need") attention.")
@@ -188,9 +188,9 @@ struct SetupCommand: ParsableCommand {
     func hint(_ p: AgentPreset) -> String {
         switch p.id {
         case "claude": "not signed in: mudroom agent login claude"
-        case "codex": HostLogin.forAgent("codex")?.isAvailable == true ? "not signed in: mudroom agent import codex" : "not signed in: mudroom agent login codex"
-        case "gemini": HostLogin.forAgent("gemini")?.isAvailable == true ? "not signed in: mudroom agent import gemini" : "not signed in: mudroom agent login gemini, or mudroom keys set GEMINI_API_KEY"
-        case "aider": "needs an API key (mudroom keys set OPENROUTER_API_KEY, or another provider) or a local model (mudroom network local-models on, then aider --model ollama_chat/<model>)"
+        case "codex": HostLogin.forAgent("codex")?.isAvailable == true ? "not signed in: mudroom agent import codex, or mudroom keys set OPENAI_API_KEY" : "not signed in: mudroom agent login codex, or mudroom keys set OPENAI_API_KEY"
+        case "gemini": HostLogin.forAgent("gemini")?.isAvailable == true ? "not signed in: mudroom agent import gemini, or mudroom keys set GEMINI_API_KEY" : "not signed in: mudroom agent login gemini, or mudroom keys set GEMINI_API_KEY"
+        case "aider": "needs an API key (mudroom keys set OPENROUTER_API_KEY, or another provider), or a model named with --model (for local models: mudroom network local-models on, then aider --model ollama_chat/<model>)"
         default: "needs an API key (mudroom keys set OPENROUTER_API_KEY, or another provider) or local models (mudroom network local-models on)"
         }
     }
@@ -249,7 +249,7 @@ func repairAndProbe(_ backend: SandboxBackend) -> NetworkProbe.Result {
     do {
         let r = try NetworkRepair.repair(run: NetworkRepair.containerRunner(exe), progress: { step in
             switch step {
-            case .stopping: say("   stopping the container system")
+            case .stopping: say("   stopping the VM runtime")
             case .starting: say("   starting it again")
             case .recreatingNetwork: say("   recreating Mudroom's VM network")
             case .checking: say("   checking again")
@@ -423,7 +423,7 @@ extension NetworkCommand {
     struct Probe: ParsableCommand {
         static let configuration = CommandConfiguration(
             abstract: "Check that a VM can reach Mudroom's proxy on this machine (a few seconds).")
-        @Flag(help: "If it fails, restart the container system and check again.")
+        @Flag(help: "If it fails, restart the VM runtime and check again.")
         var repair = false
         @OptionGroup var backendOptions: BackendOptions
 

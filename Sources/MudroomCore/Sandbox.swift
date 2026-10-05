@@ -233,7 +233,7 @@ public struct AppleContainerBackend: SandboxBackend {
             let detail = (started.stderr + started.stdout + status.stderr + status.stdout)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             throw MudroomError.backendUnavailable(
-                "container services are not running and could not be started (\(detail)). Open Mudroom > Setup and click Start.")
+                "the VM runtime isn't running and couldn't be started (\(detail)). Open Mudroom > Setup and click Start, or run `mudroom setup`.")
         }
     }
 

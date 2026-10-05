@@ -38,7 +38,7 @@ public enum MudroomError: Error, CustomStringConvertible, Equatable {
         case .invalid(let why):
             why
         case .networkUnreachable(let why):
-            "\(why). Repair it with `mudroom setup --repair-network` (restarts the container system) or the Repair network button in the app."
+            "\(why). Repair it with `mudroom setup --repair-network` (restarts the VM runtime) or the Repair Network button in Setup."
         }
     }
 

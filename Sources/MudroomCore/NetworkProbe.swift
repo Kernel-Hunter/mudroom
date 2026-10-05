@@ -44,7 +44,7 @@ public enum NetworkProbe {
             case .timeout(let p): "the VM got no answer from the Mac at \(p)"
             case .refused(let p): "the Mac refused the VM's connection to \(p); a firewall may be blocking Mudroom"
             case .failed(let why): "the check couldn't run: \(why)"
-            case .stuck(let s): "the check's VM didn't finish within \(s) seconds; the container system seems stuck"
+            case .stuck(let s): "the check's VM didn't finish within \(s) seconds; the VM runtime seems stuck"
             }
         }
     }

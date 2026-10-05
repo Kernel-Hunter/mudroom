@@ -165,7 +165,7 @@ func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, flags: Run
             // Offer the fix instead of starting a session that can't reach its API.
             print("\nThe VM network isn't working: \(why).")
             guard backend.name == "apple-container",
-                  confirm("Repair it now? This restarts Apple's container system (about 10 seconds).", yes: false) else {
+                  confirm("Repair it now? This restarts the VM runtime (about 10 seconds).", yes: false) else {
                 throw MudroomError.networkUnreachable(why)
             }
             let r = repairAndProbe(backend)
