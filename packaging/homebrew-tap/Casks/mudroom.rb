@@ -1,6 +1,6 @@
 cask "mudroom" do
   version "0.1.0"
-  sha256 "1bdb7b98e119d50cb34c2b55a75769d85f0aa5671050cf4b7da9c21cbf2f3f45"
+  sha256 "781b4b41556f33d974ee795f540c485d9c2636f5813ee9a386cfac88e7fe1e23"
 
   url "https://github.com/Kernel-Hunter/mudroom/releases/download/v#{version}/Mudroom-#{version}.zip"
   name "Mudroom"
