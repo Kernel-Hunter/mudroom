@@ -46,6 +46,7 @@ Linux and Intel Macs.
 - [Review and apply](#review-and-apply)
 - [Docker and Podman](#docker-and-podman)
 - [How it works](#how-it-works)
+- [How it compares](#how-it-compares)
 - [Limitations](#limitations)
 - [Development](#development)
 
@@ -726,6 +727,20 @@ The sandbox layer is a small `SandboxBackend` protocol with two
 implementations: one shells out to Apple's `container` CLI, which boots each
 container in its own lightweight VM, and one to `docker` or `podman`. The
 proxy is plain BSD sockets, so it runs the same on macOS and Linux.
+
+## How it compares
+
+Checked against each project's docs on 2026-09-30. Corrections welcome.
+
+| | Where the agent works | When its writes reach your folder | Review before they land |
+|---|---|---|---|
+| Mudroom | Linux micro-VM, on an APFS clone; your folder is never mounted | When you apply | Diff app, per file and per hunk, with undo |
+| [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/security/) | microVM; your folder mounted read-write by default, or a private git clone with `--clone` | Right away by default; with `--clone`, when you fetch | Through git, in clone mode |
+| [Apple's `sandboxy` example](https://github.com/apple/containerization/tree/main/examples/sandboxy) | Linux VM with your folder shared in | Right away | No |
+| [ArcBox](https://github.com/arcboxlabs/arcbox/blob/master/docs/agent-sandbox.md) | microVM with nothing mounted | Only what you copy out | No |
+| [Claude Code sandboxing](https://code.claude.com/docs/en/sandboxing) | Your real folder, with OS-level limits (no VM) | Right away | Per-edit prompts, unless you skip permissions |
+
+If your project is a git repo and you're happy reviewing with git, Docker Sandboxes' `--clone` mode gets you close. Mudroom also covers untracked and ignored files and folders that aren't repos, and gives you a review screen and per-apply undo.
 
 ## Limitations
 
