@@ -47,7 +47,12 @@ public enum MudroomError: Error, CustomStringConvertible, Equatable {
     public static func message(_ error: Error) -> String {
         if let e = error as? MudroomError { return e.description }
         if error is CocoaError || error is POSIXError || type(of: error) == NSError.self {
-            return (error as NSError).localizedDescription
+            let ns = error as NSError
+            let text = ns.localizedDescription
+            // Linux Foundation's messages leave out the file name.
+            let path = (ns.userInfo[NSFilePathErrorKey] as? String) ?? (ns.userInfo[NSURLErrorKey] as? URL)?.path
+            if let path, !text.contains((path as NSString).lastPathComponent) { return "\(text) (\(path))" }
+            return text
         }
         return "\(error)"
     }
