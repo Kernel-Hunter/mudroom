@@ -8,6 +8,7 @@ OUT=$PWD/docs/screenshots
 mkdir -p "$OUT"
 [[ -d build/Mudroom.app ]] || scripts/build-app.sh
 scripts/make-demo.sh >/dev/null
+trap '[[ -f build/demo/lock-holder.pid ]] && kill $(cat build/demo/lock-holder.pid) 2>/dev/null' EXIT
 APP=build/Mudroom.app/Contents/MacOS/Mudroom
 export MUDROOM_HOME=$PWD/build/demo/store
 shot() {  # shot <name> <appearance> [extra defaults...]

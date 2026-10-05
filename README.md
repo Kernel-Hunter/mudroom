@@ -16,8 +16,7 @@ Linux and Intel Macs.
 
 > Status: early prototype. Expect rough edges and breaking changes.
 
-<!-- Demo GIF goes here: ![Mudroom demo](docs/demo.gif) -->
-![Reviewing a session in Mudroom](docs/screenshots/review-light.png)
+![Mudroom: start a session, review the diff, check the network log, apply](docs/demo.gif)
 
 ## Quick start
 

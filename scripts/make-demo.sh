@@ -13,6 +13,7 @@ export MUDROOM_HOME=$ROOT/store
 M=${MUDROOM:-$PWD/.build/debug/mudroom}
 [[ -x $M ]] || swift build --product mudroom
 
+[[ -f $ROOT/lock-holder.pid ]] && kill $(cat $ROOT/lock-holder.pid) 2>/dev/null || true
 rm -rf "$ROOT"
 mkdir -p "$ROOT/projects"
 
@@ -420,8 +421,14 @@ setjson $MUDROOM_HOME/sessions/$DID created="\"$(ago 26H)\""
 
 RID=$($M new $G --agent "Claude Code" -- claude --dangerously-skip-permissions)
 echo '// TODO: rate limiting' >> $MUDROOM_HOME/sessions/$RID/work/src/server.go
-# pid 1 always exists, so the app shows this session as running.
-setjson $MUDROOM_HOME/sessions/$RID status='"running"' runnerPID=1 started="\"$(ago 2M)\"" created="\"$(ago 2M)\""
+# A real run holds the runner lock; a background process holds it here
+# (for 10 minutes, or until scripts/screenshots.sh kills it), so the app
+# shows this session as running.
+python3 -c 'import fcntl, sys, time
+f = open(sys.argv[1], "w"); fcntl.flock(f, fcntl.LOCK_EX); time.sleep(600)' \
+  $MUDROOM_HOME/sessions/$RID/runner.lock >/dev/null 2>&1 &!
+echo $! > $ROOT/lock-holder.pid
+setjson $MUDROOM_HOME/sessions/$RID status='"running"' runnerPID=$(cat $ROOT/lock-holder.pid) started="\"$(ago 2M)\"" created="\"$(ago 2M)\""
 
 echo "demo store: $MUDROOM_HOME"
 echo "review session: $ID"
