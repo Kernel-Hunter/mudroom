@@ -21,7 +21,7 @@ struct Mudroom: ParsableCommand {
         """,
         version: mudroomVersion,
         subcommands: [SetupCommand.self, Run.self, New.self, Start.self, Diff.self, Review.self, Hunks.self, Apply.self, Undo.self,
-                      Snapshots.self, NetworkCommand.self, Agent.self, Keys.self, List.self, Discard.self, Image.self]
+                      Snapshots.self, NetworkCommand.self, Agent.self, Keys.self, List.self, Stop.self, Discard.self, Image.self]
     )
 }
 
@@ -463,6 +463,32 @@ struct List: ParsableCommand {
     }
 }
 
+struct Stop: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        abstract: "Stop a session's sandbox, e.g. one still running after mudroom was killed.")
+
+    @Argument(help: "Session id, unique prefix, or 'last'.")
+    var session: String
+
+    @OptionGroup var backendOptions: BackendOptions
+
+    func run() throws {
+        do {
+            var handle = try store().open(session)
+            let backend = try backendOptions.make(recorded: handle.session.backend)
+            let stopped = try SessionGuard.stop(&handle, backend: backend)
+            let id = handle.session.id
+            if stopped {
+                print("stopped \(handle.containerName)")
+            } else {
+                print("\(handle.containerName) isn't running")
+            }
+            if handle.session.status == .interrupted { print("session \(id) marked interrupted") }
+            if handle.isRunnerAlive { print("session \(id) is still running in another terminal; it records the end itself") }
+        } catch { fail(error) }
+    }
+}
+
 struct Discard: ParsableCommand {
     static let configuration = CommandConfiguration(
         abstract: "Delete a session (its clones and rollback bundles). The project is not touched.")
@@ -481,7 +507,7 @@ struct Discard: ParsableCommand {
                 return
             }
             let handle = try store().open(session)
-            if handle.isRunnerAlive { throw MudroomError.invalid("session \(handle.session.id) is still running") }
+            try SessionGuard.ensureIdle(handle)
             try store().discard(handle, keepRecord: keepRecord)
             print("discarded \(handle.session.id). Its rollback bundles are gone too, so earlier applies can't be undone with mudroom anymore.")
         } catch { fail(error) }

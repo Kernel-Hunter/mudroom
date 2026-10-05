@@ -236,6 +236,7 @@ mudroom diff last --from 1 --to 3
 
 # Housekeeping.
 mudroom list
+mudroom stop <session>          # stops a sandbox left running (e.g. mudroom was killed)
 mudroom discard <session>       # deletes the session's clones, never the project
 
 # Two-step start (what the app does).

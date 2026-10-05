@@ -43,4 +43,42 @@ struct LifecycleTests {
         #expect("\(base)".contains("mudroom setup"))
         #expect("\(base)".contains("Setup in the Mudroom app"))
     }
+
+    @Test("discard is refused while the session's container still runs, and says to use mudroom stop")
+    func guardWhileContainerRuns() throws {
+        var f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
+        f.handle.session.started = Date()
+        try f.handle.setStatus(.running)
+        let b = LifecycleBackend()
+        b.running = [f.handle.containerName]
+        // No runner lock: mudroom itself was killed, the sandbox wasn't.
+        #expect(!f.handle.isRunnerAlive)
+        do {
+            try SessionGuard.ensureIdle(f.handle, backend: b)
+            Issue.record("expected a refusal")
+        } catch {
+            #expect("\(error)".contains("mudroom stop \(f.handle.session.id)"))
+        }
+        #expect(f.handle.hasClones)
+
+        #expect(try SessionGuard.stop(&f.handle, backend: b, wait: 0))
+        #expect(b.stopped == [f.handle.containerName])
+        #expect(f.handle.session.status == .interrupted)
+        #expect(f.handle.session.finished != nil)
+        try f.handle.reload()
+        #expect(f.handle.session.status == .interrupted)
+        try SessionGuard.ensureIdle(f.handle, backend: b)
+        try f.store.discard(f.handle, keepRecord: true)
+    }
+
+    @Test("stop leaves a finished session's record alone and stops nothing that isn't running")
+    func stopIdle() throws {
+        var f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
+        f.handle.session.started = Date()
+        try f.handle.setStatus(.finished, exitCode: 0)
+        let b = LifecycleBackend()
+        #expect(try !SessionGuard.stop(&f.handle, backend: b, wait: 0))
+        #expect(b.stopped.isEmpty)
+        #expect(f.handle.session.status == .finished)
+    }
 }

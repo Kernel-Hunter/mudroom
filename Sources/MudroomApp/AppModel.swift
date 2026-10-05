@@ -11,7 +11,7 @@ enum SessionPhase: Equatable {
         switch h.session.status {
         case .created: self = .notStarted
         case .running: self = h.isRunnerAlive ? .running : .readyToReview
-        case .finished, .undone: self = .readyToReview
+        case .finished, .interrupted, .undone: self = .readyToReview
         case .applied: self = .applied
         case .discarded: self = .discarded
         }
@@ -180,25 +180,34 @@ final class AppModel {
 
     func discardSelected() {
         guard let h = selectedHandle, !h.isRunnerAlive else { return }
-        do {
-            try store.discard(h, keepRecord: true)
-            reviews[h.session.id] = nil
-            review = nil
-            refresh()
-        } catch {
-            errorMessage = "Couldn't discard: \(MudroomError.message(error))"
+        let store = self.store
+        Task {
+            // Off the main thread: checking the sandbox asks the runtime.
+            let result = await Task.detached { Result { try SessionGuard.ensureIdle(h); try store.discard(h, keepRecord: true) } }.value
+            switch result {
+            case .success:
+                reviews[h.session.id] = nil
+                review = nil
+                refresh()
+            case .failure(let error):
+                errorMessage = "Couldn't discard: \(MudroomError.message(error))"
+            }
         }
     }
 
     func removeFromList(_ h: SessionHandle) {
         guard !h.isRunnerAlive else { return }
-        do {
-            try store.discard(h, keepRecord: false)
-            reviews[h.session.id] = nil
-            if selectedSessionID == h.session.id { selectedSessionID = nil }
-            refresh()
-        } catch {
-            errorMessage = "Couldn't remove: \(MudroomError.message(error))"
+        let store = self.store
+        Task {
+            let result = await Task.detached { Result { try SessionGuard.ensureIdle(h); try store.discard(h, keepRecord: false) } }.value
+            switch result {
+            case .success:
+                reviews[h.session.id] = nil
+                if selectedSessionID == h.session.id { selectedSessionID = nil }
+                refresh()
+            case .failure(let error):
+                errorMessage = "Couldn't remove: \(MudroomError.message(error))"
+            }
         }
     }
 }
