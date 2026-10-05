@@ -61,7 +61,9 @@ public enum ProcessRunner {
         if let timeout {
             let pid = process.processIdentifier
             let finished = DispatchSemaphore(value: 0)
-            DispatchQueue.global().async {
+            // A thread of its own: with GCD's pool busy (many captures
+            // waiting at once) the watchdog itself could wait its turn.
+            Thread.detachNewThread {
                 guard finished.wait(timeout: .now() + timeout) == .timedOut else { return }
                 timedOut.value = true
                 kill(pid, SIGTERM)
