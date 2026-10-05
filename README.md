@@ -1,81 +1,86 @@
 # Mudroom
 
-A pull-request gate for local coding agents, for macOS and Linux.
+Run coding agents in a sandbox, then review their changes like a pull request
+before anything touches your project.
 
-Mudroom runs Claude Code, Codex, Gemini CLI, opencode, Aider (or any command) in a sandbox, on
-a copy of your project: a Linux micro-VM on Apple-silicon Macs, or a Docker
-or Podman container elsewhere. Your real folder is never mounted. The
-sandbox can only reach the hosts you allow. When the agent is done you read the
-diff, then apply all of it, some files, some hunks, or none. Every apply can
-be undone.
+Coding agents work best with permission prompts turned off, and that means
+they can delete files or reach any host while you aren't looking. Mudroom
+runs Claude Code, Codex, Gemini CLI, opencode, Aider (or any command) in a
+Linux micro-VM, on a copy-on-write clone of your project, with network access
+limited to the hosts you allow. Your real folder is never mounted. When the
+agent is done you read the diff, apply all of it, some files, some hunks or
+none, and undo any apply later.
+
+macOS app and CLI on Apple-silicon Macs. CLI only (with Docker or Podman) on
+Linux and Intel Macs.
 
 > Status: early prototype. Expect rough edges and breaking changes.
 
+<!-- Demo GIF goes here: ![Mudroom demo](docs/demo.gif) -->
 ![Reviewing a session in Mudroom](docs/screenshots/review-light.png)
 
 ## Quick start
 
-1. Install Mudroom (Apple-silicon Mac, macOS 26 or later):
+1. Install (Apple-silicon Mac, macOS 26 or later):
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/mudroom/main/install.sh | sh
    ```
 
-2. Open Mudroom. The Setup window opens on the first launch. Click through it:
-   - **VM runtime**: Install (runs `brew install container`) and Start. The
-     first start downloads Apple's recommended Linux kernel without asking.
-   - **Agent image**: Build. It takes a few minutes the first time and shows
-     its progress. A network check runs right after.
-   - **Sign in**: "Use my Claude account" opens your browser; approve there
-     and you're done. Codex and Gemini CLI can reuse the login you already
-     have on this Mac. For opencode and Aider, paste an API key (OpenRouter
-     works for most models).
+2. Open Mudroom and work through the Setup window: install and start the VM
+   runtime, build the agent image (a few minutes, once), and sign in an
+   agent. `mudroom setup` does the same in a terminal.
 
-3. Click New Session, pick a folder and an agent, and Start.
+3. Click New Session, pick a folder and an agent, and start. When the agent
+   finishes, review the diff in Mudroom and apply what you want.
 
-Setup stays out of the way once everything is green. It's always under
-Mudroom > Setup, and the sidebar says so when a step needs attention. On the
-command line, `mudroom setup` does the same steps.
+## Contents
 
-![The Setup window](docs/screenshots/setup-light.png)
+- [Requirements](#requirements)
+- [Install](#install)
+- [Setup](#setup)
+- [The app](#the-app)
+- [Command line](#command-line)
+- [Agents, sign-in and API keys](#agents-sign-in-and-api-keys)
+- [Network](#network)
+- [Review and apply](#review-and-apply)
+- [Docker and Podman](#docker-and-podman)
+- [How it works](#how-it-works)
+- [Limitations](#limitations)
+- [Development](#development)
 
-## Platforms
+## Requirements
 
 | Platform | What you get | Sandbox backend |
 |---|---|---|
 | macOS 26+, Apple silicon | App and CLI | `apple` (Apple's `container`, one VM per session), or `docker`/`podman` |
-| macOS 26, Intel | CLI only (build from source) | `docker` or `podman` |
+| macOS 26+, Intel | CLI only (build from source) | `docker` or `podman` |
 | Linux x86_64 and arm64 | CLI only (build from source) | `docker` or `podman` |
-| Windows | Not yet. WSL2 might work like Linux, but it is untested. | |
+| Windows | Not supported. WSL2 is untested. | |
+
+The `apple` backend needs Apple's [`container`](https://github.com/apple/container)
+CLI, version 1.5 or later. Setup installs it with Homebrew if you don't have
+it.
 
 The CLI picks a backend with `--backend apple|docker|podman|auto` (or
 `MUDROOM_BACKEND`). `auto`, the default, uses Apple's `container` on an
 Apple-silicon Mac with macOS 26+ where it is installed, otherwise Docker,
 otherwise Podman. A session remembers its backend, so `mudroom start` uses
-the same one again. The review app is macOS only. Everywhere else,
-`mudroom review <session>` is a basic terminal review screen (toggle files,
-read diffs, apply the selection), next to `mudroom diff`, `hunks` and
-`apply`. A fuller terminal review UI for Linux, with per-hunk selection and
-the network log, is planned.
-
-See [Docker and Podman](#docker-and-podman) for how isolation differs from
-the VM backend.
+the same one again. See [Docker and Podman](#docker-and-podman) for how
+isolation differs from the VM backend.
 
 ## Install
-
-The app and the install script need macOS 26 or later on Apple silicon. On
-Linux and Intel Macs, [build the CLI from source](#build-from-source).
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/mudroom/main/install.sh | sh
 ```
 
-The script downloads the latest release, checks its SHA-256, puts
-Mudroom.app in /Applications (or ~/Applications if /Applications isn't
-writable) and links the `mudroom` command into /opt/homebrew/bin,
-/usr/local/bin or ~/.local/bin. It doesn't use sudo. Set
-`MUDROOM_VERSION=0.1.0` to pick a version. To remove Mudroom again (your
-sessions and settings stay):
+The script needs macOS 26 or later on Apple silicon. It downloads the latest
+release, checks its SHA-256 when the release publishes one, puts Mudroom.app
+in /Applications (or ~/Applications if /Applications isn't writable) and
+links the `mudroom` command into /opt/homebrew/bin, /usr/local/bin or
+~/.local/bin. It doesn't use sudo. Set `MUDROOM_VERSION=0.1.0` to pick a
+version. To remove Mudroom (your sessions and settings stay):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Kernel-Hunter/mudroom/main/install.sh | sh -s -- --uninstall
@@ -87,26 +92,10 @@ Or with Homebrew, which also installs Apple's `container` CLI:
 brew install --cask kernel-hunter/tap/mudroom
 ```
 
-Mudroom isn't notarized. The install script and the Homebrew cask remove the
-quarantine flag, so macOS won't block it. If you download the zip in a
-browser, use System Settings > Privacy & Security > Open Anyway, or run
+Mudroom is ad-hoc signed, not notarized. The install script and the Homebrew
+cask remove the quarantine flag, so macOS opens it. If you download the zip
+in a browser, use System Settings > Privacy & Security > Open Anyway, or run
 `xattr -dr com.apple.quarantine /Applications/Mudroom.app`.
-
-Then open the app and follow Setup, or run it from a terminal:
-
-```sh
-mudroom setup                   # runtime, agent image, VM network, sign-in; asks before each fix
-mudroom setup --yes --no-sign-in   # unattended: install, start, build, repair, then stop
-```
-
-By hand, the same steps are `brew install container`, `container system start
---enable-kernel-install`, `mudroom image build` (Node LTS, git, ripgrep,
-Claude Code, Codex, Gemini CLI, opencode and Aider) and `mudroom agent login
-claude`.
-
-Mudroom needs Apple's [`container`](https://github.com/apple/container) CLI
-1.5 or later. Earlier versions may lack host-only networks; see
-[Network](#network).
 
 ### Build from source
 
@@ -126,58 +115,57 @@ swift build -c release
 cp .build/release/mudroom /usr/local/bin/   # or anywhere on your PATH
 ```
 
-On Linux you need Swift 6.2 or later ([swift.org/install](https://www.swift.org/install/)),
-plus Docker Engine or Podman. Then build the agent image once:
+On Linux you need Swift 6.2 or later ([swift.org/install](https://www.swift.org/install/))
+and Docker Engine or Podman. Then build the agent image once:
 
 ```sh
 mudroom image build --backend docker      # or --backend podman
 mudroom network check --backend docker    # see what the sandbox can reach
 ```
 
-## Why
+## Setup
 
-Agents in "skip permissions" mode are fast, and every so often they delete
-something they shouldn't, or reach somewhere they shouldn't. There are good
-tools for parts of this:
+The Setup window opens on the first launch. It has four steps:
 
-- Apple's `sandboxy` example runs the agent in a VM, but shares your project
-  folder into it live (virtio-fs), so every write lands in your real files as
-  it happens.
-- Docker Sandboxes (`sbx`) mounts the folder read-write by default. Its
-  `--clone` mode is closer to Mudroom: the repo is mounted read-only, the
-  agent works on a private git clone, and you `git fetch` the result and
-  review it with your usual git tools.
-- ArcBox mounts nothing: `/workspace` starts empty and you copy files in and
-  out yourself.
-- vibe-kanban runs agents on git worktrees and gives you a diff review and
-  merge step, without a VM.
+1. **VM runtime**: Install runs `brew install container`, and Start starts
+   it. The first start also downloads Apple's recommended Linux kernel.
+2. **Agent image**: Build creates `mudroom/agent-base:latest` with Node LTS,
+   git, ripgrep and the agent CLIs (Claude Code, Codex, Gemini CLI, opencode
+   and Aider). It takes a few minutes and about 1.5 GB the first time.
+3. **VM network**: a quick check that a VM reaches Mudroom's network proxy,
+   with a Repair button if it doesn't.
+4. **Sign in**: "Use my Claude account" opens your browser; approve there and
+   you're done. Codex and Gemini CLI can reuse the login you already have on
+   this Mac. For opencode and Aider, add a provider API key (OpenRouter works
+   for most models).
 
-Mudroom puts these pieces together in one place:
+Setup stays out of the way once everything is green. It's always under
+Mudroom > Setup, and the sidebar tells you when a step needs attention. If
+the VM runtime stops later (after a reboot, say), starting a session starts
+it again.
 
-- The agent runs in a VM (or a container, see [Platforms](#platforms)), in
-  skip-permissions mode.
-- It works on a copy-on-write clone of the **whole folder** (APFS on macOS,
-  a reflink on btrfs or XFS, a plain copy elsewhere), including untracked,
-  ignored and non-git files. It's not a git clone or worktree, and on APFS
-  it takes no extra disk until files change.
-- The real folder is never mounted.
-- The sandbox sits on a host-only network. Its only way out is a proxy that
-  allows the agent's API plus hosts you add, and logs everything it sees.
-- When the agent is done you get a native review screen on macOS: per-file and
-  per-hunk apply, including deletions, permission bits and symlinks.
-- Apply refuses any file you changed yourself in the meantime, and every
-  apply can be undone.
-- Snapshots taken while the agent runs let you see what it did after a given
-  point.
+![The Setup window](docs/screenshots/setup-light.png)
+
+In a terminal:
+
+```sh
+mudroom setup                      # checks each step and asks before each fix
+mudroom setup --yes --no-sign-in   # unattended: install, start, build, repair; skip sign-in
+mudroom setup --check              # report only, change nothing
+```
+
+By hand, the same steps are `brew install container`, `container system start
+--enable-kernel-install`, `mudroom image build` and `mudroom agent login
+claude`.
 
 ## The app
 
 - **Sidebar**: sessions grouped by project, each with its agent, time and
   status (running, ready to review, applied, discarded).
 - **New Session** (⌘N): pick a folder, an agent (Claude Code, Codex, Gemini
-  CLI or a custom command) and a network mode (Locked, Open, Offline), then
-  start. Mudroom clones the folder and opens the agent in a new Terminal
-  window.
+  CLI, opencode, Aider or a custom command) and a network mode (Locked, Open,
+  Offline), then start. Mudroom clones the folder and opens the agent in a
+  new Terminal window.
 - **Review, Files**: changed files grouped into Added, Modified, Deleted and
   Mode & Type, each with a checkbox. The right pane shows a unified or
   side-by-side diff with line numbers. Modified text files have a checkbox per
@@ -190,8 +178,8 @@ Mudroom puts these pieces together in one place:
 - **Conflicts**: files you changed yourself since the session started are
   flagged in the list and above the diff, and are never overwritten.
 - **Apply Selected** (⌘↩), **Apply All** (⇧⌘↩), **Undo** (⌥⌘Z) and
-  **Discard** (⌘⌫). One click is one rollback bundle, so one Undo reverts it.
-  Space toggles the selected file.
+  **Discard** (⌘⌫). Each apply can be undone in one step. Space toggles the
+  selected file.
 
 | | |
 |---|---|
@@ -199,19 +187,21 @@ Mudroom puts these pieces together in one place:
 | ![Dark mode, split diff](docs/screenshots/review-split-dark.png) | ![A conflict](docs/screenshots/conflict-light.png) |
 | ![After a partial apply](docs/screenshots/applied-light.png) | ![New session](docs/screenshots/new-session-light.png) |
 
-Why Terminal: agents are interactive terminal programs and you often need to
-answer them. Terminal.app gives you scrollback, copy/paste and resizing
-without Mudroom shipping a terminal emulator. The app writes a small
-`run.command` into the session folder that runs `mudroom start <id>` in a
-login shell (so `PATH` and API keys match your usual shell), and it follows
-progress by polling `session.json`, which `mudroom start` keeps up to date.
-An embedded terminal may come later.
+Agents are interactive terminal programs, and you often need to answer them,
+so sessions run in Terminal.app instead of a terminal built into Mudroom. The
+app writes a small `run.command` into the session folder that runs `mudroom
+start <id>` in a login shell (so `PATH` and API keys match your usual shell),
+and follows progress through `session.json`, which `mudroom start` keeps up
+to date.
+
+The review app is macOS only. Elsewhere, `mudroom review <session>` is a
+basic terminal review screen (toggle files, read diffs, apply the selection),
+next to `mudroom diff`, `hunks` and `apply`.
 
 ## Command line
 
 ```sh
 # Start a session: clone the project, boot a VM, run the agent on the clone.
-export ANTHROPIC_API_KEY=...    # passed through only if set
 mudroom run ~/code/myapp -- claude --dangerously-skip-permissions
 
 # Review.
@@ -245,8 +235,10 @@ mudroom start <session>
 
 Sessions can be named by full id, a unique prefix, or `last`. `run` and
 `start` also take `--network locked|open|offline`, `--allow <host>` (this run
-only), `--snapshot-every <minutes>`, `--backend apple|docker|podman|auto`
-and, for Docker and Podman, `--oci-runtime <name>` (for example `runsc`).
+only), `--snapshot-every <minutes>`, `--cpus`, `--memory`, `--backend
+apple|docker|podman|auto` and, for Docker and Podman, `--oci-runtime <name>`
+(for example `runsc`). If the VM runtime isn't running, `run` and `start`
+start it first.
 
 ### Network settings
 
@@ -265,31 +257,34 @@ Settings are per project, in
 `~/.local/share/mudroom/projects/<hash>.json` on Linux, outside the project
 so the agent can't change them.
 
-### Credentials and logins
+## Agents, sign-in and API keys
 
 Sessions never stop to ask you to sign in. Sign each agent in once, in Setup
-or with these commands, and every session after that starts signed in. New
-Session points you to Setup when the agent you picked isn't signed in yet,
-and `mudroom run` and `mudroom start` refuse to start Claude Code, Codex or
-Gemini CLI before it is (add `--sign-in-in-session` to sign in inside the
-session instead).
+or from a terminal, and every later session starts signed in. New Session
+sends you to Setup when the agent you picked isn't ready, and `mudroom run`
+and `mudroom start` refuse to start Claude Code, Codex or Gemini CLI before
+it is signed in (add `--sign-in-in-session` to sign in inside the session
+instead). Aider needs either a provider key or a model named with `--model`;
+without one, the session stops right away with a message instead of waiting
+for a sign-in that can't finish inside the VM.
 
-`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY` and
-`GEMINI_API_KEY` are also forwarded into the VM when they are set in your
-shell. Everything is passed by name (`container run --env NAME`, `docker run
---env NAME`), so values don't show up in the process list. The runtime does
-keep them in the container's configuration while the session runs (Apple's
-`container`: `~/Library/Application Support/com.apple.container/containers/`;
-Docker: `docker inspect`); that goes away when the session ends.
+| Agent | Ways to sign in |
+|---|---|
+| Claude Code | Your Claude account (`claude setup-token` on the Mac), a sign-in inside the VM, or `ANTHROPIC_API_KEY` |
+| Codex | Your existing ChatGPT login (`~/.codex/auth.json`), a device code, or an OpenAI API key |
+| Gemini CLI | Your existing Google login (`~/.gemini/oauth_creds.json`), a sign-in inside the VM, or `GEMINI_API_KEY` |
+| opencode, Aider, custom commands | Any provider API key, or local models |
 
-**Claude Code: your Claude account.** If the `claude` CLI is installed on your
-Mac (Mudroom looks on your PATH, then in `~/.local/bin`, `/opt/homebrew/bin`
-and `/usr/local/bin`, then on your login shell's PATH), "Use my Claude account" in Setup, or `mudroom
-agent login claude`, runs `claude setup-token` in a terminal of its own.
-Claude opens your browser; once you approve, Mudroom reads the long-lived
-token from Claude's output and stores it. You never see or copy it, and it is
-hidden from the output Mudroom shows. If the page shows a code instead,
-paste it into the field in Setup (or the terminal).
+### Claude Code: your Claude account
+
+If the `claude` CLI is installed on your Mac (Mudroom looks on your PATH,
+then in `~/.local/bin`, `/opt/homebrew/bin` and `/usr/local/bin`, then on your
+login shell's PATH), "Use my Claude account" in Setup, or `mudroom agent
+login claude`, runs `claude setup-token` in a terminal of its own. Claude
+opens your browser. Once you approve, Mudroom reads the long-lived token from
+Claude's output and stores it. You never see or copy it, and Mudroom hides
+it from the output it shows. If the page shows a code instead, paste it into
+the field in Setup (or the terminal).
 
 ```sh
 mudroom agent login claude      # the same from a terminal
@@ -305,41 +300,49 @@ Claude Code's first-run screens (theme, the bypass-permissions notice, folder
 trust for `/workspace`) as done in its own copy of Claude's settings, so a
 session starts straight at the prompt.
 
-**Codex and Gemini CLI: the login you already have.** If `~/.codex/auth.json`
-or `~/.gemini/oauth_creds.json` exists, "Use my ChatGPT login" or "Use my
-Google login" copies it into Mudroom's agent directory, only when you click.
-It is a copy: the original isn't changed or mounted. If you sign in again on
-the Mac later, import again.
+### Codex and Gemini CLI: the login you already have
+
+If `~/.codex/auth.json` or `~/.gemini/oauth_creds.json` exists, "Use my
+ChatGPT login" or "Use my Google login" copies it into Mudroom's agent
+directory, only when you click. It is a copy: the original isn't changed or
+mounted. If you sign in again on the Mac later, import again.
 
 ```sh
 mudroom agent import codex
 mudroom agent import gemini
 ```
 
-**Signing in inside a VM.** Without those, the agent signs in inside a VM.
-In Setup, the device code (Codex) or the sign-in page (Claude, Gemini) opens
-for you, and a visible field takes the code the page gives you.
+With an OpenAI API key and no ChatGPT login, Codex sessions get the key as
+both `OPENAI_API_KEY` and `CODEX_API_KEY` (Codex reads the second one).
+
+### Signing in inside a VM
+
+Without those, the agent signs in inside a VM. In Setup, the device code
+(Codex) or the sign-in page (Claude, Gemini) opens for you, and a field takes
+the code the page gives you.
 
 ```sh
 mudroom agent login claude --in-vm   # `claude auth login` in the sandbox
-mudroom agent login codex       # `codex login --device-auth`
-mudroom agent login gemini      # Gemini CLI's sign-in screen, NO_BROWSER mode
-mudroom agent status            # signed in / token stored, per agent
+mudroom agent login codex            # `codex login --device-auth`
+mudroom agent login gemini           # Gemini CLI's own sign-in screen
+mudroom agent status                 # signed in or not, per agent
 ```
 
-Copying the sign-in link out of the terminal is fragile: it wraps over several
+Copying a sign-in link out of a terminal is fragile: it wraps over several
 lines, and losing the end gives errors such as "Invalid
-code_challenge_method". Mudroom doesn't rely on that. Each run sets `BROWSER`
-in the sandbox to a small script on a mounted folder, so when the agent tries
-to open the link, Mudroom gets it on the host. It checks that the link is an
-https page on a known sign-in host (claude.ai, claude.com,
-platform.claude.com, console.anthropic.com, auth.openai.com, chatgpt.com,
-accounts.google.com), opens it in your browser, copies it to the clipboard and
-prints it on one line. For Claude Code, whose link points back to a port
-inside the sandbox, the redirect is swapped for Claude's own "copy this code"
-page; the rest of the request (PKCE challenge, state) is unchanged. After
-signing in, paste the code back: in Setup into the code field, in a terminal
-where the prompt is (the agent's prompt doesn't echo it).
+code_challenge_method". So each run sets `BROWSER` in the sandbox to a small
+script on a mounted folder, and when the agent tries to open the link,
+Mudroom gets it on the host. It checks that the link is an https page on a
+known sign-in host (claude.ai, claude.com, platform.claude.com,
+console.anthropic.com, auth.openai.com, chatgpt.com, accounts.google.com),
+opens it in your browser, copies it to the clipboard and prints it on one
+line. Claude Code's link points back to a port inside the sandbox, so
+Mudroom swaps the redirect for Claude's own "copy this code" page and leaves
+the rest of the request (PKCE challenge, state) unchanged. After signing in,
+paste the code back: in Setup into the code field, in a terminal where the
+prompt is (the agent's prompt doesn't echo it).
+
+### Agent config directories
 
 Each agent gets its own config directory,
 `~/Library/Application Support/Mudroom/agents/<agent>/home` (Linux:
@@ -349,7 +352,7 @@ gets a copy, `sessions/<id>/agent-home`, at `/home/node/.claude`,
 `/home/node/.codex` or `/home/node/.gemini`. When the session ends, only the
 sign-in is copied back (`.credentials.json` and the account fields of
 `.claude.json` for Claude Code, `auth.json` for Codex, `oauth_creds.json` and
-`google_accounts.json` for Gemini), so a login made in a session sticks, while
+`google_accounts.json` for Gemini). A login made in a session sticks, while
 settings, hooks or MCP servers a session adds stay in that session.
 
 ### API keys
@@ -367,8 +370,7 @@ mudroom keys remove OPENROUTER_API_KEY
 Known names: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
 `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`,
 `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `XAI_API_KEY`. Any other
-upper-case name works too. Keys live in the Keychain (Linux: 0600 files) and
-reach sessions by name only.
+upper-case name works too. Keys live in the Keychain (Linux: 0600 files).
 
 Claude Code, Codex and Gemini CLI get only their own key. opencode, Aider and
 custom commands get all of them, and in locked mode the API host of each
@@ -379,6 +381,26 @@ generativelanguage.googleapis.com). When Claude Code has a sign-in token, a
 stored `ANTHROPIC_API_KEY` is left out, so Claude doesn't stop to ask which
 one to use.
 
+`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY` and
+`GEMINI_API_KEY` are also forwarded from your shell when they are set there.
+
+### How secrets reach the sandbox
+
+Tokens and keys are passed by name (`container run --env NAME`, `docker run
+--env NAME`), so their values don't show up in the process list or on a
+command line. The runtime does write them down while the session runs:
+
+- Apple's `container` stores each running container's configuration,
+  environment included, in plain text in a `config.json` with mode 0644 under
+  `~/Library/Application Support/com.apple.container/containers/`. Your
+  `~/Library` folder is private to your user, but any process running as
+  you can read that file while the session is up.
+- Docker and Podman show the environment in `docker inspect` / `podman
+  inspect` to anyone who can talk to the daemon.
+
+The entry goes away when the session's container is removed at the end of
+the session.
+
 ### Local models (Ollama, LM Studio)
 
 Turn on Local models for a project (New Session, or `mudroom network
@@ -388,15 +410,17 @@ Mac. They are reached as `http://host.mudroom.internal:11434` (Ollama) and
 which connects to 127.0.0.1 on those two ports itself. No other port on the
 Mac becomes reachable, and nothing else changes about the allowlist.
 Sessions get `OLLAMA_HOST`, `OLLAMA_API_BASE` (Aider) and `LM_STUDIO_API_BASE`
-pointing there. For example, with the Custom agent:
+pointing there. Local models need locked mode: open and offline sessions
+don't go through the proxy.
+
+Aider needs the model named. In the app, pick Custom and enter:
 
 ```sh
 aider --yes-always --no-auto-commits --model ollama_chat/qwen2.5:7b-instruct
 ```
 
-For Aider the model name is enough; it reads `OLLAMA_API_BASE`. opencode
-needs the provider in its config, for example an `opencode.json` in the
-project:
+opencode needs the provider in its config, for example an `opencode.json` in
+the project:
 
 ```json
 {
@@ -412,27 +436,104 @@ project:
 
 and then `opencode run -m ollama/qwen2.5:7b-instruct "..."` (or pick the model
 in opencode). Small models often get tool calls wrong; that is the model, not
-the sandbox. Local models need locked mode: open and offline sessions don't
-go through the proxy.
+the sandbox.
+
+## Network
+
+Each project has a mode:
+
+- **Locked** (default). The VM is attached to a host-only network
+  (`container network create --internal`, named `mudroom-hostonly`). It has
+  no route to the internet and no DNS. `mudroom start` runs a small HTTP
+  proxy on the Mac for as long as the agent runs, and the VM gets
+  `HTTP_PROXY`/`HTTPS_PROXY` pointing at it. The proxy handles `CONNECT`
+  (HTTPS) and plain HTTP, lets through only allowlisted hosts, and writes one
+  line per connection (host, port, allowed or blocked, bytes, duration) to
+  the session's `network.jsonl`.
+- **Open**. Normal outbound access. Nothing is filtered or logged.
+- **Offline**. The host-only network with no proxy: no internet at all.
+
+The allowlist is the agent's own hosts plus whatever you add:
+
+| Agent | Default hosts |
+|---|---|
+| Claude Code | api.anthropic.com, console.anthropic.com, platform.claude.com, claude.ai |
+| Codex | api.openai.com, chatgpt.com, auth.openai.com |
+| Gemini CLI | generativelanguage.googleapis.com, cloudcode-pa.googleapis.com, oauth2.googleapis.com, www.googleapis.com |
+| opencode | models.opencode.ai, models.dev (its model catalog), plus the API host of each key you set |
+| Aider, custom commands | the API host of each key you set |
+| Package registries (off by default) | registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, codeload.github.com, *.githubusercontent.com |
+
+Telemetry and error-reporting hosts are left out; Claude Code runs with
+`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` so it doesn't try them. Patterns
+are exact hosts or `*.suffix`, which matches subdomains but not the bare
+domain.
+
+The proxy is strict about what it accepts:
+
+- A host must be a plain DNS name (letters, digits, hyphens, dots) or an IP
+  literal. Anything else is refused: NUL bytes, `%`, spaces, user info,
+  trailing junk, and numeric forms like `0x7f.1` or `2130706433`. The name it
+  checks is the name it connects to.
+- After DNS, the address is checked too. An allowed name that resolves to a
+  loopback, private (10/8, 172.16/12, 192.168/16, fc00::/7), link-local, CGNAT,
+  multicast, VM-network or one of the Mac's own addresses is refused, unless
+  that exact address is on the allowlist.
+- For plain HTTP, the `Host` header is rewritten to the host that was checked.
+- A client gets 10 seconds to send its request head (then 408), the head can
+  be at most 32 KB (then 400), and at most 256 connections are open at once
+  (then 503).
+
+### What the isolation stops
+
+`mudroom network check` starts a sandbox with a project's settings and tries
+to get out. This is its output on macOS 27 with `container` 1.5.0, locked
+mode:
+
+```
+ok        got through  CONNECT api.anthropic.com:443 via proxy: HTTP/1.1 200 Connection Established
+ok        got through  HTTPS GET https://api.anthropic.com/ (proxy variables, if set): HTTP 404
+ok        stopped      CONNECT example.com:443 via proxy: HTTP/1.1 403 Forbidden
+ok        stopped      HTTPS GET https://example.com/ (proxy variables, if set): Request was cancelled.
+ok        stopped      resolve example.com in the sandbox: EAI_AGAIN
+ok        stopped      TCP 1.1.1.1:443, ignoring the proxy: timeout
+ok        stopped      TCP [2606:4700:4700::1111]:443, ignoring the proxy: ENETUNREACH
+ok        stopped      UDP DNS query to 8.8.8.8:53: no reply
+note      got through  TCP 192.168.128.1:7000 (the host on the sandbox network; macOS often listens on 7000): connected
+```
+
+A program in the VM that ignores the proxy settings, or opens raw sockets,
+gets nowhere: no DNS, no route over IPv4, IPv6 or UDP. Offline mode stops
+all of these, including the proxy lines; only the last line (the Mac itself)
+still gets through. Run the check on your own machine before relying on it.
+
+If your `container` version can't create host-only networks, locked mode
+falls back to the normal NAT network with the proxy variables set. The
+session is then marked **proxy-enforced (advisory)** in the CLI and the app:
+well-behaved tools go through the allowlist, but nothing stops a direct
+connection.
 
 ### When the VM can't reach the network
 
 A locked session has one way out, Mudroom's proxy on the Mac. Apple's VM
 network sometimes gets into a state where the VM can't reach the Mac at all
-(`EHOSTUNREACH` to 192.168.128.1) until the container system restarts. Before
-every locked session Mudroom boots a tiny VM and checks that it reaches the
-proxy (about a second). If it doesn't, the session doesn't start; New Session
-and Setup show Repair Network, and in a terminal you're asked:
+(`EHOSTUNREACH` to 192.168.128.1) until the VM runtime restarts. Before a
+locked session, Mudroom boots a tiny VM and checks that it reaches the proxy
+(it skips this if a check passed in the last 90 seconds). If the check
+fails, the session doesn't start; New Session and Setup show Repair Network,
+and in a terminal you can run:
 
 ```sh
 mudroom network probe            # check
-mudroom network probe --repair   # check, and restart the container system if needed
+mudroom network probe --repair   # check, and restart the VM runtime if needed
 mudroom setup --repair-network
 ```
 
 Repair runs `container system stop` and `container system start`, checks
 again, and recreates Mudroom's host-only network if that wasn't enough. It
-won't run while a Mudroom session is running unless you confirm.
+asks first if a Mudroom session is running.
+
+## Review and apply
 
 ### What `diff` shows
 
@@ -448,10 +549,10 @@ git metadata changed (12 entries under .git/)
 ```
 
 Text files get a unified diff from Mudroom's own line diff. Binary files show
-`binary changed (size a -> b)` (or `binary added`, `binary deleted`). Changes inside any `.git` directory (also
-nested ones, and `.GIT` on case-insensitive disks) are collapsed into one line
-unless you pass `--include-git`; `apply` skips them by default for the same
-reason.
+`binary changed (size a -> b)` (or `binary added`, `binary deleted`). Changes
+inside any `.git` directory (also nested ones, and `.GIT` on case-insensitive
+disks) are collapsed into one line unless you pass `--include-git`; `apply`
+skips them by default for the same reason.
 
 Some lines get a marker:
 
@@ -488,13 +589,13 @@ applies. Other rules:
 - Mudroom won't write through a symlinked directory in your project.
 - Before touching a file, Mudroom copies it into a rollback bundle in the
   session directory. `undo` restores from there, and skips any path you changed
-  again after the apply (`--force` overrides).
+  again after the apply (`--force` overrides, and keeps a copy of the edit it
+  replaces).
 - Per-hunk apply uses Mudroom's own line diff (Myers), not `patch`. It
   rebuilds the file from the base version plus the chosen hunks, keeps CRLF
   line endings and a missing final newline as they were, and writes through
   the same checks. A file that already has some hunks from an earlier apply is
   not a conflict; the new hunks are added to it.
-
 - Apply writes what you reviewed. `diff`, `hunks`, `review` and the app
   record the content hash of each file they show you. If the agent's copy
   changed after that, apply refuses that file and asks you to look again.
@@ -509,79 +610,6 @@ applies. Other rules:
 
 Snapshots don't change this: apply always compares the session's base with
 the agent's final copy, whatever point the timeline shows.
-
-## Network
-
-Each project has a mode:
-
-- **Locked** (default). The VM is attached to a host-only network
-  (`container network create --internal`, named `mudroom-hostonly`). It has
-  no route to the internet and no DNS. `mudroom start` runs a small HTTP
-  proxy on the Mac for as long as the agent runs, and the VM gets
-  `HTTP_PROXY`/`HTTPS_PROXY` pointing at it. The proxy handles `CONNECT`
-  (HTTPS) and plain HTTP, lets through only allowlisted hosts, and writes one
-  line per connection (host, port, allowed or blocked, bytes, duration) to
-  the session's `network.jsonl`.
-- **Open**. Normal outbound access. Nothing is filtered or logged.
-- **Offline**. The host-only network with no proxy: no internet at all.
-
-The allowlist is the agent's own hosts plus whatever you add:
-
-| Agent | Default hosts |
-|---|---|
-| Claude Code | api.anthropic.com, console.anthropic.com, platform.claude.com, claude.ai |
-| Codex | api.openai.com, chatgpt.com, auth.openai.com |
-| Gemini CLI | generativelanguage.googleapis.com, cloudcode-pa.googleapis.com, oauth2.googleapis.com, www.googleapis.com |
-| Package registries (off by default) | registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, codeload.github.com, *.githubusercontent.com |
-
-Telemetry and error-reporting hosts are left out; Claude Code runs with
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` so it doesn't try them. Patterns
-are exact hosts or `*.suffix`, which matches subdomains but not the bare
-domain.
-
-The proxy is strict about what it accepts:
-
-- A host must be a plain DNS name (letters, digits, hyphens, dots) or an IP
-  literal. Anything else is refused: NUL bytes, `%`, spaces, user info,
-  trailing junk, and numeric forms like `0x7f.1` or `2130706433`. The name it
-  checks is the name it connects to.
-- After DNS, the address is checked too. An allowed name that resolves to a
-  loopback, private (10/8, 172.16/12, 192.168/16, fc00::/7), link-local, CGNAT,
-  multicast, VM-network or one of the Mac's own addresses is refused, unless
-  that exact address is on the allowlist.
-- For plain HTTP, the `Host` header is rewritten to the host that was checked.
-- A client gets 10 seconds to send its request head (then 408), the head can
-  be at most 32 KB (then 400), and at most 256 connections are open at once
-  (then 503).
-
-### What the isolation actually does
-
-`mudroom network check` starts a sandbox with a project's settings and tries
-to get out. This is its output on macOS 27 with `container` 1.5.0, locked
-mode:
-
-```
-ok        got through  CONNECT api.anthropic.com:443 via proxy: HTTP/1.1 200 Connection Established
-ok        got through  HTTPS GET https://api.anthropic.com/ (proxy variables, if set): HTTP 404
-ok        stopped      CONNECT example.com:443 via proxy: HTTP/1.1 403 Forbidden
-ok        stopped      HTTPS GET https://example.com/ (proxy variables, if set): Request was cancelled.
-ok        stopped      resolve example.com in the sandbox: EAI_AGAIN
-ok        stopped      TCP 1.1.1.1:443, ignoring the proxy: timeout
-ok        stopped      TCP [2606:4700:4700::1111]:443, ignoring the proxy: ENETUNREACH
-ok        stopped      UDP DNS query to 8.8.8.8:53: no reply
-note      got through  TCP 192.168.128.1:7000 (the host on the sandbox network; macOS often listens on 7000): connected
-```
-
-A program in the VM that ignores the proxy settings, or opens raw sockets,
-gets nowhere: no DNS, no route over IPv4, IPv6 or UDP. Offline mode stops
-all of these, including the proxy lines; only the last line (the Mac itself)
-still gets through. Run the check on your own machine before relying on it.
-
-If your `container` version can't create host-only networks, locked mode
-falls back to the normal NAT network with the proxy variables set. The
-session is then marked **proxy-enforced (advisory)** in the CLI and the app:
-well-behaved tools go through the allowlist, but nothing stops a direct
-connection.
 
 ## Docker and Podman
 
@@ -603,12 +631,12 @@ Networks:
   container has no route anywhere, the host included.
 - **Locked**: the same internal network plus a small forwarder container
   attached to both the internal network and the default bridge. It runs
-  read-only with no capabilities and does one thing: relay TCP to Mudroom's
-  proxy on the host (`host.docker.internal`). The proxy applies the
-  allowlist and writes the log, as with the VM backend. On Linux the proxy
-  listens on the default bridge's gateway address and accepts only that
-  bridge; on macOS it listens on 127.0.0.1, which Docker Desktop forwards
-  `host.docker.internal` to.
+  read-only with no capabilities and only relays TCP to Mudroom's proxy on
+  the host (`host.docker.internal`). The proxy applies the allowlist and
+  writes the log, as with the VM backend. On Linux the proxy listens on the
+  default bridge's gateway address and accepts only that bridge; on macOS it
+  listens on 127.0.0.1, which Docker Desktop forwards `host.docker.internal`
+  to.
 
 `mudroom network check --backend docker`, locked mode, gave this on Docker
 Desktop (engine 29.8) on macOS 27, and the same apart from addresses on
@@ -675,13 +703,18 @@ address; `mudroom network check` will tell you.
   agents/<agent>/token   stored token on Linux (macOS: the Keychain)
 ```
 
+The clones cover the whole folder, including untracked, ignored and non-git
+files. They are copy-on-write clones (APFS on macOS, a reflink on btrfs or
+XFS), not git clones or worktrees, so on APFS they take no extra disk until
+files change. If the project is on a different volume or a disk that can't
+clone, Mudroom falls back to plain copies that keep modes, symlinks and
+timestamps.
+
 `diff` compares `base/` with `work/`. `apply` copies from `work/` to the
 project after checking the project against `base/`. Set `MUDROOM_HOME` to keep
 all of this somewhere else. Keychain items don't move with it; add
 `MUDROOM_TOKEN_STORE=file` to keep tokens and keys as 0600 files under
-`MUDROOM_HOME` too (handy for a test setup). If the project is on a different volume or a
-disk that can't clone (not APFS, btrfs or XFS), clones fall back to plain
-copies that keep modes, symlinks and timestamps.
+`MUDROOM_HOME` too (handy for a test setup).
 
 Snapshots are clones of `work/`, taken every 5 minutes while the agent
 runs (configurable per project or with `--snapshot-every`) and once when it
@@ -690,36 +723,37 @@ oldest are pruned past 24.
 
 The sandbox layer is a small `SandboxBackend` protocol with two
 implementations: one shells out to Apple's `container` CLI, which boots each
-container in its own lightweight VM, and one to `docker` or `podman`. A
-backend built directly on the `Containerization` Swift package can be added
-later without touching the diff/apply code. The proxy is plain BSD sockets,
-so it runs the same on macOS and Linux.
+container in its own lightweight VM, and one to `docker` or `podman`. The
+proxy is plain BSD sockets, so it runs the same on macOS and Linux.
 
 ## Limitations
 
-- **With the apple backend, the VM can reach services on your Mac.** The host-only network's gateway
-  is the Mac itself, so anything listening on all interfaces (AirPlay
-  Receiver on port 7000, a dev server bound to `0.0.0.0`, a database) is
-  reachable from the VM. `network check` reports this. Bind local services to
-  `127.0.0.1`, or turn off the ones you don't need. Apple's `sandboxy`
-  documents the same gap. Closing it needs packet filtering that neither
-  `container` nor Mudroom offers yet. The Docker backend doesn't have this
-  gap (see [Docker and Podman](#docker-and-podman)), but has a weaker
-  boundary on Linux.
+- **With the apple backend, the VM can reach services on your Mac.** The
+  host-only network's gateway is the Mac itself, so anything listening on all
+  interfaces (AirPlay Receiver on port 7000, a dev server bound to `0.0.0.0`,
+  a database) is reachable from the VM. `network check` reports this. Bind
+  local services to `127.0.0.1`, or turn off the ones you don't need. Closing
+  this needs packet filtering that neither `container` nor Mudroom offers
+  yet. The Docker backend doesn't have this gap (see [Docker and
+  Podman](#docker-and-podman)), but has a weaker boundary on Linux.
+- **While a session runs, its tokens and keys are on disk in plain text.**
+  Apple's `container` keeps the session's environment in a 0644
+  `config.json`, and Docker shows it in `docker inspect`. See [How secrets
+  reach the sandbox](#how-secrets-reach-the-sandbox).
 - The allowlist works on host names. An allowed host is allowed completely:
   Mudroom doesn't look inside TLS, so it can't tell which API calls the agent
   makes or what it uploads.
-- Tools that ignore proxy variables simply fail in locked mode. That is the
-  point, but some installers (and anything that opens raw sockets) will need
-  the project switched to open for that run.
+- Tools that ignore proxy variables fail in locked mode. That is intended,
+  but some installers (and anything that opens raw sockets) will need the
+  project switched to open for that run.
 - A sign-in made in a session is carried back to the agent's shared config
   directory and used by later sessions. Everything else a session changes in
   its copy (settings, hooks, MCP servers) is dropped.
 - Snapshots skip unchanged trees by comparing file size, mode and mtime. An
   edit that keeps both size and mtime the same doesn't trigger a snapshot on
   its own. The review diff always compares content.
-- No review app on Linux yet. `mudroom review` covers files and diffs;
-  per-hunk applies still go through `mudroom hunks` and `apply --hunks`.
+- No review app on Linux. `mudroom review` covers files and diffs; per-hunk
+  applies go through `mudroom hunks` and `apply --hunks`.
 - No Windows support. WSL2 is untested.
 - The app is ad-hoc signed, not notarized. See [Install](#install) for what
   that means when you download it.
@@ -741,8 +775,8 @@ macOS. CI runs both.
 
 The proxy tests run it against a loopback test server. The app target is
 `MudroomApp` (SwiftUI, macOS 26+, left out of the package on other
-platforms). `MudroomCore` has no UI code; the app and
-the CLI both sit on top of it.
+platforms). `MudroomCore` has no UI code; the app and the CLI both sit on
+top of it.
 
 ## License
 
