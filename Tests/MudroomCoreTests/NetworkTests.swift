@@ -378,3 +378,12 @@ struct EgressProxyTests {
         #expect(rows[0].reason != nil)
     }
 }
+
+@Test("logged destinations read as host:port, with IPv6 bracketed and no :0")
+func endpointDisplay() {
+    #expect(NetworkLog.endpoint("example.com", 443) == "example.com:443")
+    #expect(NetworkLog.endpoint("::1", 443) == "[::1]:443")
+    #expect(NetworkLog.endpoint("[::1]", 443) == "[::1]:443")
+    #expect(NetworkLog.endpoint("example.com", 0) == "example.com")
+    #expect(NetworkLog.endpoint("", 0) == "(no host)")
+}

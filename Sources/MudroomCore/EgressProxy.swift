@@ -72,6 +72,15 @@ public enum NetworkLog {
         return data.split(separator: UInt8(ascii: "\n")).compactMap { try? decoder.decode(NetworkLogEntry.self, from: Data($0)) }
     }
 
+    /// How a logged destination is shown: "example.com:443", "[::1]:443".
+    /// A request that never named a host shows as "(no host)", and a
+    /// missing port is left off rather than shown as ":0".
+    public static func endpoint(_ host: String, _ port: Int) -> String {
+        guard !host.isEmpty else { return "(no host)" }
+        let h = host.contains(":") && !host.hasPrefix("[") ? "[\(host)]" : host
+        return port > 0 ? "\(h):\(port)" : h
+    }
+
     /// "0 B", "812 B", "4.1 KB", "2.3 MB".
     public static func byteString(_ n: Int64) -> String {
         if n < 1000 { return "\(n) B" }
@@ -649,7 +658,7 @@ final class ProxyExchange: @unchecked Sendable {
     private func reject(_ status: Int, _ reason: String) {
         failure = reason
         let phrase = [400: "Bad Request", 403: "Forbidden", 408: "Request Timeout", 502: "Bad Gateway"][status] ?? "Error"
-        let body = "mudroom: \(host.isEmpty ? "request" : "\(host):\(port)") refused: \(reason)\n"
+        let body = "mudroom: \(host.isEmpty ? "request" : NetworkLog.endpoint(host, port)) refused: \(reason)\n"
         let resp = "HTTP/1.1 \(status) \(phrase)\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         _ = Sock.sendAll(client, Data(resp.utf8))
         shutdown(client, Int32(SHUT_WR))

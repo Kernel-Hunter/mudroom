@@ -164,11 +164,11 @@ struct HostRow: View {
                 .foregroundStyle(row.allowed ? Color.green : Color.red)
                 .font(.system(size: 13))
             VStack(alignment: .leading, spacing: 0) {
-                Text(row.host).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
+                Text(row.host.isEmpty ? "(no host)" : row.host).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.middle)
                 Text(detail).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 4)
-            if !row.allowed {
+            if !row.allowed, !row.host.isEmpty {
                 if review.isAllowedNow(row.host) {
                     Text("Allowed now").font(.system(size: 10, weight: .semibold)).foregroundStyle(.green)
                         .help("On the project's allowlist for the next session")
@@ -181,7 +181,9 @@ struct HostRow: View {
         }
         .padding(.vertical, 2)
         .contextMenu {
-            if !review.isAllowedNow(row.host) {
+            if row.host.isEmpty {
+                EmptyView()
+            } else if !review.isAllowedNow(row.host) {
                 Button("Allow \(row.host) for This Project") { review.allowForProject(row.host) }
             } else if review.projectConfig?.allowedHosts.contains(where: { $0.value == row.host }) == true {
                 Button("Remove \(row.host) from Project Allowlist") { review.removeFromProject(row.host) }
@@ -315,7 +317,7 @@ struct ConnectionTable: View {
                     ForEach(Array(entries.enumerated()), id: \.offset) { i, e in
                         row(time: e.time.formatted(date: .omitted, time: .standard),
                             icon: e.allowed ? (e.reason == nil ? ("checkmark", Color.green) : ("exclamationmark.triangle", Color.orange)) : ("xmark", Color.red),
-                            host: "\(e.host):\(e.port)", kind: e.method == "CONNECT" ? "HTTPS" : "HTTP \(e.method)",
+                            host: NetworkLog.endpoint(e.host, e.port), kind: e.method == "CONNECT" ? "HTTPS" : "HTTP \(e.method)",
                             sent: NetworkLog.byteString(e.bytesOut), received: NetworkLog.byteString(e.bytesIn),
                             open: Self.duration(e.durationMs), note: e.reason ?? "")
                             .font(.system(size: 11.5))

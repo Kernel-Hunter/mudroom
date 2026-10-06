@@ -123,13 +123,13 @@ struct NetworkCommand: ParsableCommand {
                 if all {
                     for e in entries {
                         let verdict = e.allowed ? (e.reason == nil ? "allowed" : "failed ") : "BLOCKED"
-                        print("\(timeFormatter.string(from: e.time))  \(verdict)  \(e.method.padding(toLength: 7, withPad: " ", startingAt: 0)) \(e.host):\(e.port)  out \(bytes(e.bytesOut)) in \(bytes(e.bytesIn))  \(e.durationMs) ms\(e.reason.map { "  (\($0))" } ?? "")")
+                        print("\(timeFormatter.string(from: e.time))  \(verdict)  \(e.method.padding(toLength: 7, withPad: " ", startingAt: 0)) \(NetworkLog.endpoint(e.host, e.port))  out \(bytes(e.bytesOut)) in \(bytes(e.bytesIn))  \(e.durationMs) ms\(e.reason.map { "  (\($0))" } ?? "")")
                     }
                     return
                 }
                 for r in NetworkLog.summarize(entries) {
                     let verdict = r.allowed ? "allowed" : "BLOCKED"
-                    print("\(verdict)  \(("\(r.host):\(r.port)").padding(toLength: 44, withPad: " ", startingAt: 0)) \(r.count)x  out \(bytes(r.bytesOut)) in \(bytes(r.bytesIn))")
+                    print("\(verdict)  \(NetworkLog.endpoint(r.host, r.port).padding(toLength: 44, withPad: " ", startingAt: 0)) \(r.count)x  out \(bytes(r.bytesOut)) in \(bytes(r.bytesIn))")
                 }
                 let blocked = Set(entries.filter { !$0.allowed }.map(\.host))
                 if !blocked.isEmpty {
