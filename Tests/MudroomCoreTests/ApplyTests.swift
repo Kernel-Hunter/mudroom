@@ -232,4 +232,25 @@ struct ApplyTests {
         #expect(n == .file(mode: 0o700, size: 2, sha256: "x"))
         #expect(Applier.withModeOnDisk(.file(mode: 0o700, size: 2, sha256: "x"), at: url) == n)
     }
+
+    @Test("a file the agent changes after the diff is refused; the rest applies, and staged copies don't linger")
+    func changedAfterDiff() throws {
+        let f = try Fixture { try write("base\n", to: $0.appendingPathComponent("keep.txt")) }
+        try write("new a\n", to: f.work.appendingPathComponent("a.txt"), mode: 0o755)
+        try write("new b\n", to: f.work.appendingPathComponent("sub/b.txt"))
+        let diff = try f.diff()
+        try write("swapped\n", to: f.work.appendingPathComponent("sub/b.txt"))
+        let report = try Applier(handle: f.handle).apply(paths: nil, diff: diff)
+        #expect(report.applied == ["a.txt", "sub"])
+        #expect(report.conflicts.map(\.path) == ["sub/b.txt"])
+        #expect(report.conflicts.first?.reason.contains("review again") == true)
+        #expect(try read(f.project.appendingPathComponent("a.txt")) == "new a\n")
+        #expect(try modeOf(f.project.appendingPathComponent("a.txt")) == 0o755)
+        #expect(!exists(f.project.appendingPathComponent("sub/b.txt")))
+        #expect(try read(f.work.appendingPathComponent("a.txt")) == "new a\n")
+        let bundle = try #require(report.bundle)
+        #expect(!exists(bundle.appendingPathComponent("staged")))
+        _ = try Applier(handle: f.handle).undo()
+        #expect(!exists(f.project.appendingPathComponent("a.txt")))
+    }
 }

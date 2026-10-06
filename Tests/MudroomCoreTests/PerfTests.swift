@@ -49,3 +49,26 @@ struct PerfTests {
         #expect(p.rowCount <= snap.files.count)
     }
 }
+
+/// Apply and undo on a generated session of MUDROOM_PERF_APPLY files
+/// (node_modules-shaped: many small files in nested folders):
+///   MUDROOM_PERF_APPLY=40000 swift test -c release --filter PerfApply
+@Suite("PerfApply", .serialized, .enabled(if: ProcessInfo.processInfo.environment["MUDROOM_PERF_APPLY"] != nil))
+struct PerfApplyTests {
+    @Test("apply --all and undo on many added files")
+    func applyMany() throws {
+        let n = Int(ProcessInfo.processInfo.environment["MUDROOM_PERF_APPLY"]!) ?? 40_000
+        let f = try Fixture { try write("{}\n", to: $0.appendingPathComponent("package.json")) }
+        for i in 0..<n {
+            let url = f.work.appendingPathComponent("node_modules/pkg\(i / 100)/lib/d\(i % 10)/file\(i).js")
+            try write("module.exports = \(i);\n", to: url)
+        }
+        var t = Date()
+        let report = try Applier(handle: f.handle).apply(paths: nil)
+        print("PERF apply --all: \(report.applied.count) paths, \(String(format: "%.2f", Date().timeIntervalSince(t))) s, peak RSS \(peakRSSMB()) MB")
+        #expect(report.conflicts.isEmpty)
+        t = Date()
+        _ = try Applier(handle: f.handle).undo()
+        print("PERF undo: \(String(format: "%.2f", Date().timeIntervalSince(t))) s")
+    }
+}

@@ -426,10 +426,11 @@ public struct Applier {
             entries[i].pending = nil
             if let applied { entries[i].applied = applied }
         }
+        var appliedSet = Set<String>()
         func run(_ path: String, _ body: () throws -> Void) {
             do {
                 try body()
-                if !report.applied.contains(path) { report.applied.append(path) }
+                if appliedSet.insert(path).inserted { report.applied.append(path) }
             } catch {
                 report.conflicts.append(PathIssue(path: path, reason: "\(error)"))
             }
@@ -438,15 +439,29 @@ public struct Applier {
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         var stagedCount = 0
         /// Copies a file out of work/ into the bundle and checks its hash.
-        func stage(_ change: Change) throws -> URL {
-            stagedCount += 1
-            let dest = staging.appendingPathComponent(String(stagedCount))
+        func stageFile(_ change: Change, to dest: URL) throws -> URL {
             let sha = try SafeFS.copyBeneath(handle.work, change.path, to: dest)
             guard sha == change.after.sha256 else {
                 try? fm.removeItem(at: dest)
                 throw MudroomError.invalid("changed in the agent's copy since the diff was taken; review again")
             }
             return dest
+        }
+        // Stage every new file up front, in parallel. Copying and hashing is
+        // most of an apply's time and writes only into the bundle; the
+        // project is still changed one path at a time, below.
+        let toStage = planned.map(\.change).filter { c in
+            guard c.kind != .deleted, c.kind != .modeChanged, renames[c.path] == nil else { return false }
+            if case .file = c.after { return true }
+            return false
+        }
+        var prestaged = Dictionary(uniqueKeysWithValues: zip(toStage.map(\.path), parallelMap(Array(toStage.enumerated())) { item in
+            Result { try stageFile(item.element, to: staging.appendingPathComponent("p\(item.offset)")) }
+        }))
+        func stage(_ change: Change) throws -> URL {
+            if let staged = prestaged.removeValue(forKey: change.path) { return try staged.get() }
+            stagedCount += 1
+            return try stageFile(change, to: staging.appendingPathComponent(String(stagedCount)))
         }
 
         // 1. Deletions, deepest first, so directories are empty when removed.
@@ -472,7 +487,7 @@ public struct Applier {
 
                 if let old = renames[change.path] {
                     try caseRename(from: old, to: change, bundle: bundle, stage: stage, record: record, done: done)
-                    report.applied.append(old.path)
+                    if appliedSet.insert(old.path).inserted { report.applied.append(old.path) }
                     return
                 }
                 switch (change.kind, after) {
@@ -512,7 +527,7 @@ public struct Applier {
                 let staged = staging.appendingPathComponent(String(stagedCount))
                 try plan.content.write(to: staged)
                 let i = try record(try backup(plan.change.path, prior: plan.real, applied: .absent, bundle: bundle))
-                try placeFile(from: staged, to: target, mode: plan.mode & ~0o6000)
+                try placeFile(from: staged, to: target, mode: plan.mode & ~0o6000, consume: true)
                 entries[i].hunks = plan.hunks
                 done(i, applied: try FileNode.read(at: target))
             }
@@ -954,7 +969,7 @@ public struct Applier {
         switch node {
         case .file(let mode, _, _):
             guard let staged else { throw MudroomError.invalid("nothing staged for \(path)") }
-            try placeFile(from: staged, to: target, mode: mode)
+            try placeFile(from: staged, to: target, mode: mode, consume: true)
         case .symlink(let dest):
             try placeSymlink(dest, at: target)
         case .directory(let mode):
@@ -988,7 +1003,10 @@ public struct Applier {
     }
 
     /// Copies to a temp name next to the target, then renames over it.
-    private func placeFile(from source: URL, to target: URL, mode: UInt16) throws {
+    /// `consume` moves `source` itself into place when it is on the same
+    /// volume (a staged copy nothing else needs), skipping the copy.
+    private func placeFile(from source: URL, to target: URL, mode: UInt16, consume: Bool = false) throws {
+        if consume, chmod(source.path, mode_t(mode)) == 0, rename(source.path, target.path) == 0 { return }
         let tmp = tempName(near: target)
         try Cloner.cloneItem(from: source, to: tmp)
         do {
