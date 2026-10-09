@@ -81,7 +81,7 @@ The script needs macOS 26 or later on Apple silicon. It downloads the latest
 release, checks its SHA-256 when the release publishes one, puts Mudroom.app
 in /Applications (or ~/Applications if /Applications isn't writable) and
 links the `mudroom` command into /opt/homebrew/bin, /usr/local/bin or
-~/.local/bin. It doesn't use sudo. Set `MUDROOM_VERSION=0.1.0` to pick a
+~/.local/bin. It doesn't use sudo. Set `MUDROOM_VERSION=0.1.1` to pick a
 version. To remove Mudroom (your sessions and settings stay):
 
 ```sh
