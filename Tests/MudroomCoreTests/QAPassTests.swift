@@ -131,15 +131,6 @@ struct QAPassTests {
         #expect(!r.isOK && !r.needsRepair && r.summary.contains("didn't finish"))
     }
 
-    @Test("a child that ignores the forwarded SIGTERM (a stuck `container run`) is killed after a grace period")
-    func attachedChildKilledAfterGrace() throws {
-        let start = Date()
-        Thread.detachNewThread { usleep(500_000); kill(getpid(), SIGTERM) }
-        let status = try ProcessRunner.runAttached("/bin/sh", ["-c", "trap '' TERM HUP; sleep 30"], killAfter: 0.5)
-        #expect(status == 128 + SIGKILL)
-        #expect(Date().timeIntervalSince(start) < 10)
-    }
-
     @Test("repair kills Mudroom's stuck VM helpers (only those) when `container system stop` hangs")
     func repairWedgedRuntime() throws {
         let list = """

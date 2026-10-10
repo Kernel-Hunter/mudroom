@@ -56,7 +56,7 @@ public enum ProcessRunner {
         process.standardOutput = outHandle
         process.standardError = errHandle
         process.standardInput = FileHandle.nullDevice
-        try process.run()
+        try start(process)
         let timedOut = LockedBox(false)
         if let timeout {
             let pid = process.processIdentifier
@@ -92,8 +92,10 @@ public enum ProcessRunner {
     /// exit) when the terminal closes. `environment` adds variables to the
     /// child's environment only.
     ///
-    /// Descriptors opened without O_CLOEXEC (the session's runner lock) are
-    /// inherited by the child on purpose.
+    /// The child starts with no signals blocked, whichever thread calls this.
+    /// Descriptors registered with `inherit` (the session's runner lock) are
+    /// passed to it on purpose. On Linux nothing else past stdio is; on
+    /// macOS, any descriptor opened without O_CLOEXEC still is.
     public static func runAttached(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
                                    killAfter: TimeInterval = 10) throws -> Int32 {
         let argv = [executable] + arguments
@@ -114,7 +116,8 @@ public enum ProcessRunner {
             forwardedSignal = 0
         }
 
-        // The child gets default signal handling back.
+        // The child gets default signal handling back, and an empty signal
+        // mask rather than the calling thread's.
         #if canImport(Darwin)
         var attrs: posix_spawnattr_t? = nil
         #else
@@ -129,7 +132,10 @@ public enum ProcessRunner {
         sigaddset(&defaults, SIGTERM)
         sigaddset(&defaults, SIGHUP)
         posix_spawnattr_setsigdefault(&attrs, &defaults)
-        posix_spawnattr_setflags(&attrs, Int16(POSIX_SPAWN_SETSIGDEF))
+        var unblocked = sigset_t()
+        sigemptyset(&unblocked)
+        posix_spawnattr_setsigmask(&attrs, &unblocked)
+        posix_spawnattr_setflags(&attrs, Int16(POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK))
 
         // Built from ProcessInfo rather than `environ`, which Swift 6 treats
         // as unsafe shared state on Linux.
@@ -139,7 +145,15 @@ public enum ProcessRunner {
         defer { cEnv.forEach { free($0) } }
 
         var pid: pid_t = 0
+        #if canImport(Darwin)
         let rc = posix_spawnp(&pid, executable, nil, &attrs, cArgs, cEnv)
+        #else
+        var actions = posix_spawn_file_actions_t()
+        posix_spawn_file_actions_init(&actions)
+        defer { posix_spawn_file_actions_destroy(&actions) }
+        closeStrayDescriptors(&actions)
+        let rc = posix_spawnp(&pid, executable, &actions, &attrs, cArgs, cEnv)
+        #endif
         guard rc == 0 else { throw MudroomError.posix("posix_spawn", executable, rc) }
         attachedChild = pid
 
@@ -182,7 +196,7 @@ public enum ProcessRunner {
         process.standardOutput = pipe
         process.standardError = pipe
         process.standardInput = FileHandle.nullDevice
-        try process.run()
+        try start(process)
         // Closed here so the read ends when the child (and its children) do.
         let reader = pipe.fileHandleForReading
         let tail = LockedBox<[String]>([])
@@ -221,6 +235,76 @@ public enum ProcessRunner {
         }
         return nil
     }
+
+    /// Starts `process` with no signals blocked. A child inherits the
+    /// signal mask of the thread that spawns it, and on Linux libdispatch's
+    /// worker threads (where async code runs) block nearly all of them,
+    /// SIGTERM included, so `capture`'s timeout could only stop the child
+    /// with SIGKILL. Foundation on macOS resets the mask itself.
+    private static func start(_ process: Process) throws {
+        #if canImport(Darwin)
+        try process.run()
+        #else
+        var unblocked = sigset_t()
+        var old = sigset_t()
+        sigemptyset(&unblocked)
+        pthread_sigmask(SIG_SETMASK, &unblocked, &old)
+        defer { pthread_sigmask(SIG_SETMASK, &old, nil) }
+        try process.run()
+        #endif
+    }
+
+    /// Descriptors `runAttached` passes to its child.
+    private static let inherited = LockedBox<Set<Int32>>([])
+
+    /// Has `runAttached` pass `fd` to its child (on Linux it may get another
+    /// number there).
+    static func inherit(_ fd: Int32) {
+        inherited.value.insert(fd)
+    }
+
+    static func stopInheriting(_ fd: Int32) {
+        inherited.value.remove(fd)
+    }
+
+    #if !canImport(Darwin)
+    private typealias AddCloseFrom = @convention(c) (UnsafeMutablePointer<posix_spawn_file_actions_t>, Int32) -> Int32
+    /// glibc 2.34 and later; looked up at run time so older ones still link.
+    private static let addCloseFrom: AddCloseFrom? =
+        dlsym(nil, "posix_spawn_file_actions_addclosefrom_np").map { unsafeBitCast($0, to: AddCloseFrom.self) }
+
+    /// Closes, in `runAttached`'s child, every descriptor past stdio except
+    /// the inherited ones. Foundation's Process on Linux sees its child exit
+    /// only once every copy of a socket it hands that child is closed, and
+    /// those copies aren't close-on-exec. One caught here, while another
+    /// thread was starting a Process, lived on in the sandbox and kept that
+    /// thread waiting for the sandbox to exit.
+    private static func closeStrayDescriptors(_ actions: inout posix_spawn_file_actions_t) {
+        let keep = inherited.value.sorted()
+        let firstStray = Int32(3 + keep.count)
+        if let addCloseFrom {
+            // Renumbered to 3, 4, … through spare numbers above all of them,
+            // so none is overwritten before it's copied; then everything
+            // from there up is closed, including descriptors opened by other
+            // threads after this point.
+            let spare = max(keep.last ?? 0, firstStray) + 1
+            for (i, fd) in keep.enumerated() {
+                posix_spawn_file_actions_adddup2(&actions, fd, spare + Int32(i))
+            }
+            for i in keep.indices {
+                posix_spawn_file_actions_adddup2(&actions, spare + Int32(i), 3 + Int32(i))
+            }
+            _ = addCloseFrom(&actions, firstStray)
+        } else {
+            // Only those open now; one opened between here and the spawn
+            // still leaks.
+            let open = (try? FileManager.default.contentsOfDirectory(atPath: "/proc/self/fd")) ?? []
+            for fd in open.compactMap(Int32.init) where fd > 2 && !keep.contains(fd) {
+                posix_spawn_file_actions_addclose(&actions, fd)
+            }
+        }
+    }
+    #endif
 }
 
 /// The child `runAttached` is waiting for; signals are passed on to it.
