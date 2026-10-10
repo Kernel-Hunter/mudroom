@@ -324,11 +324,21 @@ public final class EgressProxy: @unchecked Sendable {
                 Sock.setNonBlocking(conn, true)
                 _ = Sock.sendAll(conn, Data("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".utf8))
                 #if os(Windows)
-                // Closing with the request still unread sends a reset, and
-                // Windows then drops the 503 before the client reads it.
+                // Closing with the request unread, or before it arrives, sends
+                // a reset, and Windows then drops the 503 the client hasn't
+                // read yet. Read the request (briefly: this is the accept
+                // loop) until the client closes its side.
                 Sock.shutdown(conn, both: false)
                 var scratch = [UInt8](repeating: 0, count: 4096)
-                for _ in 0..<16 { guard let n = Sock.receive(conn, &scratch), n > 0 else { break } }
+                let deadline = Date().addingTimeInterval(0.25)
+                drain: while deadline.timeIntervalSinceNow > 0 {
+                    guard Sock.waitReadable(conn, timeout: deadline.timeIntervalSinceNow) else { break }
+                    switch Sock.receive(conn, &scratch) {
+                    case let n? where n > 0: continue
+                    case nil: continue
+                    default: break drain
+                    }
+                }
                 #endif
                 Sock.close(conn)
                 continue
