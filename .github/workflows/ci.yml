@@ -62,10 +62,13 @@ jobs:
       - name: Build
         run: swift build -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
       # A small ReFS volume, so the block-clone test has somewhere to run.
+      # If the runner can't make one, that test is skipped.
       - uses: samypr100/setup-dev-drive@v3
+        continue-on-error: true
         with:
           drive-size: 1GB
           drive-format: ReFS
+          native-dev-drive: false
       - name: Test
         run: swift test -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
         env:
