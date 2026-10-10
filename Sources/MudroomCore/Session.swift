@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -167,7 +169,8 @@ public struct SessionStore: Sendable {
 
     public init(root: URL) { self.root = root }
 
-    /// `$MUDROOM_HOME`, or ~/Library/Application Support/Mudroom.
+    /// `$MUDROOM_HOME`, or ~/Library/Application Support/Mudroom
+    /// (Linux: ~/.local/share/mudroom; Windows: %LOCALAPPDATA%\Mudroom).
     public static func defaultStore() -> SessionStore {
         if let override = ProcessInfo.processInfo.environment["MUDROOM_HOME"], !override.isEmpty {
             return SessionStore(root: URL(fileURLWithPath: override, isDirectory: true))
@@ -175,6 +178,11 @@ public struct SessionStore: Sendable {
         #if os(macOS)
         let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return SessionStore(root: support.appendingPathComponent("Mudroom", isDirectory: true))
+        #elseif os(Windows)
+        // Local, not Roaming: sessions hold whole project copies.
+        let local = ProcessInfo.processInfo.environment["LOCALAPPDATA"].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("AppData/Local", isDirectory: true)
+        return SessionStore(root: local.appendingPathComponent("Mudroom", isDirectory: true))
         #else
         // $XDG_DATA_HOME/mudroom, or ~/.local/share/mudroom.
         let env = ProcessInfo.processInfo.environment
@@ -232,7 +240,12 @@ public struct SessionStore: Sendable {
         guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
             return .notADirectory(path)
         }
-        if path == "/" || path == home.resolvingSymlinksInPath().standardizedFileURL.path {
+        #if os(Windows)
+        let wholeDisk = Self.isDriveRoot(path)
+        #else
+        let wholeDisk = path == "/"
+        #endif
+        if wholeDisk || path == home.resolvingSymlinksInPath().standardizedFileURL.path {
             return .invalid("\(path) is too big to copy for a session; choose the project's own folder")
         }
         if path == store || store.hasPrefix(path + "/") {
@@ -245,6 +258,14 @@ public struct SessionStore: Sendable {
             return .invalid("Mudroom can't read \(path); check its permissions")
         }
         return nil
+    }
+
+    /// "C:/" or "C:\" (and "/C:/"): a whole Windows drive.
+    static func isDriveRoot(_ path: String) -> Bool {
+        let p = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        let c = Array(p.unicodeScalars)
+        return (c.count == 2 || (c.count == 3 && (c[2] == "/" || c[2] == "\\")))
+            && c[0].properties.isAlphabetic && c[0].isASCII && c[1] == ":"
     }
 
     static func decode(_ data: Data) throws -> Session {
@@ -390,6 +411,12 @@ extension ProcessInfo {
         guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
         let tv = info.kp_proc.p_un.__p_starttime
         return Date(timeIntervalSince1970: TimeInterval(tv.tv_sec) + TimeInterval(tv.tv_usec) / 1_000_000)
+        #elseif os(Windows)
+        guard let h = OpenProcess(DWORD(PROCESS_QUERY_LIMITED_INFORMATION), false, DWORD(bitPattern: pid)) else { return nil }
+        defer { CloseHandle(h) }
+        var created = FILETIME(), exited = FILETIME(), kernel = FILETIME(), user = FILETIME()
+        guard GetProcessTimes(h, &created, &exited, &kernel, &user) else { return nil }
+        return Win32.date(created)
         #else
         // Field 22 of /proc/<pid>/stat: start time in clock ticks after boot.
         guard let stat = try? String(contentsOfFile: "/proc/\(pid)/stat", encoding: .utf8),

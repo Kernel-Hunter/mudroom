@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -128,6 +130,11 @@ public final class AuthLinkHandoff: @unchecked Sendable {
         #if os(macOS)
         copied = pipe(s, to: "/usr/bin/pbcopy", [])
         _ = try? ProcessRunner.capture("/usr/bin/open", [s])
+        #elseif os(Windows)
+        let system = (ProcessInfo.processInfo.environment["SystemRoot"] ?? #"C:\Windows"#) + #"\System32\"#
+        copied = pipe(s, to: system + "clip.exe", [])
+        // The default browser, without a shell that would read & in the link.
+        _ = try? ProcessRunner.capture(system + "rundll32.exe", ["url.dll,FileProtocolHandler", s])
         #else
         if let wl = ProcessRunner.which("wl-copy") { copied = pipe(s, to: wl, []) }
         else if let xc = ProcessRunner.which("xclip") { copied = pipe(s, to: xc, ["-selection", "clipboard"]) }
@@ -141,7 +148,11 @@ public final class AuthLinkHandoff: @unchecked Sendable {
     }
 
     /// Shown wherever a login asks for a pasted code.
+    #if os(Windows)
+    public static let pasteNote = "The code won't appear when you paste it. Paste with Ctrl+V (or a right-click), then press Enter."
+    #else
     public static let pasteNote = "The code won't appear when you paste it. Paste with ⌘V (Ctrl+Shift+V on Linux), then press Enter."
+    #endif
 
     static func pipe(_ text: String, to exe: String, _ args: [String]) -> Bool {
         let p = Process()

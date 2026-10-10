@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -83,6 +85,7 @@ public enum ProcessRunner {
         )
     }
 
+    #if !os(Windows)
     /// Runs a program with this process's stdin/stdout/stderr (so TTYs pass
     /// straight through) and returns its exit status. SIGINT/SIGQUIT are
     /// ignored here while the child runs; the terminal delivers them to the
@@ -179,6 +182,7 @@ public enum ProcessRunner {
         if low == 0 { return (status >> 8) & 0xff }
         return 128 + low
     }
+    #endif
 
     /// Runs a program to completion, handing each line of its output
     /// (stdout and stderr together) to `onLine` as it arrives. Returns the
@@ -226,6 +230,9 @@ public enum ProcessRunner {
 
     /// Finds an executable on PATH (plus Homebrew's usual prefixes).
     public static func which(_ name: String) -> String? {
+        #if os(Windows)
+        if let found = searchPath(name) { return found }
+        #endif
         if name.contains("/") { return FileManager.default.isExecutableFile(atPath: name) ? name : nil }
         let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
         let dirs = path.split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
