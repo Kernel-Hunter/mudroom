@@ -18,6 +18,8 @@ Linux and Intel Macs.
 
 ![Mudroom: start a session, review the diff, check the network log, apply](docs/demo.gif)
 
+[Watch the 33-second overview (with sound)](docs/mudroom-ad.mp4)
+
 ## Quick start
 
 1. Install (Apple-silicon Mac, macOS 26 or later):
