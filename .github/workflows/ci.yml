@@ -72,7 +72,7 @@ jobs:
       - name: Test
         run: swift test -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
         env:
-          MUDROOM_TEST_REFS: ${{ env.DEV_DRIVE }}\
+          MUDROOM_TEST_REFS: ${{ env.DEV_DRIVE }}
       # A session end to end without a sandbox: clone, edit work/, diff,
       # apply, undo, discard.
       - name: CLI smoke test

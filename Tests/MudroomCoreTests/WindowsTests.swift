@@ -156,10 +156,12 @@ struct WindowsTests {
     }
 
     @Test("on ReFS the session clones are block clones that read back byte for byte",
-          .enabled(if: ProcessInfo.processInfo.environment["MUDROOM_TEST_REFS"] != nil,
-                   "set MUDROOM_TEST_REFS to a folder on a ReFS volume, such as a Dev Drive"))
+          .enabled(if: !(ProcessInfo.processInfo.environment["MUDROOM_TEST_REFS"] ?? "").isEmpty,
+                   "set MUDROOM_TEST_REFS to a folder or drive (E:) on a ReFS volume, such as a Dev Drive"))
     func refsBlockClone() throws {
-        let refs = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MUDROOM_TEST_REFS"]!, isDirectory: true)
+        var path = ProcessInfo.processInfo.environment["MUDROOM_TEST_REFS"]!
+        if path.hasSuffix(":") { path += "\\" }
+        let refs = URL(fileURLWithPath: path, isDirectory: true)
         let root = refs.appendingPathComponent("mudroom-tests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let project = root.appendingPathComponent("project")
