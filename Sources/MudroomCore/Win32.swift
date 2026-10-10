@@ -397,7 +397,17 @@ enum WinFS {
             }
         }
         if attempt() { return nil }
-        let e = GetLastError()
+        var e = GetLastError()
+        // An antivirus scan or the search indexer can hold either file open
+        // for a moment after it is written; wait for it, up to half a second.
+        var tries = 0
+        while tries < 10, e == DWORD(ERROR_SHARING_VIOLATION) || e == DWORD(ERROR_LOCK_VIOLATION)
+                || (e == DWORD(ERROR_ACCESS_DENIED) && !isReadOnly(to)) {
+            tries += 1
+            Sleep(50)
+            if attempt() { return nil }
+            e = GetLastError()
+        }
         guard e == DWORD(ERROR_ACCESS_DENIED), case .success(let st) = lstat(to),
               st.kind != .directory, st.attributes & DWORD(FILE_ATTRIBUTE_READONLY) != 0 else { return e }
         _ = Win32.withPath(to) { SetFileAttributesW($0, st.attributes & ~DWORD(FILE_ATTRIBUTE_READONLY)) }
@@ -405,6 +415,11 @@ enum WinFS {
         let again = GetLastError()
         _ = Win32.withPath(to) { SetFileAttributesW($0, st.attributes) }
         return again
+    }
+
+    static func isReadOnly(_ path: String) -> Bool {
+        if case .success(let st) = lstat(path) { return st.attributes & DWORD(FILE_ATTRIBUTE_READONLY) != 0 }
+        return false
     }
 
     static func makeDirectory(_ path: String) -> DWORD? {

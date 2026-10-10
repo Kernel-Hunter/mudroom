@@ -135,7 +135,7 @@ public enum NetworkProbe {
         let url = recordURL(store)
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let r = Record(time: now, ok: result.isOK, summary: result.summary)
-        if let data = try? JSONEncoder().encode(r) { try? data.write(to: url, options: .atomic) }
+        if let data = try? JSONEncoder().encode(r) { try? data.writeAtomically(to: url) }
     }
 
     /// True if a probe passed within `seconds` (the app checks right before

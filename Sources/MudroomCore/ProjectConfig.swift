@@ -110,7 +110,7 @@ public struct ProjectConfigStore: Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(config).write(to: url(for: config.projectPath), options: .atomic)
+        try encoder.encode(config).writeAtomically(to: url(for: config.projectPath))
     }
 
     /// Load, change, save.

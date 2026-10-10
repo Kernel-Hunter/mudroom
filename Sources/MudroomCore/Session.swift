@@ -127,7 +127,7 @@ public struct SessionHandle: Sendable {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(session).write(to: metadataURL, options: .atomic)
+        try encoder.encode(session).writeAtomically(to: metadataURL)
     }
 
     public mutating func setStatus(_ status: SessionStatus, exitCode: Int32? = nil) throws {
@@ -254,7 +254,13 @@ public struct SessionStore: Sendable {
         if path.hasPrefix(store + "/") {
             return .invalid("\(path) is inside Mudroom's own store; choose the project's own folder")
         }
-        guard FileManager.default.isReadableFile(atPath: path), FileManager.default.isExecutableFile(atPath: path) else {
+        #if os(Windows)
+        // Folders have no execute bit on Windows; being able to list it is what counts.
+        let readable = (try? FileManager.default.contentsOfDirectory(atPath: path)) != nil
+        #else
+        let readable = FileManager.default.isReadableFile(atPath: path) && FileManager.default.isExecutableFile(atPath: path)
+        #endif
+        guard readable else {
             return .invalid("Mudroom can't read \(path); check its permissions")
         }
         return nil

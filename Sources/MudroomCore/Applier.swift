@@ -137,7 +137,7 @@ public struct ReviewedChanges: Codable, Sendable, Equatable {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
         e.outputFormatting = [.sortedKeys]
-        try e.encode(self).write(to: Self.url(handle), options: .atomic)
+        try e.encode(self).writeAtomically(to: Self.url(handle))
     }
 }
 
@@ -869,7 +869,7 @@ public struct Applier {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(manifest).write(to: bundle.appendingPathComponent("manifest.json"), options: .atomic)
+        try encoder.encode(manifest).writeAtomically(to: bundle.appendingPathComponent("manifest.json"))
     }
 
     /// Returns the first ancestor of `path` in the real project that exists but

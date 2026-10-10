@@ -61,5 +61,17 @@ jobs:
       # (used by swift-crypto's BoringSSL) ask for Clang 20 unless told not to.
       - name: Build
         run: swift build -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
+      # A small ReFS volume, so the block-clone test has somewhere to run.
+      - uses: samypr100/setup-dev-drive@v3
+        with:
+          drive-size: 1GB
+          drive-format: ReFS
       - name: Test
         run: swift test -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
+        env:
+          MUDROOM_TEST_REFS: ${{ env.DEV_DRIVE }}\
+      # A session end to end without a sandbox: clone, edit work/, diff,
+      # apply, undo, discard.
+      - name: CLI smoke test
+        shell: pwsh
+        run: scripts/windows-smoke.ps1 .build/debug/mudroom.exe

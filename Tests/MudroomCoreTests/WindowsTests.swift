@@ -155,6 +155,45 @@ struct WindowsTests {
         #expect(try read(tmp.path("outside/secret.txt")) == "secret\n")
     }
 
+    @Test("on ReFS the session clones are block clones that read back byte for byte",
+          .enabled(if: ProcessInfo.processInfo.environment["MUDROOM_TEST_REFS"] != nil,
+                   "set MUDROOM_TEST_REFS to a folder on a ReFS volume, such as a Dev Drive"))
+    func refsBlockClone() throws {
+        let refs = URL(fileURLWithPath: ProcessInfo.processInfo.environment["MUDROOM_TEST_REFS"]!, isDirectory: true)
+        let root = refs.appendingPathComponent("mudroom-tests-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let project = root.appendingPathComponent("project")
+        // Sizes that aren't a multiple of the cluster size, an empty file,
+        // and one bigger than a single clone request.
+        var files: [String: Data] = ["empty.txt": Data(), "small.txt": Data("hello\r\n".utf8)]
+        files["src/big.bin"] = Data((0..<1_234_567).map { UInt8(truncatingIfNeeded: $0 &* 2_654_435_761 >> 13) })
+        files["src/huge.bin"] = Data(repeating: 0x5A, count: 5 * 1024 * 1024 + 3)
+        for (rel, data) in files {
+            let url = project.appendingPathComponent(rel)
+            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: url)
+        }
+        try #require(WinFS.supportsBlockClone(project.path), "\(refs.path) is not on a volume with block cloning")
+
+        let store = SessionStore(root: root.appendingPathComponent("store"))
+        let handle = try store.create(project: project, command: ["true"], image: "test")
+        #expect(handle.session.cloneMethod == .blockClone)
+        for (rel, data) in files {
+            #expect(try Data(contentsOf: handle.work.appendingPathComponent(rel)) == data, "\(rel)")
+            #expect(try Data(contentsOf: handle.base.appendingPathComponent(rel)) == data, "\(rel)")
+        }
+        #expect(try Differ.compare(base: handle.base, work: handle.work).changes.isEmpty)
+
+        // Writing to a clone leaves the project and the other clone alone.
+        let fh = try FileHandle(forWritingTo: handle.work.appendingPathComponent("src/big.bin"))
+        try fh.seek(toOffset: 100_000)
+        try fh.write(contentsOf: Data(repeating: 0xFF, count: 10))
+        try fh.close()
+        #expect(try Data(contentsOf: project.appendingPathComponent("src/big.bin")) == files["src/big.bin"])
+        #expect(try Data(contentsOf: handle.base.appendingPathComponent("src/big.bin")) == files["src/big.bin"])
+        #expect(try Differ.compare(base: handle.base, work: handle.work).changes.map(\.path) == ["src/big.bin"])
+    }
+
     @Test("tokens round-trip through Windows Credential Manager")
     func credentialManager() throws {
         let store = CredentialTokenStore()

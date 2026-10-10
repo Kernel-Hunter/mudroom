@@ -235,7 +235,7 @@ struct ProxyHardeningTests {
         usleep(200_000)
         let over = try talk(port: p.port, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\n")
         #expect(over.hasPrefix("HTTP/1.1 503"))
-        idle.forEach { close($0) }
+        idle.forEach { Sock.close($0) }
         usleep(300_000)
         let again = try talk(port: p.port, "GET http://127.0.0.1:\(server.port)/ HTTP/1.1\r\n\r\n")
         #expect(again.hasPrefix("HTTP/1.1 200"))
