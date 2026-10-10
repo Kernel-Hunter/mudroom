@@ -247,9 +247,10 @@ public enum ProcessRunner {
     /// signal mask of the thread that spawns it, and on Linux libdispatch's
     /// worker threads (where async code runs) block nearly all of them,
     /// SIGTERM included, so `capture`'s timeout could only stop the child
-    /// with SIGKILL. Foundation on macOS resets the mask itself.
+    /// with SIGKILL. Foundation on macOS resets the mask itself, and Windows
+    /// has no signal masks.
     private static func start(_ process: Process) throws {
-        #if canImport(Darwin)
+        #if canImport(Darwin) || os(Windows)
         try process.run()
         #else
         var unblocked = sigset_t()
@@ -274,7 +275,7 @@ public enum ProcessRunner {
         inherited.value.remove(fd)
     }
 
-    #if !canImport(Darwin)
+    #if !canImport(Darwin) && !os(Windows)
     private typealias AddCloseFrom = @convention(c) (UnsafeMutablePointer<posix_spawn_file_actions_t>, Int32) -> Int32
     /// glibc 2.34 and later; looked up at run time so older ones still link.
     private static let addCloseFrom: AddCloseFrom? =
