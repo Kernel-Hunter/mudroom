@@ -124,10 +124,12 @@ struct QAPassTests {
     @Test("capture stops a program that runs past its timeout")
     func captureTimeout() throws {
         let start = Date()
-        let out = try ProcessRunner.capture("/bin/sleep", ["30"], timeout: 0.5)
+        let sleep = sleepCommand(30)
+        let out = try ProcessRunner.capture(sleep.0, sleep.1, timeout: 0.5)
         #expect(out.timedOut)
         #expect(Date().timeIntervalSince(start) < 10)
-        #expect(try !ProcessRunner.capture("/bin/echo", ["hi"], timeout: 10).timedOut)
+        let echo = echoCommand("hi")
+        #expect(try !ProcessRunner.capture(echo.0, echo.1, timeout: 10).timedOut)
         // A stuck probe VM is reported, not waited on forever.
         let r = NetworkProbe.classify(CapturedOutput(status: 143, stdout: "", stderr: "", timedOut: true), proxy: "p")
         #expect(!r.isOK && !r.needsRepair && r.summary.contains("didn't finish"))

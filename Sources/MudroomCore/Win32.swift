@@ -69,13 +69,16 @@ enum Win32 {
         }
     }
 
-    static let invalidHandle = INVALID_HANDLE_VALUE
-
     /// A file time (100 ns since 1601) as seconds since 1970.
     static func date(_ ft: FILETIME) -> Date {
         let ticks = Int64(ft.dwHighDateTime) << 32 | Int64(ft.dwLowDateTime)
         return Date(timeIntervalSince1970: Double(ticks - 116_444_736_000_000_000) / 10_000_000)
     }
+}
+
+/// A Win32 error code, for a `Result`.
+struct Win32Error: Error {
+    var code: DWORD
 }
 
 /// What a path is, as far as Mudroom cares, without following a final
@@ -122,10 +125,10 @@ enum WinFS {
     }
 
     /// lstat: nil and the Win32 error if the path can't be read.
-    static func lstat(_ path: String) -> Result<WinStat, DWORD> {
+    static func lstat(_ path: String) -> Result<WinStat, Win32Error> {
         var data = WIN32_FILE_ATTRIBUTE_DATA()
         let ok = Win32.withPath(path) { GetFileAttributesExW($0, GetFileExInfoStandard, &data) }
-        guard ok else { return .failure(GetLastError()) }
+        guard ok else { return .failure(Win32Error(code: GetLastError())) }
         var tag: DWORD = 0
         if data.dwFileAttributes & DWORD(FILE_ATTRIBUTE_REPARSE_POINT) != 0 {
             var find = WIN32_FIND_DATAW()
@@ -385,12 +388,23 @@ enum WinFS {
         return e
     }
 
-    /// rename(2): replaces a file at `to`, on the same volume.
+    /// rename(2): replaces a file at `to`, on the same volume. A read-only
+    /// file at `to` is replaced too, as rename(2) would.
     static func move(_ from: String, _ to: String) -> DWORD? {
-        let ok = Win32.withPath(from) { f in
-            Win32.withPath(to) { MoveFileExW(f, $0, DWORD(MOVEFILE_REPLACE_EXISTING)) }
+        func attempt() -> Bool {
+            Win32.withPath(from) { f in
+                Win32.withPath(to) { MoveFileExW(f, $0, DWORD(MOVEFILE_REPLACE_EXISTING)) }
+            }
         }
-        return ok ? nil : GetLastError()
+        if attempt() { return nil }
+        let e = GetLastError()
+        guard e == DWORD(ERROR_ACCESS_DENIED), case .success(let st) = lstat(to),
+              st.kind != .directory, st.attributes & DWORD(FILE_ATTRIBUTE_READONLY) != 0 else { return e }
+        _ = Win32.withPath(to) { SetFileAttributesW($0, st.attributes & ~DWORD(FILE_ATTRIBUTE_READONLY)) }
+        if attempt() { return nil }
+        let again = GetLastError()
+        _ = Win32.withPath(to) { SetFileAttributesW($0, st.attributes) }
+        return again
     }
 
     static func makeDirectory(_ path: String) -> DWORD? {

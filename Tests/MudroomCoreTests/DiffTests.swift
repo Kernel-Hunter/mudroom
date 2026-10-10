@@ -44,7 +44,7 @@ struct DiffTests {
         try agentEdits(f.work)
         let result = try f.diff()
         let kinds = Dictionary(uniqueKeysWithValues: result.changes.map { ($0.path, $0.kind) })
-        #expect(kinds == [
+        var expected: [String: ChangeKind] = [
             "edit.txt": .modified,
             "old.txt": .deleted,
             "script.sh": .modeChanged,
@@ -53,7 +53,10 @@ struct DiffTests {
             "ptr": .symlinkChanged,
             "gone": .deleted,
             "gone/inner.txt": .deleted,
-        ])
+        ]
+        // No mode bits on Windows, so no mode change either.
+        if isWindows { expected["script.sh"] = nil }
+        #expect(kinds == expected)
         #expect(kinds["keep.txt"] == nil)
         #expect(result.gitMetadataChanges.map(\.path) == [".git/HEAD"])
     }
@@ -97,7 +100,7 @@ struct DiffTests {
         #expect(out.contains("-two\n+2"))
         #expect(out.contains("--- /dev/null\n+++ b/new.txt"))
         #expect(out.contains("--- a/old.txt\n+++ /dev/null"))
-        #expect(out.contains("P  script.sh  (mode 644 -> 755)"))
+        if !isWindows { #expect(out.contains("P  script.sh  (mode 644 -> 755)")) }
         #expect(out.contains("L  ptr  (keep.txt -> new.txt)"))
         #expect(out.contains("git metadata changed (1 entry under .git/"))
         #expect(!out.contains(f.handle.base.path))
@@ -121,7 +124,7 @@ struct DiffTests {
         chmod(f.work.appendingPathComponent("t.txt").path, 0o600)
         let added = try DiffRenderer(base: f.handle.base, work: f.work).full(f.diff())
         #expect(added.contains("binary added (2 bytes)"))
-        #expect(added.contains("old mode 100644\nnew mode 100600"))
+        if !isWindows { #expect(added.contains("old mode 100644\nnew mode 100600")) }
     }
 
     @Test("stat lists paths and a summary")
@@ -132,6 +135,7 @@ struct DiffTests {
         #expect(out.contains("A  new.txt"))
         #expect(out.contains("D  gone/"))
         #expect(out.contains("T  becomes-link  (file -> symlink)"))
-        #expect(out.contains("1 added, 1 modified, 3 deleted, 1 mode-changed, 1 symlink-changed, 1 type-changed"))
+        #expect(out.contains(isWindows ? "1 added, 1 modified, 3 deleted, 1 symlink-changed, 1 type-changed"
+                                       : "1 added, 1 modified, 3 deleted, 1 mode-changed, 1 symlink-changed, 1 type-changed"))
     }
 }

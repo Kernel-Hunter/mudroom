@@ -894,7 +894,7 @@ public struct Applier {
             #if os(Windows)
             switch WinFS.lstat(project.appendingPathComponent(current).path) {
             case .success(let st): ok = st.kind == .directory
-            case .failure(let e): ok = e == DWORD(ERROR_FILE_NOT_FOUND) || e == DWORD(ERROR_PATH_NOT_FOUND)
+            case .failure(let e): ok = e.code == DWORD(ERROR_FILE_NOT_FOUND) || e.code == DWORD(ERROR_PATH_NOT_FOUND)
             }
             #else
             var st = stat()

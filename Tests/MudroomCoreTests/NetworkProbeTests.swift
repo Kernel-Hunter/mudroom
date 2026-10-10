@@ -103,7 +103,8 @@ struct NetworkProbeTests {
         func checkAvailable() throws {}
         func run(_ spec: SandboxSpec) throws -> Int32 { 0 }
         func capture(_ spec: SandboxSpec) throws -> CapturedOutput {
-            try ProcessRunner.capture("/bin/sleep", ["30"], timeout: spec.timeout)
+            let sleep = sleepCommand(30)
+            return try ProcessRunner.capture(sleep.0, sleep.1, timeout: spec.timeout)
         }
         func buildImage(containerfile: URL, context: URL, tag: String) throws {}
         func hostOnlyNetwork() throws -> SandboxNetwork? {

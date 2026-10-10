@@ -168,6 +168,7 @@ struct DataSafetyTests {
         #expect(throws: (any Error).self) { try SafeFS.readBeneath(f.work, "d/id") }
     }
 
+    #if !os(Windows) // No FIFOs on Windows.
     @Test("H3: a FIFO swapped in for a file doesn't hang a read")
     func fifoSwap() throws {
         let f = try Fixture { root in try write("x\n", to: root.appendingPathComponent("f")) }
@@ -176,6 +177,7 @@ struct DataSafetyTests {
         #expect(throws: (any Error).self) { try SafeFS.readBeneath(f.work, "f") }
         #expect(try f.diff().changes.map(\.kind) == [.typeChanged])
     }
+    #endif
 
     @Test("H3/M7: apply and undo are refused while the runner holds its lock")
     func guardWhileRunning() throws {
@@ -193,8 +195,14 @@ struct DataSafetyTests {
         var f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
         // The runner died a minute ago and its PID went to a new process.
         let other = Process()
+        #if os(Windows)
+        other.executableURL = URL(fileURLWithPath: try #require(ProcessRunner.which("ping")))
+        other.arguments = ["-n", "11", "127.0.0.1"]
+        other.standardOutput = FileHandle.nullDevice
+        #else
         other.executableURL = URL(fileURLWithPath: "/bin/sleep")
         other.arguments = ["10"]
+        #endif
         try other.run()
         defer { other.terminate(); other.waitUntilExit() }
         f.handle.session.runnerPID = other.processIdentifier
@@ -202,7 +210,7 @@ struct DataSafetyTests {
         try f.handle.setStatus(.running)
         #expect(!f.handle.isRunnerAlive)
         // Another user's process (EPERM) is not ours either; as root there is none.
-        if getuid() != 0 {
+        if !isRoot {
             f.handle.session.runnerPID = 1
             try f.handle.setStatus(.running)
             #expect(!f.handle.isRunnerAlive)
@@ -274,7 +282,7 @@ struct DataSafetyTests {
     // MARK: M2/M3. Unreadable and special entries
 
     @Test("M2: a mode-000 file in work/ is one unreadable entry; everything else still diffs and applies",
-          .disabled(if: getuid() == 0, "root can read mode-000 files"))
+          .disabled(if: isRoot, "root can read mode-000 files"), .disabled(if: isWindows, "no mode bits on Windows"))
     func unreadableWorkFile() throws {
         let f = try Fixture { root in try write("a\n", to: root.appendingPathComponent("a.txt")) }
         try write("a2\n", to: f.work.appendingPathComponent("a.txt"))
@@ -289,7 +297,7 @@ struct DataSafetyTests {
     }
 
     @Test("M2: a mode-000 directory in work/ is reported once, its children aren't 'deleted'",
-          .disabled(if: getuid() == 0, "root can read mode-000 directories"))
+          .disabled(if: isRoot, "root can read mode-000 directories"), .disabled(if: isWindows, "no mode bits on Windows"))
     func unreadableWorkDir() throws {
         let f = try Fixture { root in try write("in\n", to: root.appendingPathComponent("d/in.txt")) }
         chmod(f.work.appendingPathComponent("d").path, 0o000)
@@ -301,7 +309,7 @@ struct DataSafetyTests {
     }
 
     @Test("M3: a project with an unreadable file can be cloned; the file is listed as skipped",
-          .disabled(if: getuid() == 0, "root can read mode-000 files"))
+          .disabled(if: isRoot, "root can read mode-000 files"), .disabled(if: isWindows, "no mode bits on Windows"))
     func unreadableProjectFile() throws {
         let tmp = try TempDir()
         let project = tmp.path("p")
@@ -315,6 +323,7 @@ struct DataSafetyTests {
         #expect(try read(h.work.appendingPathComponent("a.txt")) == "ok\n")
     }
 
+    #if !os(Windows) // No FIFOs, and Unix sockets only as reparse points.
     @Test("M3: a project with a unix socket and a FIFO clones, with and without clonefile")
     func socketInProject() throws {
         let tmp = try TempDir()
@@ -342,6 +351,7 @@ struct DataSafetyTests {
             if !clone { #expect(Set(h.session.cloneSkipped?.map(\.path) ?? []) == ["tmp/fifo", "tmp/s"]) }
         }
     }
+    #endif
 
     // MARK: M4/M5. Concurrent applies, partial undo
 
@@ -409,7 +419,7 @@ struct DataSafetyTests {
         #expect(try Applier(handle: f.handle).hunks(for: change)?.count == 1)
     }
 
-    @Test("L3: setuid and setgid bits are never applied")
+    @Test("L3: setuid and setgid bits are never applied", .disabled(if: isWindows, "no mode bits on Windows"))
     func setuidStripped() throws {
         let f = try Fixture { root in try write("#!/bin/sh\n", to: root.appendingPathComponent("tool")) }
         chmod(f.work.appendingPathComponent("tool").path, 0o4755)

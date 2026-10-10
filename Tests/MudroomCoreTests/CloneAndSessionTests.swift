@@ -34,7 +34,7 @@ struct CloneAndSessionTests {
         #expect(try TreeSnapshot.scan(f.handle.base).nodes == original)
         #expect(try TreeSnapshot.scan(f.work).nodes == original)
         #expect(original["link"] == .symlink(target: "README.md"))
-        #expect(original["bin/run.sh"]?.mode == 0o755)
+        #expect(original["bin/run.sh"]?.mode == expectedMode(0o755))
 
         try write("changed\n", to: f.work.appendingPathComponent("README.md"))
         #expect(try read(f.project.appendingPathComponent("README.md")) == "hello\n")
@@ -109,7 +109,8 @@ struct CloneAndSessionTests {
         try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
         chmod(locked.path, 0)
         defer { chmod(locked.path, 0o755) }
-        if getuid() != 0 { #expect(store.projectProblem(locked, home: home) != nil) }
+        // Windows has no mode bits to lock a folder with.
+        if !isRoot && !isWindows { #expect(store.projectProblem(locked, home: home) != nil) }
     }
 
     @Test("errors read as sentences, not Foundation dumps")

@@ -31,7 +31,7 @@ extension ProcessRunner {
         _ = InitializeProcThreadAttributeList(nil, 1, 0, &size)
         let attributes = UnsafeMutableRawPointer.allocate(byteCount: Int(size), alignment: 16)
         defer { attributes.deallocate() }
-        let list = LPPROC_THREAD_ATTRIBUTE_LIST(OpaquePointer(attributes))
+        let list = unsafeBitCast(attributes, to: LPPROC_THREAD_ATTRIBUTE_LIST.self)
         guard InitializeProcThreadAttributeList(list, 1, 0, &size) else {
             throw Win32.error("InitializeProcThreadAttributeList", executable, GetLastError())
         }

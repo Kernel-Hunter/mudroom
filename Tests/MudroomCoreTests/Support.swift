@@ -39,8 +39,47 @@ func read(_ url: URL) throws -> String {
 }
 
 func exists(_ url: URL) -> Bool {
+    #if os(Windows)
+    if case .success = WinFS.lstat(url.path) { return true }
+    return false
+    #else
     var st = stat()
     return lstat(url.path, &st) == 0
+    #endif
+}
+
+#if os(Windows)
+/// Windows has no Unix permission bits, FIFOs or /bin/sh: tests of those
+/// are skipped there, and Windows' own behaviour is tested instead.
+let isWindows = true
+/// Running as root, which reads files whatever their mode.
+let isRoot = false
+#else
+let isWindows = false
+let isRoot = getuid() == 0
+#endif
+
+/// The mode FileNode reports for a file written with `mode`: Windows has no
+/// permission bits, so every file reads as 0644 there.
+func expectedMode(_ mode: UInt16) -> UInt16 { isWindows ? 0o644 : mode }
+
+/// A program that waits `seconds` and exits: /bin/sleep, or ping on Windows,
+/// which has no sleep command.
+func sleepCommand(_ seconds: Int) -> (String, [String]) {
+    #if os(Windows)
+    return (ProcessRunner.which("ping") ?? "C:\\Windows\\System32\\PING.EXE", ["-n", "\(seconds + 1)", "127.0.0.1"])
+    #else
+    return ("/bin/sleep", ["\(seconds)"])
+    #endif
+}
+
+/// A program that prints `text` and exits 0.
+func echoCommand(_ text: String) -> (String, [String]) {
+    #if os(Windows)
+    return (ProcessRunner.which("cmd") ?? "C:\\Windows\\System32\\cmd.exe", ["/c", "echo", text])
+    #else
+    return ("/bin/echo", [text])
+    #endif
 }
 
 func modeOf(_ url: URL) throws -> UInt16? {

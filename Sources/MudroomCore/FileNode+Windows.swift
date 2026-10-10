@@ -14,13 +14,13 @@ extension FileNode {
     public static func read(at url: URL) throws -> FileNode {
         switch WinFS.lstat(url.path) {
         case .failure(let e):
-            switch Int(e) {
+            switch Int(e.code) {
             case Int(ERROR_FILE_NOT_FOUND), Int(ERROR_PATH_NOT_FOUND), Int(ERROR_DIRECTORY), Int(ERROR_INVALID_NAME):
                 return .absent
             case Int(ERROR_ACCESS_DENIED):
                 return .unreadable(reason: "permission denied")
             default:
-                throw Win32.error("GetFileAttributesExW", url.path, e)
+                throw Win32.error("GetFileAttributesExW", url.path, e.code)
             }
         case .success(let st):
             switch st.kind {
