@@ -323,11 +323,13 @@ struct EgressProxyTests {
 
     @Test("an allowed host that can't be reached gets 502")
     func unreachable() throws {
-        // A port nothing listens on.
-        let server = try TestHTTPServer()
-        let dead = server.port
-        server.cancel()
-        usleep(100_000)
+        // A port nothing listens on: bound but never listening, and held for
+        // the whole test so a server started by a parallel test can't take it.
+        let held = Sock.make(AF_INET)
+        defer { close(held) }
+        let bound = Sock.withSockaddr(IPAddress("127.0.0.1")!, port: 0) { bind(held, $0, $1) }
+        try #require(bound == 0)
+        let dead = Sock.localPort(held)
         let proxy = try makeProxy(["127.0.0.1"])
         defer { proxy.stop() }
         let reply = try talk(port: proxy.port, "CONNECT 127.0.0.1:\(dead) HTTP/1.1\r\n\r\n")
