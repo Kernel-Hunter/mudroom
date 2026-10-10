@@ -1105,9 +1105,9 @@ public final class FileLock {
         return FileLock(fd: fd)
     }
 
-    /// Takes the lock only if nobody holds it. With `inheritable`, child
-    /// processes started with posix_spawn share it, so it stays held while
-    /// any of them lives.
+    /// Takes the lock only if nobody holds it. With `inheritable`, children
+    /// started by `ProcessRunner.runAttached` share it, so it stays held
+    /// while any of them lives.
     public static func tryAcquire(_ url: URL, inheritable: Bool = false) -> FileLock? {
         let fd = open(url.path, O_RDWR | O_CREAT | (inheritable ? 0 : O_CLOEXEC), 0o600)
         guard fd >= 0 else { return nil }
@@ -1115,6 +1115,7 @@ public final class FileLock {
             close(fd)
             return nil
         }
+        if inheritable { ProcessRunner.inherit(fd) }
         return FileLock(fd: fd)
     }
 
@@ -1133,6 +1134,7 @@ public final class FileLock {
 
     public func release() {
         guard fd >= 0 else { return }
+        ProcessRunner.stopInheriting(fd)
         flock(fd, LOCK_UN)
         close(fd)
         fd = -1
