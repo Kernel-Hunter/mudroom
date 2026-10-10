@@ -129,12 +129,13 @@ struct WindowsTests {
         let f = try Fixture { root in try write("x\n", to: root.appendingPathComponent("keep.txt")) }
         let deep = (1...12).map { "folder-with-a-long-name-\($0)" }.joined(separator: "/") + "/file.txt"
         #expect(f.work.appendingPathComponent(deep).path.utf16.count > 300)
-        try write("deep\n", to: f.work.appendingPathComponent(deep))
+        // Foundation's FileManager can't create these paths; an agent's tools can.
+        try longWrite("deep\n", to: f.work.appendingPathComponent(deep))
         let diff = try f.diff()
         #expect(diff.changes.contains { $0.path == deep && $0.kind == .added })
         let report = try Applier(handle: f.handle).apply(paths: nil)
         #expect(report.applied.contains(deep))
-        #expect(try read(f.project.appendingPathComponent(deep)) == "deep\n")
+        #expect(try SafeFS.readBeneath(f.project, deep) == Data("deep\n".utf8))
     }
 
     @Test("a junction the agent makes is reported, never followed or applied")
@@ -240,6 +241,26 @@ struct WindowsTests {
         #expect(Win32.path("/C:/Users/me") == #"C:\Users\me"#)
         let long = "C:/" + String(repeating: "a/", count: 130)
         #expect(Win32.path(long).hasPrefix(#"\\?\C:\"#))
+    }
+
+    /// Writes a file through the Win32 API, which takes paths past MAX_PATH.
+    func longWrite(_ text: String, to url: URL) throws {
+        var missing: [URL] = []
+        var dir = url.deletingLastPathComponent()
+        while !exists(dir) {
+            missing.append(dir)
+            dir = dir.deletingLastPathComponent()
+        }
+        for d in missing.reversed() {
+            if let e = WinFS.makeDirectory(d.path) { throw Win32.error("CreateDirectoryW", d.path, e) }
+        }
+        let h = Win32.withPath(url.path) {
+            CreateFileW($0, DWORD(GENERIC_WRITE), 0, nil, DWORD(CREATE_ALWAYS), DWORD(FILE_ATTRIBUTE_NORMAL), nil)
+        }
+        guard let h, h != INVALID_HANDLE_VALUE else { throw Win32.error("CreateFileW", url.path, GetLastError()) }
+        defer { CloseHandle(h) }
+        let ok = Array(text.utf8).withUnsafeBytes { WinFS.writeAll(h, $0) }
+        try #require(ok)
     }
 
     func setReadOnly(_ path: String) -> Bool {

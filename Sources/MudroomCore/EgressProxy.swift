@@ -323,6 +323,13 @@ public final class EgressProxy: @unchecked Sendable {
                 // Over the cap: refuse without a thread.
                 Sock.setNonBlocking(conn, true)
                 _ = Sock.sendAll(conn, Data("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".utf8))
+                #if os(Windows)
+                // Closing with the request still unread sends a reset, and
+                // Windows then drops the 503 before the client reads it.
+                Sock.shutdown(conn, both: false)
+                var scratch = [UInt8](repeating: 0, count: 4096)
+                for _ in 0..<16 { guard let n = Sock.receive(conn, &scratch), n > 0 else { break } }
+                #endif
                 Sock.close(conn)
                 continue
             }
