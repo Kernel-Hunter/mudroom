@@ -144,7 +144,7 @@ extension AgentBaseImage {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("Containerfile")
-        try containerfile.write(to: file, atomically: true, encoding: .utf8)
+        try Data(containerfile.utf8).writeAtomically(to: file)
         try backend.buildImage(containerfile: file, context: dir, tag: tag, labels: [hashLabel: containerfileHash], onLine: onLine)
     }
 

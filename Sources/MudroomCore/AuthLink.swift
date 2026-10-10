@@ -45,14 +45,14 @@ public final class AuthLinkHandoff: @unchecked Sendable {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         chmod(directory.path, 0o700)
         let script = directory.appendingPathComponent("open-url")
-        try """
+        try Data("""
         #!/bin/sh
         # Set as BROWSER by Mudroom: hands sign-in links to the host, which
         # opens them in your browser there.
         for u in "$@"; do printf '%s\\n' "$u" >> \(Self.guestDirectory)/urls; done
         exit 0
 
-        """.write(to: script, atomically: true, encoding: .utf8)
+        """.utf8).writeAtomically(to: script)
         chmod(script.path, 0o755)
         _ = FileManager.default.createFile(atPath: urlsFile.path, contents: nil)
     }
