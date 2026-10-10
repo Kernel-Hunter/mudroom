@@ -1,8 +1,8 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// MudroomCore and the `mudroom` CLI build on macOS and Linux. The SwiftUI app
-// is macOS only, so it is left out of the package everywhere else.
+// MudroomCore and the `mudroom` CLI build on macOS, Linux and Windows. The
+// SwiftUI app is macOS only, so it is left out of the package everywhere else.
 
 var products: [Product] = [
     .library(name: "MudroomCore", targets: ["MudroomCore"]),
@@ -14,7 +14,12 @@ var targets: [Target] = [
         name: "MudroomCore",
         dependencies: [
             // CryptoKit on Apple platforms, swift-crypto (same API) elsewhere.
-            .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: [.linux])),
+            .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: [.linux, .windows])),
+        ],
+        linkerSettings: [
+            // Winsock for the proxy, Advapi32 for Credential Manager.
+            .linkedLibrary("ws2_32", .when(platforms: [.windows])),
+            .linkedLibrary("advapi32", .when(platforms: [.windows])),
         ]
     ),
     .executableTarget(

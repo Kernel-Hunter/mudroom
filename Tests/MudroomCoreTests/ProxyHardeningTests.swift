@@ -4,31 +4,30 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
 @testable import MudroomCore
 
 /// Like `talk`, but sends raw bytes (NULs included).
+/// Blocking loopback client: sends `bytes` (NULs included), optionally a
+/// second payload after the first reply, and returns everything read until
+/// EOF or until nothing arrives for `timeout` seconds.
 func talkRaw(port: UInt16, _ bytes: [UInt8], then second: String? = nil, timeout: Int = 5) throws -> String {
-    let fd = Sock.make(AF_INET)
-    guard fd >= 0 else { throw MudroomError.posix("socket", "", errno) }
-    defer { close(fd) }
-    var tv = timeval(tv_sec: timeout, tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-    var addr = sockaddr_in()
-    addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = port.bigEndian
-    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-    let rc = withUnsafePointer(to: &addr) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    let fd: Int32
+    switch Sock.connect(.v4(0x7F00_0001), port: port, timeout: 5, cancelled: { false }) {
+    case .success(let s): fd = s
+    case .failure(let e): throw MudroomError.invalid("connect 127.0.0.1:\(port): \(Sock.errorText(e.code))")
     }
-    guard rc == 0 else { throw MudroomError.posix("connect", "127.0.0.1:\(port)", errno) }
+    defer { Sock.close(fd) }
     _ = Sock.sendAll(fd, Data(bytes))
     var out = Data()
     func readSome() -> Data {
+        guard Sock.waitReadable(fd, timeout: TimeInterval(timeout)) else { return Data() }
         var buf = [UInt8](repeating: 0, count: 65536)
-        let n = recv(fd, &buf, buf.count, 0)
+        let n = Sock.receive(fd, &buf) ?? 0
         return n > 0 ? Data(buf[0..<n]) : Data()
     }
     if let second {
@@ -236,7 +235,7 @@ struct ProxyHardeningTests {
         usleep(200_000)
         let over = try talk(port: p.port, "CONNECT 127.0.0.1:\(server.port) HTTP/1.1\r\n\r\n")
         #expect(over.hasPrefix("HTTP/1.1 503"))
-        idle.forEach { close($0) }
+        idle.forEach { Sock.close($0) }
         usleep(300_000)
         let again = try talk(port: p.port, "GET http://127.0.0.1:\(server.port)/ HTTP/1.1\r\n\r\n")
         #expect(again.hasPrefix("HTTP/1.1 200"))

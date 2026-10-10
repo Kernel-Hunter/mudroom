@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
@@ -50,7 +52,7 @@ struct ApplyTests {
         #expect(report.bundle != nil)
         #expect(try snapshot(f.project, includeGit: false) == snapshot(f.work, includeGit: false))
         #expect(try read(f.project.appendingPathComponent(".git/HEAD")) == "ref: refs/heads/main\n")
-        #expect(try modeOf(f.project.appendingPathComponent("script.sh")) == 0o755)
+        #expect(try modeOf(f.project.appendingPathComponent("script.sh")) == expectedMode(0o755))
         #expect(try FileNode.read(at: f.project.appendingPathComponent("ptr")) == .symlink(target: "new.txt"))
         #expect(!exists(f.project.appendingPathComponent("gone")))
     }
@@ -223,7 +225,8 @@ struct ApplyTests {
         #expect(bundle.path.hasPrefix(f.handle.directory.path))
     }
 
-    @Test("undo records the mode the disk kept (FAT has no Unix modes)")
+    @Test("undo records the mode the disk kept (FAT has no Unix modes)",
+          .disabled(if: isWindows, "Windows has no Unix modes; FileNode reports fixed ones there"))
     func modeOnDisk() throws {
         let f = try Fixture { try write("a\n", to: $0.appendingPathComponent("a.txt")) }
         let url = f.project.appendingPathComponent("a.txt")
@@ -245,7 +248,7 @@ struct ApplyTests {
         #expect(report.conflicts.map(\.path) == ["sub/b.txt"])
         #expect(report.conflicts.first?.reason.contains("review again") == true)
         #expect(try read(f.project.appendingPathComponent("a.txt")) == "new a\n")
-        #expect(try modeOf(f.project.appendingPathComponent("a.txt")) == 0o755)
+        #expect(try modeOf(f.project.appendingPathComponent("a.txt")) == expectedMode(0o755))
         #expect(!exists(f.project.appendingPathComponent("sub/b.txt")))
         #expect(try read(f.work.appendingPathComponent("a.txt")) == "new a\n")
         let bundle = try #require(report.bundle)

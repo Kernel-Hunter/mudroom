@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
@@ -42,7 +44,8 @@ struct TokenCaptureTests {
         #expect(SetupTokenCapture.extract("sk-ant-oat01-short") == nil)
     }
 
-    @Test("a program in the pty sees a wide terminal, takes typed input, and its token is captured")
+    @Test("a program in the pty sees a wide terminal, takes typed input, and its token is captured",
+          .disabled(if: isWindows, "PtyProcess needs ConPTY on Windows, which isn't written yet"))
     func pty() throws {
         let p = try PtyProcess("/bin/sh", ["-c", "test -t 0 && echo tty=yes; stty size; read line; echo \"got $line\"; echo '\(fakeToken)'"])
         usleep(300_000)
@@ -110,8 +113,10 @@ struct HostDetectionTests {
         let agentHome = try #require(AgentHome(store: store, agent: "codex"))
         #expect(try login.importInto(agentHome) == ["auth.json"])
         #expect(agentHome.hasCredentials)
+        #if !os(Windows) // No mode bits; the profile's ACL keeps the file private.
         var st = stat()
         #expect(stat(agentHome.hostDirectory.appendingPathComponent("auth.json").path, &st) == 0 && st.st_mode & 0o777 == 0o600)
+        #endif
 
         try write("not json", to: home.appendingPathComponent(".codex/auth.json"))
         #expect(throws: MudroomError.self) { try login.importInto(agentHome) }

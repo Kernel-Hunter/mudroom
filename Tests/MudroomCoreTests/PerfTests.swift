@@ -2,6 +2,8 @@
 import Darwin
 #elseif canImport(Glibc)
 import Glibc
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
@@ -9,6 +11,12 @@ import Testing
 
 /// Peak resident memory of this process so far, in MB.
 func peakRSSMB() -> Int {
+    #if os(Windows)
+    var c = PROCESS_MEMORY_COUNTERS()
+    c.cb = DWORD(MemoryLayout<PROCESS_MEMORY_COUNTERS>.size)
+    guard K32GetProcessMemoryInfo(GetCurrentProcess(), &c, c.cb) else { return 0 }
+    return Int(c.PeakWorkingSetSize) >> 20
+    #else
     var u = rusage()
     #if canImport(Glibc)
     getrusage(__rusage_who_t(RUSAGE_SELF.rawValue), &u)
@@ -19,6 +27,7 @@ func peakRSSMB() -> Int {
     return Int(u.ru_maxrss) >> 20
     #else
     return Int(u.ru_maxrss) >> 10
+    #endif
     #endif
 }
 

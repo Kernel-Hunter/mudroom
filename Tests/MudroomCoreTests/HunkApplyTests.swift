@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
@@ -83,7 +85,7 @@ struct HunkApplyTests {
         let report = try Applier(handle: f.handle).applyHunks(path: "src/file.txt", hunks: [1, 2, 3])
         #expect(report.applied == ["src/file.txt"])
         #expect(try read(target(f)) == Self.edited(Self.base))
-        #expect(try modeOf(target(f)) == 0o755)
+        #expect(try modeOf(target(f)) == expectedMode(0o755))
         #expect(try Applier(handle: f.handle).apply(paths: ["src/file.txt"]).alreadyApplied == ["src/file.txt"])
     }
 

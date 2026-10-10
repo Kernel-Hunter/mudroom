@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -18,7 +20,11 @@ public enum IPAddress: Hashable, Sendable, CustomStringConvertible {
     public init?(_ string: String) {
         var a4 = in_addr()
         if inet_pton(AF_INET, string, &a4) == 1 {
+            #if os(Windows)
+            self = .v4(UInt32(bigEndian: a4.S_un.S_addr))
+            #else
             self = .v4(UInt32(bigEndian: a4.s_addr))
+            #endif
             return
         }
         var a6 = in6_addr()
@@ -33,7 +39,11 @@ public enum IPAddress: Hashable, Sendable, CustomStringConvertible {
     init?(_ sa: UnsafePointer<sockaddr>) {
         switch Int32(sa.pointee.sa_family) {
         case AF_INET:
+            #if os(Windows)
+            let v = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.S_un.S_addr }
+            #else
             let v = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
+            #endif
             self = .v4(UInt32(bigEndian: v))
         case AF_INET6:
             var a = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { $0.pointee.sin6_addr }
@@ -118,7 +128,11 @@ public enum IPAddress: Hashable, Sendable, CustomStringConvertible {
             return "\(v >> 24).\((v >> 16) & 0xff).\((v >> 8) & 0xff).\(v & 0xff)"
         case .v6(var b):
             var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+            #if os(Windows)
+            _ = b.withUnsafeMutableBytes { inet_ntop(AF_INET6, $0.baseAddress, &buf, buf.count) }
+            #else
             _ = b.withUnsafeMutableBytes { inet_ntop(AF_INET6, $0.baseAddress, &buf, socklen_t(buf.count)) }
+            #endif
             return String(decoding: buf.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }, as: UTF8.self)
         }
     }
@@ -129,6 +143,7 @@ struct Errno: Error {
     let code: Int32
 }
 
+#if !os(Windows)
 /// Thin wrappers over BSD sockets that read the same on macOS and Linux.
 enum Sock {
     #if os(Linux)
@@ -286,7 +301,7 @@ enum Sock {
                     return .failure(Errno(code: ETIMEDOUT))
                 }
                 var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
-                let n = poll(&p, 1, Int32(min(left, 0.25) * 1000) + 1)
+                let n = cPoll(&p, 1, Int32(min(left, 0.25) * 1000) + 1)
                 if n > 0 { break }
                 if n < 0 && errno != EINTR {
                     let e = errno
@@ -327,16 +342,60 @@ enum Sock {
     /// Waits up to `timeout` seconds for `fd` to be readable (or closed).
     static func waitReadable(_ fd: Int32, timeout: TimeInterval) -> Bool {
         var p = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
-        let n = poll(&p, 1, Int32(timeout * 1000))
+        let n = cPoll(&p, 1, Int32(timeout * 1000))
         return n > 0
     }
 
     static func errorText(_ code: Int32) -> String { String(cString: strerror(code)) }
+
+    static func close(_ fd: Int32) { _ = cClose(fd) }
+
+    /// recv(2) into `buf`: bytes read, 0 when the peer closed its side, or
+    /// negative on an error. Nil when there is nothing to read after all
+    /// (EAGAIN) or the call was interrupted.
+    static func receive(_ fd: Int32, _ buf: inout [UInt8]) -> Int? {
+        let n = recv(fd, &buf, buf.count, 0)
+        if n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) { return nil }
+        return n
+    }
+
+    /// Shuts down the sending side, or both.
+    static func shutdown(_ fd: Int32, both: Bool = false) {
+        _ = cShutdown(fd, Int32(both ? SHUT_RDWR : SHUT_WR))
+    }
+
+    /// Waits up to `timeoutMs` (-1: forever) for any of `fds` to be
+    /// readable or closed. One flag per descriptor (all false on a timeout
+    /// or an interruption); nil if poll failed.
+    static func poll(_ fds: [Int32], timeoutMs: Int32) -> [Bool]? {
+        var p = fds.map { pollfd(fd: $0, events: Int16(POLLIN), revents: 0) }
+        let n = cPoll(&p, nfds_t(p.count), timeoutMs)
+        if n < 0 { return errno == EINTR ? fds.map { _ in false } : nil }
+        return p.map { $0.revents != 0 }
+    }
+
+    /// A pair of descriptors that can wake a `poll`: a byte written with
+    /// `wake` to the second makes the first readable.
+    static func wakePair() throws -> (Int32, Int32) {
+        var fds: [Int32] = [-1, -1]
+        guard pipe(&fds) == 0 else { throw MudroomError.posix("pipe", "proxy", errno) }
+        return (fds[0], fds[1])
+    }
+
+    static func wake(_ fd: Int32) {
+        var b: UInt8 = 1
+        _ = write(fd, &b, 1)
+    }
 }
+
+#endif
 
 extension IPAddress {
     public var isV6: Bool { if case .v6 = self { return true } else { return false } }
+}
 
+#if !os(Windows)
+extension IPAddress {
     /// Every address configured on this machine's interfaces.
     public static func hostAddresses() -> Set<IPAddress> {
         var out = Set<IPAddress>()
@@ -352,8 +411,11 @@ extension IPAddress {
     }
 }
 
-// `listen`, `accept` and `connect` are also names in `Sock`; these reach the
-// C functions.
+// `listen`, `accept`, `connect`, `close`, `shutdown` and `poll` are also
+// names in `Sock`; these reach the C functions.
+@inline(__always) private func cClose(_ fd: Int32) -> Int32 { close(fd) }
+@inline(__always) private func cShutdown(_ fd: Int32, _ how: Int32) -> Int32 { shutdown(fd, how) }
+@inline(__always) private func cPoll(_ fds: UnsafeMutablePointer<pollfd>, _ n: nfds_t, _ timeout: Int32) -> Int32 { poll(fds, n, timeout) }
 @inline(__always) private func cListen(_ fd: Int32, _ backlog: Int32) -> Int32 { listen(fd, backlog) }
 @inline(__always) private func cAccept(_ fd: Int32, _ addr: UnsafeMutablePointer<sockaddr>, _ len: UnsafeMutablePointer<socklen_t>) -> Int32 {
     accept(fd, addr, len)
@@ -361,3 +423,4 @@ extension IPAddress {
 @inline(__always) private func cConnect(_ fd: Int32, _ addr: UnsafePointer<sockaddr>, _ len: socklen_t) -> Int32 {
     connect(fd, addr, len)
 }
+#endif

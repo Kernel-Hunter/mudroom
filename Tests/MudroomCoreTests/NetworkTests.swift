@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
@@ -163,7 +165,7 @@ final class TestHTTPServer: @unchecked Sendable {
             var buf = Data()
             var chunk = [UInt8](repeating: 0, count: 65536)
             while buf.range(of: Data("\r\n\r\n".utf8)) == nil {
-                let n = recv(conn, &chunk, chunk.count, 0)
+                guard let n = Sock.receive(conn, &chunk) else { continue }
                 if n <= 0 { break }
                 buf.append(contentsOf: chunk[0..<n])
             }
@@ -173,7 +175,7 @@ final class TestHTTPServer: @unchecked Sendable {
                 received.value = r
                 _ = Sock.sendAll(conn, Data("HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".utf8))
             }
-            close(conn)
+            Sock.close(conn)
         }
     }
 
@@ -182,7 +184,7 @@ final class TestHTTPServer: @unchecked Sendable {
         guard !stopped.value else { return }
         stopped.value = true
         usleep(150_000)
-        close(fd)
+        Sock.close(fd)
     }
 
     deinit { cancel() }
@@ -191,42 +193,7 @@ final class TestHTTPServer: @unchecked Sendable {
 /// Blocking loopback client: sends `request`, optionally a second payload
 /// after the first reply, and returns everything read until EOF.
 func talk(port: UInt16, _ request: String, then second: String? = nil) throws -> String {
-    let fd = Sock.make(AF_INET)
-    guard fd >= 0 else { throw MudroomError.posix("socket", "", errno) }
-    defer { close(fd) }
-    var tv = timeval(tv_sec: 5, tv_usec: 0)
-    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-    var addr = sockaddr_in()
-    addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = port.bigEndian
-    addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-    let rc = withUnsafePointer(to: &addr) {
-        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-    }
-    guard rc == 0 else { throw MudroomError.posix("connect", "127.0.0.1:\(port)", errno) }
-    func send(_ s: String) { _ = s.withCString { MudroomCore.Sock.sendAll(fd, Data(bytes: $0, count: strlen($0))) } }
-    func readSome() -> Data {
-        var buf = [UInt8](repeating: 0, count: 65536)
-        let n = recv(fd, &buf, buf.count, 0)
-        return n > 0 ? Data(buf[0..<n]) : Data()
-    }
-    send(request)
-    var out = Data()
-    if let second {
-        // Wait for the proxy's reply to the first message, then send more.
-        while out.range(of: Data("\r\n\r\n".utf8)) == nil {
-            let d = readSome()
-            if d.isEmpty { break }
-            out.append(d)
-        }
-        send(second)
-    }
-    while true {
-        let d = readSome()
-        if d.isEmpty { break }
-        out.append(d)
-    }
-    return String(decoding: out, as: UTF8.self)
+    try talkRaw(port: port, Array(request.utf8), then: second)
 }
 
 @Suite("Egress proxy", .serialized)
@@ -326,8 +293,12 @@ struct EgressProxyTests {
         // A port nothing listens on: bound but never listening, and held for
         // the whole test so a server started by a parallel test can't take it.
         let held = Sock.make(AF_INET)
-        defer { close(held) }
+        defer { Sock.close(held) }
+        #if os(Windows)
+        let bound = Sock.withSockaddr(IPAddress("127.0.0.1")!, port: 0) { bind(Sock.handle(held), $0, $1) }
+        #else
         let bound = Sock.withSockaddr(IPAddress("127.0.0.1")!, port: 0) { bind(held, $0, $1) }
+        #endif
         try #require(bound == 0)
         let dead = Sock.localPort(held)
         let proxy = try makeProxy(["127.0.0.1"])

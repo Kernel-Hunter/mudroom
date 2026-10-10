@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -135,7 +137,7 @@ public struct ReviewedChanges: Codable, Sendable, Equatable {
         let e = JSONEncoder()
         e.dateEncodingStrategy = .iso8601
         e.outputFormatting = [.sortedKeys]
-        try e.encode(self).write(to: Self.url(handle), options: .atomic)
+        try e.encode(self).writeAtomically(to: Self.url(handle))
     }
 }
 
@@ -600,9 +602,13 @@ public struct Applier {
     func texts(for change: Change) throws -> (Data, Data)? {
         guard change.kind == .modified, case .file = change.before, case .file(_, _, let sha) = change.after else { return nil }
         let b = try SafeFS.readBeneath(handle.base, change.path)
+        #if os(Windows)
+        let w = try SafeFS.readBeneath(handle.work, change.path)
+        #else
         let fd = try SafeFS.openBeneath(handle.work, change.path)
         defer { close(fd) }
         let w = try SafeFS.readAll(fd, limit: .max)
+        #endif
         guard SafeFS.sha256(w) == sha else {
             throw MudroomError.invalid("\(change.path) changed in the agent's copy since the diff was taken; review again")
         }
@@ -830,8 +836,14 @@ public struct Applier {
     /// was moved or deleted, every path would look deleted by the user, and
     /// new files would fail one by one with a copy error.
     func requireProjectFolder() throws {
+        #if os(Windows)
+        var isDir: ObjCBool = false
+        let isFolder = FileManager.default.fileExists(atPath: project.path, isDirectory: &isDir) && isDir.boolValue
+        #else
         var st = stat()
-        guard stat(project.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR else {
+        let isFolder = stat(project.path, &st) == 0 && st.st_mode & S_IFMT == S_IFDIR
+        #endif
+        guard isFolder else {
             throw MudroomError.invalid("the project folder \(project.path) isn't there anymore (moved, renamed or deleted?). Put it back at that path to apply or undo this session's changes.")
         }
     }
@@ -857,7 +869,7 @@ public struct Applier {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-        try encoder.encode(manifest).write(to: bundle.appendingPathComponent("manifest.json"), options: .atomic)
+        try encoder.encode(manifest).writeAtomically(to: bundle.appendingPathComponent("manifest.json"))
     }
 
     /// Returns the first ancestor of `path` in the real project that exists but
@@ -878,13 +890,20 @@ public struct Applier {
                 if let bad = hit { return bad }
                 continue
             }
-            var st = stat()
             let ok: Bool
+            #if os(Windows)
+            switch WinFS.lstat(project.appendingPathComponent(current).path) {
+            case .success(let st): ok = st.kind == .directory
+            case .failure(let e): ok = e.code == DWORD(ERROR_FILE_NOT_FOUND) || e.code == DWORD(ERROR_PATH_NOT_FOUND)
+            }
+            #else
+            var st = stat()
             if lstat(project.appendingPathComponent(current).path, &st) != 0 {
                 ok = errno == ENOENT
             } else {
                 ok = st.st_mode & S_IFMT == S_IFDIR
             }
+            #endif
             cache[current] = ok ? .some(nil) : .some(current)
             if !ok { return current }
         }
@@ -913,10 +932,16 @@ public struct Applier {
         let name = dir.lastPathComponent
         let flipped = String(name.map { $0.isUppercase ? Character($0.lowercased()) : Character($0.uppercased()) })
         guard flipped != name else { return false }
+        #if os(Windows)
+        guard let a = WinFS.identity(dir.path),
+              let b = WinFS.identity(dir.deletingLastPathComponent().appendingPathComponent(flipped).path) else { return false }
+        return a == b
+        #else
         var a = stat(), b = stat()
         guard lstat(dir.path, &a) == 0,
               lstat(dir.deletingLastPathComponent().appendingPathComponent(flipped).path, &b) == 0 else { return false }
         return a.st_dev == b.st_dev && a.st_ino == b.st_ino
+        #endif
     }
 
     /// Records the prior state (copying a regular file into the bundle).
@@ -924,6 +949,10 @@ public struct Applier {
     /// permissions (FAT, exFAT, some network shares) report their own, and
     /// undo would otherwise see that as a change made after the apply.
     static func withModeOnDisk(_ node: FileNode, at url: URL) -> FileNode {
+        #if os(Windows)
+        // FileNode.read reports fixed modes on Windows.
+        return node
+        #else
         var st = stat()
         guard lstat(url.path, &st) == 0 else { return node }
         let mode = UInt16(st.st_mode & 0o7777)
@@ -932,6 +961,7 @@ public struct Applier {
         case .directory(let m) where m & 0o7777 != mode: return .directory(mode: mode)
         default: return node
         }
+        #endif
     }
 
     private func backup(_ path: String, prior: FileNode, applied: FileNode, bundle: URL) throws -> RollbackEntry {
@@ -1083,6 +1113,7 @@ final class Journal {
     func close() { try? handle.close() }
 }
 
+#if !os(Windows)
 /// An exclusive flock(2) on a file, released when the process exits even
 /// if it crashes.
 public final class FileLock {
@@ -1142,3 +1173,4 @@ public final class FileLock {
 
     deinit { release() }
 }
+#endif

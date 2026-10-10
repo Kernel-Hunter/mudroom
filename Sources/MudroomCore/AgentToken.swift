@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 #if canImport(Security)
 import Security
@@ -44,10 +46,13 @@ public enum AgentToken {
         }
     }
 
-    /// The macOS Keychain on macOS, else a 0600 file in the data directory.
+    /// The macOS Keychain on macOS, Credential Manager on Windows, else a
+    /// 0600 file in the data directory.
     public static func defaultStore(_ store: SessionStore) -> AgentTokenStore {
         #if canImport(Security) && os(macOS)
         if ProcessInfo.processInfo.environment["MUDROOM_TOKEN_STORE"] != "file" { return KeychainTokenStore() }
+        #elseif os(Windows)
+        if ProcessInfo.processInfo.environment["MUDROOM_TOKEN_STORE"] != "file" { return CredentialTokenStore() }
         #endif
         return FileTokenStore(root: store.root)
     }
@@ -87,11 +92,15 @@ public struct FileTokenStore: AgentTokenStore {
     public func read(_ agent: String) throws -> String? {
         let u = url(agent)
         guard FileManager.default.fileExists(atPath: u.path) else { return nil }
+        #if os(Windows)
+        let data = try SafeFS.readBeneath(u.deletingLastPathComponent(), u.lastPathComponent, limit: 64 << 10)
+        #else
         let fd = open(u.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw MudroomError.posix("open", u.path, errno) }
         defer { close(fd) }
-        let t = String(decoding: try SafeFS.readAll(fd, limit: 64 << 10), as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let data = try SafeFS.readAll(fd, limit: 64 << 10)
+        #endif
+        let t = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         return t.isEmpty ? nil : t
     }
 
@@ -101,6 +110,15 @@ public struct FileTokenStore: AgentTokenStore {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         chmod(dir.path, 0o700)
         let tmp = dir.appendingPathComponent(".token-\(UUID().uuidString.prefix(8))")
+        #if os(Windows)
+        // Private by the ACL it inherits from the user's profile.
+        try Data((token + "\n").utf8).write(to: tmp, options: .withoutOverwriting)
+        guard rename(tmp.path, u.path) == 0 else {
+            let e = errno
+            _ = unlink(tmp.path)
+            throw MudroomError.posix("rename", u.path, e)
+        }
+        #else
         let fd = open(tmp.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard fd >= 0 else { throw MudroomError.posix("open", tmp.path, errno) }
         let bytes = Array((token + "\n").utf8)
@@ -110,6 +128,7 @@ public struct FileTokenStore: AgentTokenStore {
             unlink(tmp.path)
             throw MudroomError.posix("write", u.path, errno)
         }
+        #endif
     }
 
     public func accounts() throws -> [String] {
@@ -194,6 +213,90 @@ public struct KeychainTokenStore: AgentTokenStore {
     static func error(_ what: String, _ status: OSStatus) -> MudroomError {
         let msg = (SecCopyErrorMessageString(status, nil) as String?) ?? "OSStatus \(status)"
         return .invalid("Keychain \(what) failed: \(msg)")
+    }
+}
+#endif
+
+#if os(Windows)
+/// A generic credential in Windows Credential Manager, named
+/// io.github.kernel-hunter.mudroom/<agent>. Kept for this user on this
+/// machine (not roamed), and never on a command line.
+public struct CredentialTokenStore: AgentTokenStore {
+    public init() {}
+
+    static let prefix = AgentToken.keychainService + "/"
+
+    func target(_ agent: String) -> String { Self.prefix + agent }
+
+    public var location: String { "Windows Credential Manager (\(AgentToken.keychainService)/...)" }
+
+    public func read(_ agent: String) throws -> String? {
+        var cred: PCREDENTIALW?
+        let ok = Win32.withWide(target(agent)) { CredReadW($0, DWORD(CRED_TYPE_GENERIC), 0, &cred) }
+        guard ok, let cred else {
+            let e = GetLastError()
+            if e == DWORD(ERROR_NOT_FOUND) { return nil }
+            throw Win32.error("CredReadW", target(agent), e)
+        }
+        defer { CredFree(UnsafeMutableRawPointer(cred)) }
+        let size = Int(cred.pointee.CredentialBlobSize)
+        guard size > 0, let blob = cred.pointee.CredentialBlob else { return nil }
+        let t = String(decoding: UnsafeBufferPointer(start: blob, count: size), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
+    }
+
+    public func write(_ agent: String, _ token: String) throws {
+        var bytes = Array(token.utf8)
+        // CRED_MAX_CREDENTIAL_BLOB_SIZE.
+        guard bytes.count <= 5 * 512 else {
+            throw MudroomError.invalid("that is too long for Credential Manager (2560 bytes at most); set MUDROOM_TOKEN_STORE=file to keep it in a file")
+        }
+        let ok = Win32.withWide(target(agent)) { name in
+            Win32.withWide("mudroom") { user in
+                bytes.withUnsafeMutableBufferPointer { blob in
+                    var cred = CREDENTIALW()
+                    cred.`Type` = DWORD(CRED_TYPE_GENERIC)
+                    cred.TargetName = UnsafeMutablePointer(mutating: name)
+                    cred.UserName = UnsafeMutablePointer(mutating: user)
+                    cred.CredentialBlobSize = DWORD(blob.count)
+                    cred.CredentialBlob = blob.baseAddress
+                    cred.Persist = DWORD(CRED_PERSIST_LOCAL_MACHINE)
+                    return CredWriteW(&cred, 0)
+                }
+            }
+        }
+        guard ok else { throw Win32.error("CredWriteW", target(agent), GetLastError()) }
+    }
+
+    public func accounts() throws -> [String] {
+        var count: DWORD = 0
+        var list: UnsafeMutablePointer<PCREDENTIALW?>?
+        let ok = Win32.withWide(Self.prefix + "*") { CredEnumerateW($0, 0, &count, &list) }
+        guard ok, let list else {
+            let e = GetLastError()
+            if e == DWORD(ERROR_NOT_FOUND) { return [] }
+            throw Win32.error("CredEnumerateW", Self.prefix + "*", e)
+        }
+        defer { CredFree(UnsafeMutableRawPointer(list)) }
+        var out: [String] = []
+        for i in 0..<Int(count) {
+            guard let c = list[i], let name = c.pointee.TargetName else { continue }
+            let s = String(decodingCString: name, as: UTF16.self)
+            if s.hasPrefix(Self.prefix) { out.append(String(s.dropFirst(Self.prefix.count))) }
+        }
+        return out.sorted()
+    }
+
+    public func contains(_ agent: String) -> Bool {
+        ((try? accounts()) ?? []).contains(agent)
+    }
+
+    public func delete(_ agent: String) throws -> Bool {
+        if Win32.withWide(target(agent), { CredDeleteW($0, DWORD(CRED_TYPE_GENERIC), 0) }) { return true }
+        let e = GetLastError()
+        if e == DWORD(ERROR_NOT_FOUND) { return false }
+        throw Win32.error("CredDeleteW", target(agent), e)
     }
 }
 #endif

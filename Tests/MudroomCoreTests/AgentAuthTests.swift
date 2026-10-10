@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
@@ -16,8 +18,13 @@ struct AgentAuthTests {
         let tmp = try TempDir()
         let tokens = FileTokenStore(root: tmp.url)
         try tokens.write("claude", "sk-ant-oat01-SECRETSECRETSECRET")
+        #if os(Windows)
+        // No mode bits: the file is private by the ACL of the user's profile.
+        #expect(exists(tokens.url("claude")))
+        #else
         var st = stat()
         #expect(stat(tokens.url("claude").path, &st) == 0 && st.st_mode & 0o777 == 0o600)
+        #endif
         #expect(try tokens.read("claude") == "sk-ant-oat01-SECRETSECRETSECRET")
 
         var spec = SandboxSpec(name: "s", image: "i", workspace: tmp.url, command: ["claude"])
@@ -28,7 +35,12 @@ struct AgentAuthTests {
             #expect(args.contains("CLAUDE_CODE_OAUTH_TOKEN"))
         }
         // The value reaches the child through its environment.
+        #if os(Windows)
+        let out = try ProcessRunner.capture(try #require(ProcessRunner.which("cmd")), ["/c", "set"],
+                                            environment: ["CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-SECRETSECRETSECRET"])
+        #else
         let out = try ProcessRunner.capture("/usr/bin/env", [], environment: ["CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat01-SECRETSECRETSECRET"])
+        #endif
         #expect(out.stdout.contains("CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-SECRETSECRETSECRET"))
         #expect(try tokens.delete("claude"))
         #expect(try tokens.read("claude") == nil)

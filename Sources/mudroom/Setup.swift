@@ -5,6 +5,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import MudroomCore
@@ -286,8 +288,12 @@ func signInClaudeWithHostCLI(_ claude: String) -> Bool {
     // A code typed or pasted here goes to claude.
     let reader = Thread {
         while !finished.value {
+            #if os(Windows)
+            guard WindowsConsole.waitForInput(200) else { continue }
+            #else
             var p = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
             guard poll(&p, 1, 200) > 0 else { continue }
+            #endif
             guard let line = readLine() else { return }
             let code = line.trimmingCharacters(in: .whitespacesAndNewlines)
             if !code.isEmpty { signIn.sendCode(code) }

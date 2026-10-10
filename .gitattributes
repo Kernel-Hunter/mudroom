@@ -1,0 +1,4 @@
+# The agent image is built in Linux, and tests compare the Containerfile
+# with its embedded copy: keep LF endings on Windows checkouts too.
+images/** text eol=lf
+*.sh text eol=lf

@@ -82,6 +82,19 @@ public enum RuntimeSetup {
                 Thread.sleep(forTimeInterval: 2)
             }
             throw MudroomError.backendUnavailable("Docker didn't start within two minutes")
+            #elseif os(Windows)
+            let programFiles = ProcessInfo.processInfo.environment["ProgramFiles"] ?? #"C:\Program Files"#
+            let desktop = Process()
+            desktop.executableURL = URL(fileURLWithPath: programFiles + #"\Docker\Docker\Docker Desktop.exe"#)
+            guard (try? desktop.run()) != nil else {
+                throw MudroomError.backendUnavailable("start Docker Desktop (it wasn't found in \(programFiles)\\Docker)")
+            }
+            onLine("started Docker Desktop; waiting for it to be ready")
+            for _ in 0..<90 {
+                if (try? ProcessRunner.capture(executable, ["info"]))?.status == 0 { return }
+                Thread.sleep(forTimeInterval: 2)
+            }
+            throw MudroomError.backendUnavailable("Docker didn't start within three minutes")
             #else
             throw MudroomError.backendUnavailable("start the Docker daemon, e.g. `sudo systemctl start docker`")
             #endif
@@ -131,7 +144,7 @@ extension AgentBaseImage {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
         let file = dir.appendingPathComponent("Containerfile")
-        try containerfile.write(to: file, atomically: true, encoding: .utf8)
+        try Data(containerfile.utf8).writeAtomically(to: file)
         try backend.buildImage(containerfile: file, context: dir, tag: tag, labels: [hashLabel: containerfileHash], onLine: onLine)
     }
 

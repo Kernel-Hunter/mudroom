@@ -5,6 +5,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import MudroomCore
@@ -386,7 +388,11 @@ extension Agent {
 func storeToken(for agent: String) throws {
     let tty = isatty(STDIN_FILENO) == 1
     if tty {
+        #if os(Windows)
+        FileHandle.standardError.write(Data("Paste the token, then press Enter (it won't show).\n> ".utf8))
+        #else
         FileHandle.standardError.write(Data("Paste the token, then press Enter (it shows as dots).\n> ".utf8))
+        #endif
     }
     let raw = tty ? readSecretFromTerminal() : String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
     if tty { FileHandle.standardError.write(Data("\n".utf8)) }
@@ -403,6 +409,13 @@ func storeToken(for agent: String) throws {
 /// line breaks inside it (a token the terminal wrapped) don't end the
 /// input; Enter after a pause does.
 func readSecretFromTerminal() -> String {
+    #if os(Windows)
+    // Windows Terminal and the console copy a wrapped line as one line, so
+    // reading a line with echo off is enough here.
+    guard let mode = WindowsConsole.echoOff() else { return readLine() ?? "" }
+    defer { WindowsConsole.restoreEcho(mode) }
+    return readLine() ?? ""
+    #else
     var saved = termios()
     guard tcgetattr(STDIN_FILENO, &saved) == 0 else { return readLine() ?? "" }
     var raw = saved
@@ -434,6 +447,7 @@ func readSecretFromTerminal() -> String {
         if b >= 0x20 { FileHandle.standardError.write(Data("•".utf8)) }
     }
     return String(decoding: bytes, as: UTF8.self)
+    #endif
 }
 
 /// Before a session: if the agent isn't signed in yet, say how the code
