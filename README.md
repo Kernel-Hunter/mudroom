@@ -12,7 +12,7 @@ agent is done you read the diff, apply all of it, some files, some hunks or
 none, and undo any apply later.
 
 macOS app and CLI on Apple-silicon Macs. CLI only (with Docker or Podman) on
-Linux and Intel Macs.
+Linux, Windows and Intel Macs.
 
 > Status: early prototype. Expect rough edges and breaking changes.
 
@@ -60,7 +60,7 @@ Linux and Intel Macs.
 | macOS 26+, Apple silicon | App and CLI | `apple` (Apple's `container`, one VM per session), or `docker`/`podman` |
 | macOS 26+, Intel | CLI only (build from source) | `docker` or `podman` |
 | Linux x86_64 and arm64 | CLI only (build from source) | `docker` or `podman` |
-| Windows | Not supported. WSL2 is untested. | |
+| Windows 10/11, x86_64 and arm64 | CLI only (build from source) | `docker` (Docker Desktop) or `podman` (Podman machine) |
 
 The `apple` backend needs Apple's [`container`](https://github.com/apple/container)
 CLI, version 1.5 or later. Setup installs it with Homebrew if you don't have
@@ -126,6 +126,27 @@ and Docker Engine or Podman. Then build the agent image once:
 mudroom image build --backend docker      # or --backend podman
 mudroom network check --backend docker    # see what the sandbox can reach
 ```
+
+#### Windows
+
+You need Swift 6.2 or later for Windows ([swift.org/install/windows](https://www.swift.org/install/windows/)),
+which brings the Visual Studio build tools it needs, and Docker Desktop
+(WSL 2 backend, Linux containers) or Podman Desktop with a Podman machine.
+In a Developer PowerShell:
+
+```powershell
+git clone https://github.com/Kernel-Hunter/mudroom
+cd mudroom
+swift build -c release -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
+copy .build\release\mudroom.exe $env:LOCALAPPDATA\Microsoft\WindowsApps\   # or anywhere on your PATH
+mudroom image build --backend docker
+```
+
+The `-Xcxx` flag is only needed when your Visual Studio is newer than the
+Clang in your Swift toolchain (Visual Studio 2026 with Swift 6.2): the C++
+headers then refuse to build swift-crypto's BoringSSL. Run `mudroom` from
+Windows Terminal or any console with VT support (Windows 10 1809 or later).
+See [Windows](#windows-1) for what is different there.
 
 ## Setup
 
@@ -258,8 +279,9 @@ mudroom network check                         # boot a VM and try to get out (se
 ```
 
 Settings are per project, in
-`~/Library/Application Support/Mudroom/projects/<hash>.json` on macOS and
-`~/.local/share/mudroom/projects/<hash>.json` on Linux, outside the project
+`~/Library/Application Support/Mudroom/projects/<hash>.json` on macOS,
+`~/.local/share/mudroom/projects/<hash>.json` on Linux and
+`%LOCALAPPDATA%\Mudroom\projects\<hash>.json` on Windows, outside the project
 so the agent can't change them.
 
 ## Agents, sign-in and API keys
@@ -300,7 +322,9 @@ mudroom agent token claude --clear
 The token is kept in the macOS Keychain (service
 `io.github.kernel-hunter.mudroom`, written with `SecItemAdd`, never through a
 command line). On Linux it goes to `~/.local/share/mudroom/agents/<agent>/token`,
-mode 0600. Sessions get it as `CLAUDE_CODE_OAUTH_TOKEN`. Mudroom also marks
+mode 0600. On Windows it goes to Credential Manager (a generic credential
+named `io.github.kernel-hunter.mudroom/<agent>`). Sessions get it as
+`CLAUDE_CODE_OAUTH_TOKEN`. Mudroom also marks
 Claude Code's first-run screens (theme, the bypass-permissions notice, folder
 trust for `/workspace`) as done in its own copy of Claude's settings, so a
 session starts straight at the prompt.
@@ -375,7 +399,8 @@ mudroom keys remove OPENROUTER_API_KEY
 Known names: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`,
 `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `GROQ_API_KEY`, `MISTRAL_API_KEY`,
 `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`, `XAI_API_KEY`. Any other
-upper-case name works too. Keys live in the Keychain (Linux: 0600 files).
+upper-case name works too. Keys live in the Keychain (Linux: 0600 files;
+Windows: Credential Manager).
 
 Claude Code, Codex and Gemini CLI get only their own key. opencode, Aider and
 custom commands get all of them, and in locked mode the API host of each
@@ -689,10 +714,48 @@ Not tested yet: Podman (the code path exists, including rootless
 setups may fail in locked mode because the proxy can't listen on the bridge
 address; `mudroom network check` will tell you.
 
+### Windows
+
+On Windows the CLI works the same way, with Docker Desktop or a Podman
+machine running Linux containers in a VM. Host paths are passed to
+`docker run --mount` as Windows paths (`C:\Users\...`), which Docker Desktop
+shares into its VM. Locked mode is set up as on macOS: the proxy listens
+on 127.0.0.1 and the forwarder reaches it through `host.docker.internal`.
+Run `mudroom network check --backend docker` before relying on it. What
+is different from macOS and Linux:
+
+- **No permission bits.** Windows files have no Unix mode, so every file
+  reads as 0644 and every folder as 0755. A script the agent makes
+  executable shows no mode change, and apply doesn't carry one over.
+  Read-only files are replaced on apply like any other file.
+- **Clones are copies, unless the project is on ReFS.** On NTFS the
+  session's `base/` and `work/` are full copies. On ReFS (a Dev Drive, for
+  instance) Mudroom uses block cloning, which shares data until it changes,
+  like an APFS clone.
+- **Symlinks** in a project are copied as symlinks, which needs Developer
+  Mode or an elevated console; otherwise they are listed as skipped. Junctions
+  and other reparse points that point elsewhere are never followed: diff
+  shows them as special files and apply leaves them alone.
+- **Ctrl+C goes to the agent.** Mudroom itself ignores it while the
+  sandbox runs. Closing the console window stops the sandbox's `docker`
+  process after a few seconds. The session's runner lock is held by Mudroom
+  itself, so a second `start` of the same session is refused while the
+  container is still running.
+- **Signing in with the host's `claude` CLI isn't there yet.** It runs
+  `claude setup-token` in a pseudo-terminal, and the Windows version
+  (ConPTY) isn't written. `mudroom agent login claude` signs in inside the
+  sandbox instead, and `mudroom agent token claude` takes a token you
+  already have.
+- **New and less tested.** CI builds the CLI and runs the test suite on
+  Windows x86_64 and arm64, and checks a session end to end without a
+  sandbox (create, edit, diff, apply, undo). GitHub's Windows runners can't
+  run Linux containers, so a real Docker Desktop or Podman sandbox
+  hasn't been run by CI. Running the Linux build inside WSL2 is untested.
+
 ## How it works
 
 ```
-~/Library/Application Support/Mudroom/      (Linux: ~/.local/share/mudroom/)
+~/Library/Application Support/Mudroom/      (Linux: ~/.local/share/mudroom/, Windows: %LOCALAPPDATA%\Mudroom\)
   sessions/<id>/
     session.json   id, project path, command, image, status, network mode and allowlist
     base/          clone of the project when the session started
@@ -705,14 +768,15 @@ address; `mudroom network check` will tell you.
     rollback/      one bundle per apply: manifest.json, journal.jsonl, copies of overwritten files
   projects/<hash>.json   per-project network mode, allowlist, snapshot interval
   agents/<agent>/home/   the agent's persistent config directory
-  agents/<agent>/token   stored token on Linux (macOS: the Keychain)
+  agents/<agent>/token   stored token on Linux (macOS: the Keychain, Windows: Credential Manager)
 ```
 
 The clones cover the whole folder, including untracked, ignored and non-git
 files. They are copy-on-write clones (APFS on macOS, a reflink on btrfs or
 XFS), not git clones or worktrees, so on APFS they take no extra disk until
-files change. If the project is on a different volume or a disk that can't
-clone, Mudroom falls back to plain copies that keep modes, symlinks and
+files change. On Windows they are ReFS block clones, or plain copies on
+NTFS. If the project is on a different volume or a disk that can't clone,
+Mudroom falls back to plain copies that keep modes, symlinks and
 timestamps.
 
 `diff` compares `base/` with `work/`. `apply` copies from `work/` to the
@@ -729,7 +793,8 @@ oldest are pruned past 24.
 The sandbox layer is a small `SandboxBackend` protocol with two
 implementations: one shells out to Apple's `container` CLI, which boots each
 container in its own lightweight VM, and one to `docker` or `podman`. The
-proxy is plain BSD sockets, so it runs the same on macOS and Linux.
+proxy is plain BSD sockets (Winsock on Windows), so it runs the same on
+macOS, Linux and Windows.
 
 ## How it compares
 
@@ -771,9 +836,11 @@ If your project is a git repo and you're happy reviewing with git, Docker Sandbo
 - Snapshots skip unchanged trees by comparing file size, mode and mtime. An
   edit that keeps both size and mtime the same doesn't trigger a snapshot on
   its own. The review diff always compares content.
-- No review app on Linux. `mudroom review` covers files and diffs; per-hunk
-  applies go through `mudroom hunks` and `apply --hunks`.
-- No Windows support. WSL2 is untested.
+- No review app on Linux or Windows. `mudroom review` covers files and
+  diffs; per-hunk applies go through `mudroom hunks` and `apply --hunks`.
+- On Windows, files have no permission bits to review, Claude sign-in
+  through the host's `claude` CLI isn't available yet, and clones are full
+  copies unless the project is on ReFS. See [Windows](#windows-1).
 - The app is ad-hoc signed, not notarized. See [Install](#install) for what
   that means when you download it.
 
@@ -781,7 +848,7 @@ If your project is a git repo and you're happy reviewing with git, Docker Sandbo
 
 ```sh
 swift build
-swift test                 # diff, hunks, apply, undo, allowlist, proxy, snapshot tests; no VM needed (macOS and Linux)
+swift test                 # diff, hunks, apply, undo, allowlist, proxy, snapshot tests; no VM needed (macOS, Linux, Windows)
 scripts/make-demo.sh       # demo sessions in build/demo (no VM)
 scripts/screenshots.sh     # regenerates docs/screenshots from the demo
 scripts/release.sh 0.4.0   # dist/Mudroom-0.4.0.zip and its SHA-256
@@ -790,7 +857,12 @@ mudroom network check      # verifies isolation in a real sandbox (any backend)
 
 On Linux, or in a `swift:6.2` container, `swift build` and `swift test`
 build and test MudroomCore and the CLI; the app target only exists on
-macOS. CI runs both.
+macOS. On Windows, add `-Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH`
+to both if Visual Studio is newer than the toolchain's Clang (see
+[Build from source](#build-from-source)). Tests that need Unix modes, FIFOs,
+signals or a pty are skipped there, and `WindowsTests.swift` covers what
+Windows does instead. CI runs all three, Linux and Windows on x86_64 and
+arm64.
 
 The proxy tests run it against a loopback test server. The app target is
 `MudroomApp` (SwiftUI, macOS 26+, left out of the package on other
