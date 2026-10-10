@@ -731,7 +731,9 @@ is different from macOS and Linux:
 - **Clones are copies, unless the project is on ReFS.** On NTFS the
   session's `base/` and `work/` are full copies. On ReFS (a Dev Drive, for
   instance) Mudroom uses block cloning, which shares data until it changes,
-  like an APFS clone.
+  like an APFS clone. The block-clone path has a test
+  (`MUDROOM_TEST_REFS=E: swift test --filter refsBlockClone`), but GitHub's
+  runners can't format a ReFS volume, so CI doesn't run it.
 - **Symlinks** in a project are copied as symlinks, which needs Developer
   Mode or an elevated console; otherwise they are listed as skipped. Junctions
   and other reparse points that point elsewhere are never followed: diff
