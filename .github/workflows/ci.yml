@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, windows-support]
   pull_request:
 
 jobs:
@@ -28,6 +28,32 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: swift:6.2
     steps:
+      - uses: actions/checkout@v7
+      - name: Toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  windows:
+    # MudroomCore and the CLI only, as on Linux. GitHub's Windows runners
+    # can't run Linux containers, so nothing here needs Docker.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: amd64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: compnerd/gha-setup-swift@main
+        with:
+          swift-version: swift-6.2.4-release
+          swift-build: 6.2.4-RELEASE
+          build_arch: ${{ matrix.arch }}
       - uses: actions/checkout@v7
       - name: Toolchain
         run: swift --version
