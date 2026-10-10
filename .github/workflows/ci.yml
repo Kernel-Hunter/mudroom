@@ -57,7 +57,9 @@ jobs:
       - uses: actions/checkout@v7
       - name: Toolchain
         run: swift --version
+      # Swift 6.2 ships Clang 19; the runner's Visual Studio 2026 C++ headers
+      # (used by swift-crypto's BoringSSL) ask for Clang 20 unless told not to.
       - name: Build
-        run: swift build
+        run: swift build -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
       - name: Test
-        run: swift test
+        run: swift test -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
