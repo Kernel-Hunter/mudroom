@@ -293,8 +293,12 @@ struct EgressProxyTests {
         // A port nothing listens on: bound but never listening, and held for
         // the whole test so a server started by a parallel test can't take it.
         let held = Sock.make(AF_INET)
-        defer { close(held) }
+        defer { Sock.close(held) }
+        #if os(Windows)
+        let bound = Sock.withSockaddr(IPAddress("127.0.0.1")!, port: 0) { bind(Sock.handle(held), $0, $1) }
+        #else
         let bound = Sock.withSockaddr(IPAddress("127.0.0.1")!, port: 0) { bind(held, $0, $1) }
+        #endif
         try #require(bound == 0)
         let dead = Sock.localPort(held)
         let proxy = try makeProxy(["127.0.0.1"])
