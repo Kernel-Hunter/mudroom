@@ -2,6 +2,9 @@ name: Release
 
 # Push a tag like v0.4.0 to build Mudroom-0.4.0.zip and attach it, with its
 # .sha256, to the GitHub release for that tag (created if it doesn't exist).
+# The Windows CLI zips (mudroom-0.4.0-windows-x86_64.zip and -arm64.zip, each
+# with a .sha256) are built and checked on a runner without Swift, then
+# added to the same release once the macOS job has created it.
 on:
   push:
     tags: ["v*"]
@@ -38,3 +41,32 @@ jobs:
             gh release create "$GITHUB_REF_NAME" "${files[@]}" --title "Mudroom $version" --generate-notes
           fi
           cat "dist/Mudroom-$version.zip.sha256"
+
+  windows:
+    uses: ./.github/workflows/windows-zip.yml
+    with:
+      version: ${{ github.ref_name }}
+
+  windows-upload:
+    needs: [release, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: mudroom-windows-*
+          merge-multiple: true
+          path: dist
+
+      - name: Upload to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          files=()
+          for arch in x86_64 arm64; do
+            files+=("dist/mudroom-$version-windows-$arch.zip" "dist/mudroom-$version-windows-$arch.zip.sha256")
+          done
+          ls -l "${files[@]}"
+          gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          cat dist/*.sha256

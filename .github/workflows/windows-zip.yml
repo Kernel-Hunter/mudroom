@@ -1,0 +1,102 @@
+name: Windows zip
+
+# Builds mudroom-<version>-windows-<arch>.zip (mudroom.exe plus the Swift
+# runtime and VC++ DLLs it needs) for x86_64 and arm64, then checks each zip
+# on a fresh runner that never had Swift installed. CI runs this on every
+# pull request; the release workflow runs it on a tag and uploads the zips.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to stamp into the CLI, with or without a leading v. Empty keeps the one in Sources/mudroom/Version.swift.
+        type: string
+        default: ""
+
+jobs:
+  build:
+    name: build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            build_arch: amd64
+            arch: x86_64
+          - runner: windows-11-arm
+            build_arch: arm64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: compnerd/gha-setup-swift@main
+        with:
+          swift-version: swift-6.2.4-release
+          swift-build: 6.2.4-RELEASE
+          build_arch: ${{ matrix.build_arch }}
+      - uses: actions/checkout@v7
+
+      - name: Version
+        id: version
+        shell: pwsh
+        env:
+          WANTED: ${{ inputs.version }}
+        run: |
+          $file = 'Sources/mudroom/Version.swift'
+          $source = Get-Content -Raw $file
+          $version = $env:WANTED -replace '^v', ''
+          if (-not $version) { $version = [regex]::Match($source, '(?m)^let mudroomVersion = "(.*)"').Groups[1].Value }
+          if ($version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$') { throw "bad version '$version'" }
+          # Stamped for this build only, as scripts/build-app.sh does on macOS.
+          # (Without an input this rewrites the same version.)
+          $text = $source -replace '(?m)^let mudroomVersion = .*$', "let mudroomVersion = `"$version`""
+          [IO.File]::WriteAllText((Resolve-Path $file).Path, $text)
+          "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "version $version"
+
+      # Same flag as the CI build: Swift 6.2's Clang 19 against the runner's
+      # newer Visual Studio C++ headers.
+      - name: Build
+        run: swift build -c release --product mudroom -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
+
+      - name: Check the version
+        shell: pwsh
+        run: |
+          $got = (& .build/release/mudroom.exe --version).Trim()
+          if ($got -ne '${{ steps.version.outputs.version }}') { throw "mudroom --version prints '$got', wanted '${{ steps.version.outputs.version }}'" }
+
+      - name: Package
+        shell: pwsh
+        run: scripts/windows-package.ps1 .build/release/mudroom.exe ${{ steps.version.outputs.version }} ${{ matrix.arch }}
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: mudroom-windows-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
+
+  clean-machine:
+    # A fresh runner: no Swift toolchain or runtime was ever installed here.
+    name: clean machine (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: x86_64
+          - runner: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: mudroom-windows-${{ matrix.arch }}
+          path: dist
+      - name: Run the zip without Swift
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/mudroom-*-windows-${{ matrix.arch }}.zip
+          scripts/windows-zip-check.ps1 $zip.FullName

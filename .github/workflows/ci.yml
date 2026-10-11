@@ -37,8 +37,8 @@ jobs:
         run: swift test
 
   windows:
-    # MudroomCore and the CLI only, as on Linux. GitHub's Windows runners
-    # can't run Linux containers, so nothing here needs Docker.
+    # MudroomCore and the CLI only, as on Linux. Nothing here needs a
+    # container runtime; windows-sandbox below runs a real one.
     strategy:
       fail-fast: false
       matrix:
@@ -69,3 +69,61 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: scripts/windows-smoke.ps1 .build/debug/mudroom.exe
+
+  windows-zip:
+    # The release zip for x86_64 and arm64, then each one run on a fresh
+    # runner without Swift: --version, --help and the smoke test.
+    uses: ./.github/workflows/windows-zip.yml
+
+  windows-sandbox:
+    # A real sandbox on Windows: windows-latest (Windows Server 2025 on AMD)
+    # has nested virtualization, so WSL 2 and a Podman machine run there.
+    # The arm64 runner doesn't (no virtualization extensions; WSL can't be
+    # installed and a Hyper-V VM won't start), so x86_64 only. Uses the
+    # release zip, so no Swift on this runner either.
+    needs: windows-zip
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: mudroom-windows-x86_64
+          path: dist
+      - name: Unzip
+        shell: pwsh
+        run: |
+          Expand-Archive (Get-ChildItem dist/*.zip).FullName $env:RUNNER_TEMP
+          $exe = (Get-ChildItem "$env:RUNNER_TEMP\mudroom-*\mudroom.exe").FullName
+          "MUDROOM_EXE=$exe" >> $env:GITHUB_ENV
+      - name: Podman machine
+        shell: pwsh
+        env:
+          PODMAN_VERSION: v6.1.3
+        run: |
+          wsl --update --web-download
+          $zip = "$env:RUNNER_TEMP\podman.zip"
+          Invoke-WebRequest "https://github.com/containers/podman/releases/download/$env:PODMAN_VERSION/podman-remote-release-windows_amd64.zip" -OutFile $zip
+          Expand-Archive $zip "$env:RUNNER_TEMP\podman"
+          $bin = Split-Path (Get-ChildItem "$env:RUNNER_TEMP\podman" -Recurse -Filter podman.exe | Select-Object -First 1).FullName
+          $bin >> $env:GITHUB_PATH
+          $podman = "$bin\podman.exe"
+          & $podman machine init --now
+          if ($LASTEXITCODE -ne 0) { throw "podman machine init failed" }
+          # The machine's rootless user has no pids cgroup controller on this
+          # runner, and Podman's default pids limit needs one ("controller
+          # `pids` is not available"). Turn the default limit off.
+          & $podman machine ssh "mkdir -p ~/.config/containers && printf '[containers]\npids_limit = 0\n' > ~/.config/containers/containers.conf"
+          if ($LASTEXITCODE -ne 0) { throw "podman machine ssh failed" }
+          & $podman machine stop
+          & $podman machine start
+          if ($LASTEXITCODE -ne 0) { throw "podman machine start failed" }
+          & $podman version
+      # Open network only. In locked mode `mudroom network check` hangs on
+      # this runner after "checking locked network with podman..." (no output
+      # for 6+ minutes), and WSL's mirrored networking, which would let the
+      # machine reach the proxy on the runner's 127.0.0.1, fails here with
+      # 0x803b0015. Locked mode still needs a run with Docker Desktop on a PC.
+      - name: Sandbox session (podman, open network)
+        timeout-minutes: 15
+        shell: pwsh
+        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -Network open
