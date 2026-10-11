@@ -69,3 +69,8 @@ jobs:
         if: ${{ !cancelled() }}
         shell: pwsh
         run: scripts/windows-smoke.ps1 .build/debug/mudroom.exe
+
+  windows-zip:
+    # The release zip for x86_64 and arm64, then each one run on a fresh
+    # runner without Swift: --version, --help and the smoke test.
+    uses: ./.github/workflows/windows-zip.yml
