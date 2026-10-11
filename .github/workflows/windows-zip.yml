@@ -69,20 +69,6 @@ jobs:
         shell: pwsh
         run: scripts/windows-package.ps1 .build/release/mudroom.exe ${{ steps.version.outputs.version }} ${{ matrix.arch }}
 
-      # Experiment: SwiftPM's --static-swift-stdlib builds but the exe still
-      # imports swiftCore.dll. Is there a static Windows SDK to link against?
-      - name: Static stdlib experiment
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Get-ChildItem "$env:SDKROOT\usr\lib" -Directory | Format-Table Name
-          Get-ChildItem "$env:SDKROOT\usr\lib\swift_static" -Recurse -Filter *.lib -ErrorAction SilentlyContinue | Select-Object -First 40 | Format-Table FullName, Length
-          swift build -c release --product mudroom -Xswiftc -static-stdlib --scratch-path .build-static -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
-          if ($LASTEXITCODE -ne 0) { throw "static build failed: $LASTEXITCODE" }
-          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -property installationPath
-          $dumpbin = Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Host*\*\dumpbin.exe" | Select-Object -First 1
-          & $dumpbin.FullName /nologo /dependents .build-static/release/mudroom.exe
-
       - uses: actions/upload-artifact@v7
         with:
           name: mudroom-windows-${{ matrix.arch }}

@@ -105,12 +105,32 @@ jobs:
           Expand-Archive $zip "$env:RUNNER_TEMP\podman"
           $bin = Split-Path (Get-ChildItem "$env:RUNNER_TEMP\podman" -Recurse -Filter podman.exe | Select-Object -First 1).FullName
           $bin >> $env:GITHUB_PATH
-          & "$bin\podman.exe" machine init --now
+          $podman = "$bin\podman.exe"
+          & $podman machine init --now
           if ($LASTEXITCODE -ne 0) { throw "podman machine init failed" }
-          & "$bin\podman.exe" version
+          # The machine's rootless user has no pids cgroup controller on this
+          # runner, and Podman's default pids limit needs one ("controller
+          # `pids` is not available"). Turn the default limit off.
+          & $podman machine ssh "mkdir -p ~/.config/containers && printf '[containers]\npids_limit = 0\n' > ~/.config/containers/containers.conf"
+          if ($LASTEXITCODE -ne 0) { throw "podman machine ssh failed" }
+          & $podman machine stop
+          & $podman machine start
+          if ($LASTEXITCODE -ne 0) { throw "podman machine start failed" }
+          & $podman version
       - name: Session with --backend podman
+        id: podman-session
+        continue-on-error: true
         shell: pwsh
         run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman
+      - name: Retry with WSL mirrored networking
+        if: steps.podman-session.outcome == 'failure'
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllText("$env:USERPROFILE\.wslconfig", "[wsl2]`nnetworkingMode=mirrored`n")
+          podman machine stop
+          wsl --shutdown
+          podman machine start
+          scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -SkipImageBuild
       # Podman serves the Docker API on Docker Desktop's pipe, so the docker
       # CLI on the runner reaches the same machine.
       - name: Session with --backend docker
