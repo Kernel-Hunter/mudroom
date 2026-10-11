@@ -117,13 +117,22 @@ jobs:
           & $podman machine start
           if ($LASTEXITCODE -ne 0) { throw "podman machine start failed" }
           & $podman version
-      - name: Session with --backend podman
-        id: podman-session
+      - name: Podman, open network
+        id: open
         continue-on-error: true
+        timeout-minutes: 12
         shell: pwsh
-        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman
-      - name: Retry with WSL mirrored networking
-        if: steps.podman-session.outcome == 'failure'
+        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -Network open
+      - name: Podman, locked network
+        id: locked
+        continue-on-error: true
+        timeout-minutes: 6
+        shell: pwsh
+        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -SkipImageBuild
+      - name: Podman, locked network, WSL mirrored networking
+        if: steps.locked.outcome == 'failure'
+        continue-on-error: true
+        timeout-minutes: 8
         shell: pwsh
         run: |
           [IO.File]::WriteAllText("$env:USERPROFILE\.wslconfig", "[wsl2]`nnetworkingMode=mirrored`n")
@@ -133,7 +142,8 @@ jobs:
           scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -SkipImageBuild
       # Podman serves the Docker API on Docker Desktop's pipe, so the docker
       # CLI on the runner reaches the same machine.
-      - name: Session with --backend docker
+      - name: Docker CLI on Podman's API, open network
         continue-on-error: true
+        timeout-minutes: 6
         shell: pwsh
-        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE docker -SkipImageBuild
+        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE docker -Network open -SkipImageBuild
