@@ -123,7 +123,10 @@ public enum NetworkCheck {
           [res, ok] = await udpDNS('8.8.8.8'); add('direct-udp', 'UDP DNS query to 8.8.8.8:53', res, ok);
           if (GATEWAY) { [res, ok] = await tcp(GATEWAY, 7000, 3000);
             add('mac-services', `TCP ${GATEWAY}:7000 (the host on the sandbox network; macOS often listens on 7000)`, res, ok === true || ok === 'refused'); }
-          console.log('MUDROOM_CHECK ' + JSON.stringify(out));
+          // Exit now: a fetch aborted by its timeout can leave its tunnel
+          // to the forwarder open (seen with Podman on Windows, where the
+          // forwarder can't reach the proxy), and Node would wait for it.
+          process.stdout.write('MUDROOM_CHECK ' + JSON.stringify(out) + '\\n', () => process.exit(0));
         })();
         """
     }
