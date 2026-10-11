@@ -1,3 +1,5 @@
+// POSIX signals and descriptors; WindowsTests covers runAttached on Windows.
+#if !os(Windows)
 #if canImport(Darwin)
 import Darwin
 #elseif canImport(Glibc)
@@ -99,3 +101,4 @@ private func onThreadBlockingSIGTERM<T: Sendable>(_ body: @escaping @Sendable ()
     done.wait()
     return try result.value!.get()
 }
+#endif

@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -12,6 +14,9 @@ public enum CloneMethod: String, Codable, Sendable {
     case clonefile
     /// Copy-on-write reflink (Linux, btrfs or XFS), via `cp --reflink=always`.
     case reflink
+    /// Block cloning (Windows, ReFS and Dev Drives): files share blocks
+    /// until one of them changes.
+    case blockClone
     /// Plain recursive copy, used when the volume can't clone (ext4, non-APFS,
     /// or a different volume than the session store), or when the project
     /// holds something a clone can't take (unreadable files, sockets).
@@ -20,11 +25,12 @@ public enum CloneMethod: String, Codable, Sendable {
     /// True for the copy-on-write methods.
     public var isClone: Bool { self != .copy }
 
-    /// "APFS clone", "reflink clone" or "copied".
+    /// "APFS clone", "reflink clone", "block clone" or "copied".
     public var label: String {
         switch self {
         case .clonefile: "APFS clone"
         case .reflink: "reflink clone"
+        case .blockClone: "block clone"
         case .copy: "copied"
         }
     }
@@ -46,13 +52,14 @@ public struct CloneResult: Sendable {
 public enum Cloner {
     /// Clones `source` (a directory) to `destination`, which must not exist.
     /// Tries a copy-on-write clone first (clonefile(2) on macOS, a reflink on
-    /// Linux) and falls back to a copy that keeps modes, mtimes and symlinks
+    /// Linux, block cloning on Windows) and falls back to a copy that keeps modes, mtimes and symlinks
     /// and leaves out what it can't copy (see `CloneResult.skipped`).
     @discardableResult
     public static func cloneTree(from source: URL, to destination: URL, allowClonefile: Bool = true) throws -> CloneMethod {
         try clone(from: source, to: destination, allowClonefile: allowClonefile).method
     }
 
+    #if !os(Windows)
     public static func clone(from source: URL, to destination: URL, allowClonefile: Bool = true) throws -> CloneResult {
         #if canImport(Darwin)
         if allowClonefile {
@@ -187,8 +194,9 @@ public enum Cloner {
             _ = utimensat(AT_FDCWD, url.path, $0.baseAddress, followLinks ? 0 : AT_SYMLINK_NOFOLLOW)
         }
     }
+    #endif
 
-    #if !canImport(Darwin)
+    #if !canImport(Darwin) && !os(Windows)
     /// `cp -a` keeps modes, timestamps and symlinks (the snapshot fingerprint
     /// relies on mtimes). Returns false if cp is missing or failed, after
     /// removing anything it left behind.

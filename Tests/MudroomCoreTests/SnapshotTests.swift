@@ -39,7 +39,7 @@ struct SnapshotTests {
         #expect(throws: MudroomError.self) { try store.url(for: .snapshot(9)) }
     }
 
-    @Test("a mode-only change counts as a change")
+    @Test("a mode-only change counts as a change", .disabled(if: isWindows, "no mode bits on Windows"))
     func modeChange() throws {
         let f = try Fixture { try write("#!/bin/sh\n", to: $0.appendingPathComponent("run.sh"), mode: 0o644) }
         chmod(f.work.appendingPathComponent("run.sh").path, 0o755)

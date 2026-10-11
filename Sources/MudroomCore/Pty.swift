@@ -4,9 +4,12 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
+#if !os(Windows)
 /// A program running on a pseudo-terminal, so tools that only work in a
 /// terminal (sign-in flows drawn with Ink and friends) can be driven and
 /// read from code. The terminal is made very wide so long links and tokens
@@ -152,3 +155,24 @@ public final class PtyProcess: @unchecked Sendable {
         close(master)
     }
 }
+#else
+/// Not on Windows yet (it would need a ConPTY): `init` throws, so the
+/// sign-in flows that drive a terminal program say so instead.
+public final class PtyProcess: @unchecked Sendable {
+    public let process = Process()
+    public var onOutput: (@Sendable (Data) -> Void)?
+    public static let columns: UInt16 = 1000
+
+    public init(_ executable: String, _ arguments: [String], environment: [String: String] = [:],
+                cwd: URL? = nil) throws {
+        throw MudroomError.invalid("running \((executable as NSString).lastPathComponent) on a terminal of its own isn't supported on Windows yet")
+    }
+
+    public var allOutput: Data { Data() }
+    public func send(_ text: String) {}
+    public func sendLine(_ text: String) {}
+    public var isRunning: Bool { false }
+    public func wait() -> Int32 { -1 }
+    public func terminate() {}
+}
+#endif

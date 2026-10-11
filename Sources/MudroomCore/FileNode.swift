@@ -9,6 +9,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -64,6 +66,7 @@ public enum FileNode: Codable, Equatable, Sendable {
         return nil
     }
 
+    #if !os(Windows)
     /// Reads the node at `url` without following a final symlink. A regular
     /// file is hashed through a descriptor opened with O_NOFOLLOW and
     /// O_NONBLOCK and checked to be the inode lstat saw, so a file swapped
@@ -101,6 +104,7 @@ public enum FileNode: Codable, Equatable, Sendable {
         if n < 0 { throw MudroomError.posix("readlink", url.path, errno) }
         return String(decoding: buf[0..<n].map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
+    #endif
 }
 
 /// Reading files inside a tree the agent controls (work/, snapshots)
@@ -117,13 +121,18 @@ public enum SafeFS {
             case .denied: "permission denied"
             case .changed: "changed while being read"
             case .notRegular: "not a regular file"
+            #if os(Windows)
+            case .io(let e): Win32.message(DWORD(bitPattern: e))
+            #else
             case .io(let e): String(cString: strerror(e))
+            #endif
             }
         }
     }
 
     static let chunk = 1 << 20
 
+    #if !os(Windows)
     static func sameInode(_ a: stat, _ b: stat) -> Bool { a.st_dev == b.st_dev && a.st_ino == b.st_ino }
 
     /// Opens a regular file by path without following a final symlink or
@@ -177,6 +186,7 @@ public enum SafeFS {
         }
         return .success(hex(hasher.finalize()))
     }
+    #endif
 
     public static func sha256(_ data: Data) -> String { hex(SHA256.hash(data: data)) }
 
@@ -191,6 +201,7 @@ public enum SafeFS {
         return String(decoding: out, as: UTF8.self)
     }
 
+    #if !os(Windows)
     /// Opens `relative` (a path inside `root`) for reading, refusing a
     /// symlink at any component, so a directory swapped for a symlink
     /// can't redirect the read outside the tree.
@@ -292,10 +303,13 @@ public enum SafeFS {
         }
         return hex(hasher.finalize())
     }
+    #endif
 }
 
+#if !os(Windows)
 /// The C read(2), reachable from types that have their own `read`.
 @inline(__always) func sysRead(_ fd: Int32, _ buf: UnsafeMutableRawPointer?, _ n: Int) -> Int { read(fd, buf, n) }
+#endif
 
 /// A flat listing of a directory tree keyed by relative path ("src/main.swift").
 public struct TreeSnapshot: Sendable {
@@ -303,6 +317,7 @@ public struct TreeSnapshot: Sendable {
 
     public init(nodes: [String: FileNode]) { self.nodes = nodes }
 
+    #if !os(Windows)
     /// Walks `root` without following symlinks. The root itself is not
     /// included. Directories are opened relative to their parent with
     /// O_NOFOLLOW; files are hashed in parallel, each checked to be the
@@ -423,4 +438,5 @@ public struct TreeSnapshot: Sendable {
         if n < 0 { throw MudroomError.posix("readlink", name, errno) }
         return String(decoding: buf[0..<n].map { UInt8(bitPattern: $0) }, as: UTF8.self)
     }
+    #endif
 }

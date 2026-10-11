@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -249,18 +251,20 @@ public final class EgressProxy: @unchecked Sendable {
         }
         Self.raiseFileLimit()
         let (fd, p) = try Sock.listen(host: configuration.bindHost, port: configuration.port)
-        var fds: [Int32] = [-1, -1]
-        guard pipe(&fds) == 0 else {
-            close(fd)
-            throw MudroomError.posix("pipe", "proxy", errno)
+        let fds: (Int32, Int32)
+        do {
+            fds = try Sock.wakePair()
+        } catch {
+            Sock.close(fd)
+            throw error
         }
         lock.withLock {
             listenFD = fd
-            wakeFDs = fds
+            wakeFDs = [fds.0, fds.1]
             port = p
             running = true
         }
-        let wakeRead = fds[0]
+        let wakeRead = fds.0
         let t = Thread { [self] in acceptLoop(fd, wake: wakeRead) }
         t.name = "mudroom.proxy.accept"
         t.start()
@@ -275,8 +279,7 @@ public final class EgressProxy: @unchecked Sendable {
             return r
         }
         guard wasRunning else { return }
-        var b: UInt8 = 1
-        _ = write(wakeFDs[1], &b, 1)
+        Sock.wake(wakeFDs[1])
         acceptDone.wait()
         open = lock.withLock { Array(active.values) }
         for ex in open { ex.abort() }
@@ -284,9 +287,9 @@ public final class EgressProxy: @unchecked Sendable {
         let deadline = Date().addingTimeInterval(3)
         while Date() < deadline, lock.withLock({ !active.isEmpty }) { usleep(10_000) }
         lock.withLock {
-            close(listenFD)
-            close(wakeFDs[0])
-            close(wakeFDs[1])
+            Sock.close(listenFD)
+            Sock.close(wakeFDs[0])
+            Sock.close(wakeFDs[1])
             listenFD = -1
             try? logHandle?.synchronize()
             try? logHandle?.close()
@@ -302,16 +305,11 @@ public final class EgressProxy: @unchecked Sendable {
     private func acceptLoop(_ fd: Int32, wake: Int32) {
         defer { acceptDone.signal() }
         while true {
-            var fds = [pollfd(fd: fd, events: Int16(POLLIN), revents: 0), pollfd(fd: wake, events: Int16(POLLIN), revents: 0)]
-            let n = poll(&fds, 2, -1)
-            if n < 0 {
-                if errno == EINTR { continue }
-                return
-            }
-            if fds[1].revents != 0 { return }
-            guard fds[0].revents != 0, let (conn, peer) = Sock.accept(fd) else { continue }
+            guard let ready = Sock.poll([fd, wake], timeoutMs: -1) else { return }
+            if ready[1] { return }
+            guard ready[0], let (conn, peer) = Sock.accept(fd) else { continue }
             guard let peer, isAllowedClient(peer) else {
-                close(conn)
+                Sock.close(conn)
                 continue
             }
             let ex = ProxyExchange(proxy: self, client: conn)
@@ -325,11 +323,28 @@ public final class EgressProxy: @unchecked Sendable {
                 // Over the cap: refuse without a thread.
                 Sock.setNonBlocking(conn, true)
                 _ = Sock.sendAll(conn, Data("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n".utf8))
-                close(conn)
+                #if os(Windows)
+                // Closing with the request unread, or before it arrives, sends
+                // a reset, and Windows then drops the 503 the client hasn't
+                // read yet. Read the request (briefly: this is the accept
+                // loop) until the client closes its side.
+                Sock.shutdown(conn, both: false)
+                var scratch = [UInt8](repeating: 0, count: 4096)
+                let deadline = Date().addingTimeInterval(0.25)
+                drain: while deadline.timeIntervalSinceNow > 0 {
+                    guard Sock.waitReadable(conn, timeout: deadline.timeIntervalSinceNow) else { break }
+                    switch Sock.receive(conn, &scratch) {
+                    case let n? where n > 0: continue
+                    case nil: continue
+                    default: break drain
+                    }
+                }
+                #endif
+                Sock.close(conn)
                 continue
             }
             guard accepted else {
-                close(conn)
+                Sock.close(conn)
                 return
             }
             let t = Thread { ex.run() }
@@ -389,6 +404,9 @@ public final class EgressProxy: @unchecked Sendable {
     /// One thread and two descriptors per connection: make sure the cap,
     /// not the descriptor limit, is what runs out first.
     static func raiseFileLimit() {
+        #if os(Windows)
+        // No descriptor limit to raise: sockets are handles.
+        #else
         #if canImport(Glibc)
         let resource = __rlimit_resource_t(RLIMIT_NOFILE.rawValue)
         #else
@@ -401,6 +419,7 @@ public final class EgressProxy: @unchecked Sendable {
             rl.rlim_cur = want
             _ = setrlimit(resource, &rl)
         }
+        #endif
     }
 }
 
@@ -446,8 +465,8 @@ final class ProxyExchange: @unchecked Sendable {
     func abort() {
         fdLock.withLock {
             aborted = true
-            shutdown(client, Int32(SHUT_RDWR))
-            if upstream >= 0 { shutdown(upstream, Int32(SHUT_RDWR)) }
+            Sock.shutdown(client, both: true)
+            if upstream >= 0 { Sock.shutdown(upstream, both: true) }
         }
     }
 
@@ -455,8 +474,8 @@ final class ProxyExchange: @unchecked Sendable {
         var log = true
         defer {
             fdLock.withLock {
-                close(client)
-                if upstream >= 0 { close(upstream) }
+                Sock.close(client)
+                if upstream >= 0 { Sock.close(upstream) }
                 upstream = -1
             }
             let entry = log && !host.isEmpty ? NetworkLogEntry(
@@ -494,9 +513,7 @@ final class ProxyExchange: @unchecked Sendable {
                 return nil
             }
             if !Sock.waitReadable(client, timeout: min(left, 1)) { continue }
-            let n = recv(client, &buf, buf.count, 0)
-            if n < 0 && errno == EINTR { continue }
-            if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+            guard let n = Sock.receive(client, &buf) else { continue }
             if n <= 0 { return nil }
             header.append(contentsOf: buf[0..<n])
         }
@@ -624,16 +641,13 @@ final class ProxyExchange: @unchecked Sendable {
         var buf = [UInt8](repeating: 0, count: 64 * 1024)
         while (clientOpen || upstreamOpen) && !isAborted {
             if let t = upstreamDone, Date().timeIntervalSince(t) >= 2 { break }
-            var fds: [pollfd] = []
-            if clientOpen { fds.append(pollfd(fd: client, events: Int16(POLLIN), revents: 0)) }
-            if upstreamOpen { fds.append(pollfd(fd: up, events: Int16(POLLIN), revents: 0)) }
-            let n = poll(&fds, nfds_t(fds.count), 250)
-            if n < 0 && errno != EINTR { break }
-            if n <= 0 { continue }
-            for p in fds where p.revents != 0 {
-                let fromClient = p.fd == client
-                let got = recv(p.fd, &buf, buf.count, 0)
-                if got < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+            var fds: [Int32] = []
+            if clientOpen { fds.append(client) }
+            if upstreamOpen { fds.append(up) }
+            guard let ready = Sock.poll(fds, timeoutMs: 250) else { break }
+            for (fd, isReady) in zip(fds, ready) where isReady {
+                let fromClient = fd == client
+                guard let got = Sock.receive(fd, &buf) else { continue }
                 if got > 0 {
                     let data = Data(buf[0..<got])
                     if fromClient {
@@ -645,10 +659,10 @@ final class ProxyExchange: @unchecked Sendable {
                     }
                 } else if fromClient {
                     clientOpen = false
-                    shutdown(up, Int32(SHUT_WR))
+                    Sock.shutdown(up)
                 } else {
                     upstreamOpen = false
-                    shutdown(client, Int32(SHUT_WR))
+                    Sock.shutdown(client)
                     upstreamDone = Date()
                 }
             }
@@ -661,13 +675,13 @@ final class ProxyExchange: @unchecked Sendable {
         let body = "mudroom: \(host.isEmpty ? "request" : NetworkLog.endpoint(host, port)) refused: \(reason)\n"
         let resp = "HTTP/1.1 \(status) \(phrase)\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
         _ = Sock.sendAll(client, Data(resp.utf8))
-        shutdown(client, Int32(SHUT_WR))
+        Sock.shutdown(client)
         // Read what the client still sends before closing, so the close
         // doesn't turn into a reset that eats the reply.
         var buf = [UInt8](repeating: 0, count: 4096)
         let deadline = Date().addingTimeInterval(1)
         while deadline.timeIntervalSinceNow > 0, !isAborted, Sock.waitReadable(client, timeout: deadline.timeIntervalSinceNow) {
-            if recv(client, &buf, buf.count, 0) <= 0 { break }
+            if (Sock.receive(client, &buf) ?? 0) <= 0 { break }
         }
     }
 }

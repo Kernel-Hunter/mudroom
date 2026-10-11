@@ -5,6 +5,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import MudroomCore
@@ -108,19 +110,32 @@ struct Review: ParsableCommand {
     }
 }
 
+#if os(Windows)
+private func writeOut(_ p: UnsafeRawPointer, _ n: Int) -> Int { WindowsConsole.write(p, n) }
+#else
 private func writeOut(_ p: UnsafeRawPointer, _ n: Int) -> Int { write(STDOUT_FILENO, p, n) }
+#endif
 
 /// Raw mode, the alternate screen and key decoding.
 final class Terminal {
+    #if os(Windows)
+    private var saved: (DWORD, DWORD) = (0, 0)
+    #else
     private var saved = termios()
+    #endif
     private var active = false
 
     func enter() {
+        #if os(Windows)
+        guard let modes = WindowsConsole.enterRaw() else { return }
+        saved = modes
+        #else
         guard tcgetattr(STDIN_FILENO, &saved) == 0 else { return }
         var raw = saved
         cfmakeraw(&raw)
         // Keep output post-processing off (cfmakeraw), we send \r\n ourselves.
         tcsetattr(STDIN_FILENO, TCSANOW, &raw)
+        #endif
         active = true
         write("\u{1b}[?1049h\u{1b}[?25l")
     }
@@ -128,7 +143,11 @@ final class Terminal {
     func leave() {
         guard active else { return }
         write("\u{1b}[0m\u{1b}[?25h\u{1b}[?1049l")
+        #if os(Windows)
+        WindowsConsole.restore(saved)
+        #else
         tcsetattr(STDIN_FILENO, TCSANOW, &saved)
+        #endif
         active = false
     }
 
@@ -148,18 +167,27 @@ final class Terminal {
 
     /// Columns and rows, from TIOCGWINSZ; 80x24 if unknown.
     func size() -> (Int, Int) {
+        #if os(Windows)
+        return WindowsConsole.size() ?? (80, 24)
+        #else
         var ws = winsize()
         if ioctl(STDOUT_FILENO, UInt(TIOCGWINSZ), &ws) == 0, ws.ws_col > 0, ws.ws_row > 0 {
             return (Int(ws.ws_col), Int(ws.ws_row))
         }
         return (80, 24)
+        #endif
     }
 
     private func readByte(timeoutMs: Int32) -> UInt8? {
+        #if os(Windows)
+        guard WindowsConsole.waitForInput(timeoutMs) else { return nil }
+        return WindowsConsole.readByte()
+        #else
         var p = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
         guard poll(&p, 1, timeoutMs) > 0 else { return nil }
         var b: UInt8 = 0
         return read(STDIN_FILENO, &b, 1) == 1 ? b : nil
+        #endif
     }
 
     /// Blocks for one key. Nil on a timeout (used to redraw after a resize).

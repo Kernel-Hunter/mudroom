@@ -9,6 +9,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -131,6 +133,17 @@ public struct SnapshotStore: Sendable {
         for name in try FileManager.default.contentsOfDirectory(atPath: dir.path).sorted() {
             let path = rel.isEmpty ? name : rel + "/" + name
             let url = dir.appendingPathComponent(name)
+            #if os(Windows)
+            guard case .success(let st) = WinFS.lstat(url.path) else { continue }
+            var line = "\(path)\u{0}\(st.kind)\u{0}"
+            switch st.kind {
+            case .regular: line += "\(st.size)\u{0}\(st.mtime)"
+            case .symlink: line += (try? FileNode.readLink(url)) ?? ""
+            case .directory, .special: break
+            }
+            hasher.update(data: Data((line + "\n").utf8))
+            if st.kind == .directory { try walk(url, path, &hasher) }
+            #else
             var st = stat()
             guard lstat(url.path, &st) == 0 else { continue }
             let type = st.st_mode & S_IFMT
@@ -147,6 +160,7 @@ public struct SnapshotStore: Sendable {
             }
             hasher.update(data: Data((line + "\n").utf8))
             if type == S_IFDIR { try walk(url, path, &hasher) }
+            #endif
         }
     }
 }

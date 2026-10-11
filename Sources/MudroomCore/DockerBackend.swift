@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 
@@ -88,7 +90,12 @@ public struct DockerBackend: SandboxBackend {
     /// True for rootless Podman, which needs `--userns keep-id` so files in
     /// /workspace stay owned by the host user.
     var isRootlessPodman: Bool {
+        #if os(Windows)
+        // Podman machine runs rootless, as on macOS.
+        flavor == .podman
+        #else
         flavor == .podman && getuid() != 0
+        #endif
     }
 
     // MARK: Running
@@ -99,22 +106,44 @@ public struct DockerBackend: SandboxBackend {
         public var uid: UInt32
         public var gid: UInt32
         public var rootlessPodman: Bool
+        /// Host paths are Windows paths ("C:\Users\...").
+        public var isWindows: Bool
 
-        public init(isLinux: Bool, uid: UInt32, gid: UInt32, rootlessPodman: Bool) {
+        public init(isLinux: Bool, uid: UInt32, gid: UInt32, rootlessPodman: Bool, isWindows: Bool = false) {
             self.isLinux = isLinux
             self.uid = uid
             self.gid = gid
             self.rootlessPodman = rootlessPodman
+            self.isWindows = isWindows
         }
 
         public static func current(_ backend: DockerBackend) -> Host {
+            #if os(Windows)
+            // Docker Desktop and Podman machine run the containers in a
+            // Linux VM and map ownership on shared folders themselves.
+            return Host(isLinux: false, uid: 1000, gid: 1000, rootlessPodman: backend.isRootlessPodman, isWindows: true)
+            #else
             #if os(Linux)
             let linux = true
             #else
             let linux = false
             #endif
             return Host(isLinux: linux, uid: getuid(), gid: getgid(), rootlessPodman: backend.isRootlessPodman)
+            #endif
         }
+    }
+
+    /// A host folder as `--mount source=` takes it. On Windows that is the
+    /// Windows path ("C:\Users\me\..."): Docker Desktop and Podman
+    /// machine translate it to where the drive is shared in their VM.
+    /// Foundation spells it with forward slashes, and sometimes with a
+    /// leading one ("/C:/Users/me").
+    public static func mountSource(_ path: String, host: Host) -> String {
+        guard host.isWindows else { return path }
+        var p = path.replacingOccurrences(of: "/", with: "\\")
+        let chars = Array(p)
+        if chars.count >= 3, chars[0] == "\\", chars[2] == ":", chars[1].isLetter { p.removeFirst() }
+        return p
     }
 
     /// The exact `docker run` arguments for a spec. Kept separate so it can
@@ -123,9 +152,9 @@ public struct DockerBackend: SandboxBackend {
         var args = ["run", "--rm", "--name", spec.name, "--label", label]
         if spec.interactive { args.append("--interactive") }
         if spec.tty { args.append("--tty") }
-        args += ["--mount", "type=bind,source=\(spec.workspace.path),target=\(spec.guestWorkspace)"]
+        args += ["--mount", "type=bind,source=\(mountSource(spec.workspace.path, host: host)),target=\(spec.guestWorkspace)"]
         for m in spec.mounts {
-            args += ["--mount", "type=bind,source=\(m.source.path),target=\(m.target)" + (m.readOnly ? ",readonly" : "")]
+            args += ["--mount", "type=bind,source=\(mountSource(m.source.path, host: host)),target=\(m.target)" + (m.readOnly ? ",readonly" : "")]
         }
         args += ["--workdir", spec.guestWorkspace]
         for name in spec.passedNames {

@@ -5,6 +5,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import MudroomCore
@@ -23,6 +25,13 @@ struct Mudroom: ParsableCommand {
         subcommands: [SetupCommand.self, Run.self, New.self, Start.self, Diff.self, Review.self, Hunks.self, Apply.self, Undo.self,
                       Snapshots.self, NetworkCommand.self, Agent.self, Keys.self, List.self, Stop.self, Discard.self, Image.self]
     )
+
+    #if os(Windows)
+    static func main() {
+        WindowsConsole.setUp()
+        main(nil)
+    }
+    #endif
 }
 
 func store() -> SessionStore { SessionStore.defaultStore() }

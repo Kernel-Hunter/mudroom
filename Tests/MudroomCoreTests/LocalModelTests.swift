@@ -4,6 +4,8 @@ import Darwin
 import Glibc
 #elseif canImport(Musl)
 import Musl
+#elseif canImport(WinSDK)
+import WinSDK
 #endif
 import Foundation
 import Testing
@@ -64,7 +66,7 @@ struct LocalModelTests {
     @Test("a closed local port gives 502 with a readable reason")
     func nothingListening() throws {
         let (fd, port) = try Sock.listen(host: "127.0.0.1", port: 0)
-        close(fd)
+        Sock.close(fd)
         let p = try proxy([1234: port])
         defer { p.stop() }
         let reply = try talk(port: p.port, "GET http://host.mudroom.internal:1234/v1/models HTTP/1.1\r\nHost: x\r\n\r\n")
