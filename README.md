@@ -798,9 +798,18 @@ is different from macOS and Linux:
   already have.
 - **New and less tested.** CI builds the CLI and runs the test suite on
   Windows x86_64 and arm64, and checks a session end to end without a
-  sandbox (create, edit, diff, apply, undo). GitHub's Windows runners can't
-  run Linux containers, so a real Docker Desktop or Podman sandbox
-  hasn't been run by CI. Running the Linux build inside WSL2 is untested.
+  sandbox (create, edit, diff, apply, undo). It also unzips each release
+  zip on a runner that never had Swift installed and runs the same check
+  there. On x86_64 it runs a real sandbox with a Podman machine (WSL 2):
+  the open-network check and a short session, then diff and apply. Locked
+  mode, the allowlist proxy, hasn't passed in CI yet: with a rootless
+  Podman machine on the runner, `mudroom network check` hangs in locked
+  mode. Docker Desktop hasn't been run by CI, and the arm64 runner can't
+  run a VM at all. Running the Linux build inside WSL2 is untested.
+- **Podman machine.** If Podman says ``controller `pids` is not
+  available``, the machine's user has no pids cgroup controller; set
+  `pids_limit = 0` under `[containers]` in `~/.config/containers/containers.conf`
+  inside the machine (`podman machine ssh`), then restart it.
 
 ## How it works
 
@@ -913,7 +922,11 @@ to both if Visual Studio is newer than the toolchain's Clang (see
 [Build from source](#build-from-source)). Tests that need Unix modes, FIFOs,
 signals or a pty are skipped there, and `WindowsTests.swift` covers what
 Windows does instead. CI runs all three, Linux and Windows on x86_64 and
-arm64.
+arm64. On Windows it also builds the release zips (`scripts/windows-package.ps1`
+finds the DLLs to ship with `dumpbin`) and runs them on runners without
+Swift (`scripts/windows-zip-check.ps1`). `scripts/windows-sandbox-check.ps1`
+runs a real session against Docker Desktop or Podman; CI runs it with a
+Podman machine.
 
 The proxy tests run it against a loopback test server. The app target is
 `MudroomApp` (SwiftUI, macOS 26+, left out of the package on other

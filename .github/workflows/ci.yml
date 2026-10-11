@@ -37,8 +37,8 @@ jobs:
         run: swift test
 
   windows:
-    # MudroomCore and the CLI only, as on Linux. GitHub's Windows runners
-    # can't run Linux containers, so nothing here needs Docker.
+    # MudroomCore and the CLI only, as on Linux. Nothing here needs a
+    # container runtime; windows-sandbox below runs a real one.
     strategy:
       fail-fast: false
       matrix:
@@ -78,8 +78,9 @@ jobs:
   windows-sandbox:
     # A real sandbox on Windows: windows-latest (Windows Server 2025 on AMD)
     # has nested virtualization, so WSL 2 and a Podman machine run there.
-    # The arm64 runner doesn't (no virtualization extensions), so x86_64 only.
-    # Uses the release zip, so no Swift on this runner either.
+    # The arm64 runner doesn't (no virtualization extensions; WSL can't be
+    # installed and a Hyper-V VM won't start), so x86_64 only. Uses the
+    # release zip, so no Swift on this runner either.
     needs: windows-zip
     runs-on: windows-latest
     steps:
@@ -117,33 +118,12 @@ jobs:
           & $podman machine start
           if ($LASTEXITCODE -ne 0) { throw "podman machine start failed" }
           & $podman version
-      - name: Podman, open network
-        id: open
-        continue-on-error: true
-        timeout-minutes: 12
+      # Open network only. In locked mode `mudroom network check` hangs on
+      # this runner after "checking locked network with podman..." (no output
+      # for 6+ minutes), and WSL's mirrored networking, which would let the
+      # machine reach the proxy on the runner's 127.0.0.1, fails here with
+      # 0x803b0015. Locked mode still needs a run with Docker Desktop on a PC.
+      - name: Sandbox session (podman, open network)
+        timeout-minutes: 15
         shell: pwsh
         run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -Network open
-      - name: Podman, locked network
-        id: locked
-        continue-on-error: true
-        timeout-minutes: 6
-        shell: pwsh
-        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -SkipImageBuild
-      - name: Podman, locked network, WSL mirrored networking
-        if: steps.locked.outcome == 'failure'
-        continue-on-error: true
-        timeout-minutes: 8
-        shell: pwsh
-        run: |
-          [IO.File]::WriteAllText("$env:USERPROFILE\.wslconfig", "[wsl2]`nnetworkingMode=mirrored`n")
-          podman machine stop
-          wsl --shutdown
-          podman machine start
-          scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -SkipImageBuild
-      # Podman serves the Docker API on Docker Desktop's pipe, so the docker
-      # CLI on the runner reaches the same machine.
-      - name: Docker CLI on Podman's API, open network
-        continue-on-error: true
-        timeout-minutes: 6
-        shell: pwsh
-        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE docker -Network open -SkipImageBuild

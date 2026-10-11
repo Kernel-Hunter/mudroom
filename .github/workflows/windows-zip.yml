@@ -42,15 +42,14 @@ jobs:
           WANTED: ${{ inputs.version }}
         run: |
           $file = 'Sources/mudroom/Version.swift'
+          $source = Get-Content -Raw $file
           $version = $env:WANTED -replace '^v', ''
-          if ($version) {
-            if ($version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$') { throw "bad version '$version'" }
-            # Stamped for this build only, as scripts/build-app.sh does on macOS.
-            $text = (Get-Content -Raw $file) -replace '(?m)^let mudroomVersion = .*$', "let mudroomVersion = `"$version`""
-            [IO.File]::WriteAllText((Resolve-Path $file), $text)
-          } else {
-            $version = [regex]::Match((Get-Content -Raw $file), '(?m)^let mudroomVersion = "(.*)"').Groups[1].Value
-          }
+          if (-not $version) { $version = [regex]::Match($source, '(?m)^let mudroomVersion = "(.*)"').Groups[1].Value }
+          if ($version -notmatch '^\d+\.\d+\.\d+([-.][0-9A-Za-z.]+)?$') { throw "bad version '$version'" }
+          # Stamped for this build only, as scripts/build-app.sh does on macOS.
+          # (Without an input this rewrites the same version.)
+          $text = $source -replace '(?m)^let mudroomVersion = .*$', "let mudroomVersion = `"$version`""
+          [IO.File]::WriteAllText((Resolve-Path $file).Path, $text)
           "version=$version" >> $env:GITHUB_OUTPUT
           Write-Host "version $version"
 
