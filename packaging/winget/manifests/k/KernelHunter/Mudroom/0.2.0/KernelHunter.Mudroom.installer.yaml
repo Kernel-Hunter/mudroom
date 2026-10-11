@@ -1,4 +1,4 @@
-# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 
 PackageIdentifier: KernelHunter.Mudroom
 PackageVersion: 0.2.0
@@ -24,4 +24,4 @@ Installers:
   InstallerUrl: https://github.com/Kernel-Hunter/mudroom/releases/download/v0.2.0/mudroom-0.2.0-windows-arm64.zip
   InstallerSha256: 5048A0F48B4728BDA30D2335F0E9D66DB65B3D4BEEF995FBB1CE60C4BA6FA2DB
 ManifestType: installer
-ManifestVersion: 1.10.0
+ManifestVersion: 1.12.0
