@@ -97,7 +97,12 @@ public enum NetworkCheck {
           try { const res = await fetch(url, {signal: AbortSignal.timeout(12000), redirect: 'manual'}); return [`HTTP ${res.status}`, true]; }
           catch (e) { return [String((e.cause && (e.cause.code || e.cause.message)) || e.message), false]; }
         }
-        function lookup(h) { return new Promise(r => dns.lookup(h, (e, a) => r(e ? [e.code, false] : [a, true]))); }
+        function lookup(h) {
+          return new Promise(r => {
+            const t = setTimeout(() => r(['timeout', false]), 5000);
+            dns.lookup(h, (e, a) => { clearTimeout(t); r(e ? [e.code, false] : [a, true]); });
+          });
+        }
         function udpDNS(ip) {
           return new Promise(r => {
             const s = dgram.createSocket('udp4'); const t = setTimeout(() => { s.close(); r(['no reply', false]); }, 4000);
@@ -145,9 +150,14 @@ public enum NetworkCheck {
         }
     }
 
+    /// How long the check's container may take. Each probe in the script
+    /// gives up on its own within seconds (about a minute in all), so this
+    /// only trips when the runtime itself is stuck.
+    public static let timeout: TimeInterval = 120
+
     public static func run(mode: NetworkMode, allowlist: Allowlist, backend: SandboxBackend,
                            image: String = AgentBaseImage.tag, blocked: String = "example.com",
-                           scratch: URL) throws -> Report {
+                           scratch: URL, timeout: TimeInterval = NetworkCheck.timeout) throws -> Report {
         try backend.checkAvailable()
         let allowed = allowlist.patterns.first { !$0.isWildcard }?.value ?? "api.anthropic.com"
         let list = mode == .locked && allowlist.patterns.isEmpty ? Allowlist(strings: [allowed]) : allowlist
@@ -159,11 +169,19 @@ public enum NetworkCheck {
         let gateway = [net.plan.proxyHost, (try? backend.hostOnlyNetwork())?.map(\.gateway),
                        (try? backend.defaultNetwork())?.map(\.gateway)]
             .compactMap { $0 }.first { !$0.isEmpty }
-        let spec = SandboxSpec(name: "mudroom-check-\(UInt16.random(in: 0...0xffff))", image: image, workspace: scratch,
+        var spec = SandboxSpec(name: "mudroom-check-\(UInt16.random(in: 0...0xffff))", image: image, workspace: scratch,
                                command: ["node", "-e", script(allowed: allowed, blocked: blocked,
                                                               gateway: mode == .open ? nil : gateway)],
                                interactive: false, tty: false, environment: net.environment, network: net.plan.vmNetwork)
+        // As in NetworkProbe: a stuck runtime would otherwise leave the
+        // check waiting for good, with nothing on screen.
+        spec.timeout = timeout
         let output = try backend.capture(spec)
+        if output.timedOut {
+            backend.stop(spec.name)
+            throw MudroomError.backendUnavailable(
+                "the network check's container didn't finish within \(Int(timeout)) seconds; \(backend.name) seems stuck (`\(backend.stopHint(spec.name))` stops it if it is still there)")
+        }
         guard let line = output.stdout.split(separator: "\n").last(where: { $0.hasPrefix("MUDROOM_CHECK ") }),
               let arr = try? JSONSerialization.jsonObject(with: Data(line.dropFirst("MUDROOM_CHECK ".count).utf8)) as? [[String: Any]]
         else {
