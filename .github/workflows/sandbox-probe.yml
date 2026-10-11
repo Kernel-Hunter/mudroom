@@ -10,7 +10,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        runner: [windows-latest, windows-2022, windows-11-arm]
+        runner: [windows-11-arm]
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Virtualization facts
@@ -40,6 +40,8 @@ jobs:
         timeout-minutes: 15
         shell: pwsh
         run: |
+          wsl --install --no-distribution --web-download; "install wsl exit $LASTEXITCODE"
+          wsl --version; "version exit $LASTEXITCODE"
           wsl --update --web-download; "update exit $LASTEXITCODE"
           wsl --set-default-version 2; "set-default-version exit $LASTEXITCODE"
           wsl --install -d Ubuntu-24.04 --web-download --no-launch; "install exit $LASTEXITCODE"
@@ -52,7 +54,7 @@ jobs:
         timeout-minutes: 10
         shell: pwsh
         run: |
-          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x86_64' }
+          $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'aarch64' } else { 'x86_64' }
           $base = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/$arch"
           $file = [regex]::Match((Invoke-RestMethod "$base/latest-releases.yaml"), 'alpine-minirootfs-[\d.]+-\w+\.tar\.gz').Value
           Invoke-WebRequest "$base/$file" -OutFile "$env:RUNNER_TEMP\alpine.tar.gz"

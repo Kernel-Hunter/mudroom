@@ -30,6 +30,8 @@ Linux, Windows and Intel Macs.
 
    Or with Homebrew: `brew install --cask kernel-hunter/tap/mudroom`
 
+   On Windows (CLI only), see [Install on Windows](#install-on-windows).
+
 2. Open Mudroom and work through the Setup window: install and start the VM
    runtime, build the agent image (a few minutes, once), and sign in an
    agent. `mudroom setup` does the same in a terminal.
@@ -60,7 +62,7 @@ Linux, Windows and Intel Macs.
 | macOS 26+, Apple silicon | App and CLI | `apple` (Apple's `container`, one VM per session), or `docker`/`podman` |
 | macOS 26+, Intel | CLI only (build from source) | `docker` or `podman` |
 | Linux x86_64 and arm64 | CLI only (build from source) | `docker` or `podman` |
-| Windows 10/11, x86_64 and arm64 | CLI only (build from source) | `docker` (Docker Desktop) or `podman` (Podman machine) |
+| Windows 10/11, x86_64 and arm64 | CLI only ([release zip](#install-on-windows) or build from source) | `docker` (Docker Desktop) or `podman` (Podman machine) |
 
 The `apple` backend needs Apple's [`container`](https://github.com/apple/container)
 CLI, version 1.5 or later. Setup installs it with Homebrew if you don't have
@@ -100,6 +102,52 @@ Mudroom is ad-hoc signed, not notarized. The install script and the Homebrew
 cask remove the quarantine flag, so macOS opens it. If you download the zip
 in a browser, use System Settings > Privacy & Security > Open Anyway, or run
 `xattr -dr com.apple.quarantine /Applications/Mudroom.app`.
+
+### Install on Windows
+
+Each release has a zip for x86_64 and one for arm64:
+`mudroom-<version>-windows-x86_64.zip` and `mudroom-<version>-windows-arm64.zip`
+on the [Releases](https://github.com/Kernel-Hunter/mudroom/releases/latest)
+page, each with a `.sha256`. The zip holds a folder with `mudroom.exe` and
+the Swift runtime and Visual C++ DLLs it loads, so Swift doesn't need to be
+installed. Keep the files together and put the folder on your PATH (copying
+`mudroom.exe` alone won't run without Swift installed). In PowerShell:
+
+```powershell
+$v = '0.2.0'; $arch = 'x86_64'          # or 'arm64'
+$name = "mudroom-$v-windows-$arch"
+Invoke-WebRequest "https://github.com/Kernel-Hunter/mudroom/releases/download/v$v/$name.zip" -OutFile "$env:TEMP\$name.zip"
+Get-FileHash "$env:TEMP\$name.zip"     # compare with $name.zip.sha256 on the release page
+Expand-Archive "$env:TEMP\$name.zip" $env:TEMP -Force
+$dir = "$env:LOCALAPPDATA\Programs\Mudroom"
+New-Item -ItemType Directory -Force $dir | Out-Null
+Copy-Item "$env:TEMP\$name\*" $dir -Force
+# Once: add the folder to your user PATH, then open a new terminal.
+[Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path', 'User') + ";$dir", 'User')
+```
+
+To upgrade, run the same lines with the new version, without the PATH
+line. `mudroom.exe` isn't code-signed; if Windows blocks it after you unzip
+with Explorer, run `Get-ChildItem $dir | Unblock-File`.
+
+Scoop isn't set up yet. Once the `Kernel-Hunter/scoop-bucket` repository
+exists, `scoop bucket add kernel-hunter https://github.com/Kernel-Hunter/scoop-bucket`
+and `scoop install mudroom` will do the above. The manifests are in
+[packaging/scoop](packaging/scoop) and [packaging/winget](packaging/winget).
+
+Then install a container runtime: [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
+with the WSL 2 backend (Linux containers, the default), or
+[Podman](https://podman.io/docs/installation#windows) with a Podman machine
+(`podman machine init`, then `podman machine start`). Build the agent image
+once and check the network:
+
+```powershell
+mudroom image build --backend docker      # or --backend podman
+mudroom network check --backend docker
+```
+
+Run `mudroom` from Windows Terminal or any console with VT support. See
+[Windows](#windows-1) for what is different from macOS and Linux.
 
 ### Build from source
 
@@ -854,6 +902,7 @@ swift test                 # diff, hunks, apply, undo, allowlist, proxy, snapsho
 scripts/make-demo.sh       # demo sessions in build/demo (no VM)
 scripts/screenshots.sh     # regenerates docs/screenshots from the demo
 scripts/release.sh 0.4.0   # dist/Mudroom-0.4.0.zip and its SHA-256
+scripts/windows-package.ps1 .build/release/mudroom.exe 0.4.0 x86_64   # on Windows: dist/mudroom-0.4.0-windows-x86_64.zip with its DLLs
 mudroom network check      # verifies isolation in a real sandbox (any backend)
 ```
 

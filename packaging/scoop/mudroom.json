@@ -1,0 +1,42 @@
+{
+    "version": "0.2.0",
+    "description": "Run coding agents in a sandbox, then review their changes like a pull request before anything touches your project.",
+    "homepage": "https://github.com/Kernel-Hunter/mudroom",
+    "license": "MIT",
+    "notes": [
+        "Mudroom runs agents in Linux containers. Install Docker Desktop (WSL 2 backend)",
+        "or Podman with a Podman machine, then build the agent image once:",
+        "  mudroom image build --backend docker"
+    ],
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v0.2.0/mudroom-0.2.0-windows-x86_64.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "extract_dir": "mudroom-0.2.0-windows-x86_64"
+        },
+        "arm64": {
+            "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v0.2.0/mudroom-0.2.0-windows-arm64.zip",
+            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "extract_dir": "mudroom-0.2.0-windows-arm64"
+        }
+    },
+    "bin": "mudroom.exe",
+    "checkver": {
+        "github": "https://github.com/Kernel-Hunter/mudroom"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v$version/mudroom-$version-windows-x86_64.zip",
+                "extract_dir": "mudroom-$version-windows-x86_64"
+            },
+            "arm64": {
+                "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v$version/mudroom-$version-windows-arm64.zip",
+                "extract_dir": "mudroom-$version-windows-arm64"
+            }
+        },
+        "hash": {
+            "url": "$url.sha256"
+        }
+    }
+}
