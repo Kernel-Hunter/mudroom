@@ -105,7 +105,14 @@ in a browser, use System Settings > Privacy & Security > Open Anyway, or run
 
 ### Install on Windows
 
-Each release has a zip for x86_64 and one for arm64:
+With [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add kernel-hunter https://github.com/Kernel-Hunter/scoop-bucket
+scoop install mudroom
+```
+
+Without Scoop: each release has a zip for x86_64 and one for arm64:
 `mudroom-<version>-windows-x86_64.zip` and `mudroom-<version>-windows-arm64.zip`
 on the [Releases](https://github.com/Kernel-Hunter/mudroom/releases/latest)
 page, each with a `.sha256`. The zip holds a folder with `mudroom.exe` and
@@ -130,10 +137,8 @@ To upgrade, run the same lines with the new version, without the PATH
 line. `mudroom.exe` isn't code-signed; if Windows blocks it after you unzip
 with Explorer, run `Get-ChildItem $dir | Unblock-File`.
 
-Scoop isn't set up yet. Once the `Kernel-Hunter/scoop-bucket` repository
-exists, `scoop bucket add kernel-hunter https://github.com/Kernel-Hunter/scoop-bucket`
-and `scoop install mudroom` will do the above. The manifests are in
-[packaging/scoop](packaging/scoop) and [packaging/winget](packaging/winget).
+The Scoop and winget manifests are in [packaging/scoop](packaging/scoop)
+and [packaging/winget](packaging/winget).
 
 Then install a container runtime: [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
 with the WSL 2 backend (Linux containers, the default), or
