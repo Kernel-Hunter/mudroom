@@ -11,12 +11,12 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v0.2.0/mudroom-0.2.0-windows-x86_64.zip",
-            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "hash": "5496d416c890bb683bbe9072de156f923f151460aee6d87367fdc4ee1a2fdded",
             "extract_dir": "mudroom-0.2.0-windows-x86_64"
         },
         "arm64": {
             "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v0.2.0/mudroom-0.2.0-windows-arm64.zip",
-            "hash": "0000000000000000000000000000000000000000000000000000000000000000",
+            "hash": "5048a0f48b4728bda30d2335f0e9d66db65b3d4beef995fbb1ce60c4ba6fa2db",
             "extract_dir": "mudroom-0.2.0-windows-arm64"
         }
     },
