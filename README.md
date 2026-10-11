@@ -767,10 +767,13 @@ address; `mudroom network check` will tell you.
 On Windows the CLI works the same way, with Docker Desktop or a Podman
 machine running Linux containers in a VM. Host paths are passed to
 `docker run --mount` as Windows paths (`C:\Users\...`), which Docker Desktop
-shares into its VM. Locked mode is set up as on macOS: the proxy listens
-on 127.0.0.1 and the forwarder reaches it through `host.docker.internal`.
-Run `mudroom network check --backend docker` before relying on it. What
-is different from macOS and Linux:
+shares into its VM. With Docker Desktop, locked mode is set up as on
+macOS: the proxy listens on 127.0.0.1 and the forwarder reaches it through
+`host.docker.internal`. A Podman machine on WSL 2 can't reach Windows'
+127.0.0.1, so there the proxy listens on the WSL network's gateway (the
+"vEthernet (WSL)" address, which `host.containers.internal` points to) and
+accepts only the WSL network. Run `mudroom network check` before relying
+on it. What is different from macOS and Linux:
 
 - **No permission bits.** Windows files have no Unix mode, so every file
   reads as 0644 and every folder as 0755. A script the agent makes
@@ -801,15 +804,28 @@ is different from macOS and Linux:
   sandbox (create, edit, diff, apply, undo). It also unzips each release
   zip on a runner that never had Swift installed and runs the same check
   there. On x86_64 it runs a real sandbox with a Podman machine (WSL 2):
-  the open-network check and a short session, then diff and apply. Locked
-  mode, the allowlist proxy, hasn't passed in CI yet: with a rootless
-  Podman machine on the runner, `mudroom network check` hangs in locked
-  mode. Docker Desktop hasn't been run by CI, and the arm64 runner can't
-  run a VM at all. Running the Linux build inside WSL2 is untested.
+  the network check and a short session, then diff and apply, with the open
+  and the locked network. Docker Desktop hasn't been run by CI, and the
+  arm64 runner can't run a VM at all. Running the Linux build inside WSL2
+  is untested.
 - **Podman machine.** If Podman says ``controller `pids` is not
   available``, the machine's user has no pids cgroup controller; set
   `pids_limit = 0` under `[containers]` in `~/.config/containers/containers.conf`
   inside the machine (`podman machine ssh`), then restart it.
+- **Locked mode with Podman needs a firewall rule.** Windows Firewall drops
+  connections from WSL to Windows, so the machine can't reach the proxy
+  until a rule allows it. Mudroom checks before the sandbox starts and, if
+  the proxy is out of reach, stops with the rule to add, once, from an
+  administrator PowerShell:
+
+  ```powershell
+  New-NetFirewallRule -DisplayName 'Mudroom proxy' -Direction Inbound -Action Allow -Protocol TCP -Program (Get-Command mudroom).Source
+  ```
+
+  It also needs the machine on WSL's own network: with user-mode
+  networking (`podman machine set --user-mode-networking`)
+  `host.containers.internal` doesn't lead to Windows, and locked mode
+  can't work.
 
 ## How it works
 

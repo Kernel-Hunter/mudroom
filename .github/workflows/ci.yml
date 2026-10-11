@@ -118,12 +118,25 @@ jobs:
           & $podman machine start
           if ($LASTEXITCODE -ne 0) { throw "podman machine start failed" }
           & $podman version
-      # Open network only. In locked mode `mudroom network check` hangs on
-      # this runner after "checking locked network with podman..." (no output
-      # for 6+ minutes), and WSL's mirrored networking, which would let the
-      # machine reach the proxy on the runner's 127.0.0.1, fails here with
-      # 0x803b0015. Locked mode still needs a run with Docker Desktop on a PC.
       - name: Sandbox session (podman, open network)
         timeout-minutes: 15
         shell: pwsh
         run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -Network open
+      # Locked mode: the Podman machine reaches the proxy on the WSL network's
+      # gateway, which Windows Firewall blocks until a rule allows it. Without
+      # the rule the check has to stop quickly and say which rule to add.
+      - name: Locked network check without a firewall rule
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $out = & $env:MUDROOM_EXE network check --backend podman --mode locked 2>&1 | Out-String
+          Write-Host $out
+          if ($LASTEXITCODE -eq 0) { throw "the locked check passed without a firewall rule" }
+          if ($out -notmatch 'New-NetFirewallRule') { throw "no firewall hint in the error" }
+      - name: Allow Mudroom's proxy through Windows Firewall
+        shell: pwsh
+        run: New-NetFirewallRule -DisplayName 'Mudroom proxy' -Direction Inbound -Action Allow -Protocol TCP -Program $env:MUDROOM_EXE | Out-Null
+      - name: Sandbox session (podman, locked network)
+        timeout-minutes: 15
+        shell: pwsh
+        run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -SkipImageBuild
