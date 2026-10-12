@@ -18,7 +18,7 @@ Linux, Windows and Intel Macs.
 
 ![Mudroom: start a session, review the diff, check the network log, apply](docs/demo.gif)
 
-[Watch the 33-second overview (with sound)](docs/mudroom-ad.mp4)
+https://github.com/user-attachments/assets/ff599cbc-fbd9-4c8f-801d-fd2e52ccb0c6
 
 ## Quick start
 
