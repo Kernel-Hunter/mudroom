@@ -155,8 +155,10 @@ public enum NetworkCheck {
 
     /// How long the check's container may take. Each probe in the script
     /// gives up on its own within seconds (about a minute in all), so this
-    /// only trips when the runtime itself is stuck.
-    public static let timeout: TimeInterval = 120
+    /// only trips when the runtime itself is stuck. Starting the container
+    /// is slow on a Podman machine (a passing open check took 72 seconds on
+    /// GitHub's Windows runner), hence the margin.
+    public static let timeout: TimeInterval = 300
 
     public static func run(mode: NetworkMode, allowlist: Allowlist, backend: SandboxBackend,
                            image: String = AgentBaseImage.tag, blocked: String = "example.com",
