@@ -155,9 +155,10 @@ jobs:
         timeout-minutes: 10
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           Get-NetFirewallRule -Direction Inbound | Where-Object { ($_ | Get-NetFirewallApplicationFilter).Program -like '*mudroom*' } |
             Format-Table DisplayName, Action, Enabled, Profile -AutoSize | Out-String -Width 200
-          Get-NetFirewallRule -Direction Inbound -Action Block -Enabled True | Format-Table DisplayName, Profile -AutoSize | Out-String -Width 200
+          Get-NetFirewallRule -Direction Inbound -Action Block -Enabled True -ErrorAction SilentlyContinue | Format-Table DisplayName, Profile -AutoSize | Out-String -Width 200
           $rows = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=5152,5157} -MaxEvents 500 -ErrorAction SilentlyContinue | ForEach-Object {
             $d = @{}; ([xml]$_.ToXml()).Event.EventData.Data | ForEach-Object { $d[$_.Name] = $_.'#text' }
             [pscustomobject]@{ Time = $_.TimeCreated.ToString('HH:mm:ss'); Id = $_.Id; App = $d.Application; Dir = $d.Direction
