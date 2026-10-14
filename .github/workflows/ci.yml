@@ -138,24 +138,45 @@ jobs:
           exit 0
       - name: Allow Mudroom's proxy through Windows Firewall
         shell: pwsh
-        run: New-NetFirewallRule -DisplayName 'Mudroom proxy' -Direction Inbound -Action Allow -Protocol TCP -Program $env:MUDROOM_EXE | Out-Null
+        run: |
+          New-NetFirewallRule -DisplayName 'Mudroom proxy' -Direction Inbound -Action Allow -Protocol TCP -Program $env:MUDROOM_EXE | Out-Null
+          # Log dropped packets, so a failure below names the filter.
+          auditpol /set /subcategory:"Filtering Platform Packet Drop" /failure:enable
+          auditpol /set /subcategory:"Filtering Platform Connection" /failure:enable
       - name: Sandbox session (podman, locked network)
         timeout-minutes: 15
         shell: pwsh
         run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -SkipImageBuild
       # What the firewall and WSL's network looked like when locked mode
-      # failed, and whether the check still passes afterwards.
+      # failed, which filter dropped the connection, and whether a plain
+      # listener on the WSL gateway is reachable.
       - name: Firewall and network state
         if: failure()
-        timeout-minutes: 5
+        timeout-minutes: 10
         shell: pwsh
         run: |
           Get-NetFirewallRule -Direction Inbound | Where-Object { ($_ | Get-NetFirewallApplicationFilter).Program -like '*mudroom*' } |
-            Format-Table DisplayName, Action, Enabled, Profile, PolicyStoreSourceType -AutoSize | Out-String -Width 200
-          Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction, NotifyOnListen -AutoSize | Out-String -Width 200
-          Get-NetConnectionProfile | Format-Table InterfaceAlias, NetworkCategory -AutoSize | Out-String -Width 200
-          Get-NetIPAddress -AddressFamily IPv4 | Format-Table InterfaceAlias, IPAddress, PrefixLength -AutoSize | Out-String -Width 200
-          Get-NetFirewallHyperVVMSetting -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-String -Width 200
-          podman machine ssh "ip -4 route"
+            Format-Table DisplayName, Action, Enabled, Profile -AutoSize | Out-String -Width 200
+          Get-NetFirewallRule -Direction Inbound -Action Block -Enabled True | Format-Table DisplayName, Profile -AutoSize | Out-String -Width 200
+          $rows = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=5152,5157} -MaxEvents 500 -ErrorAction SilentlyContinue | ForEach-Object {
+            $d = @{}; ([xml]$_.ToXml()).Event.EventData.Data | ForEach-Object { $d[$_.Name] = $_.'#text' }
+            [pscustomobject]@{ Time = $_.TimeCreated.ToString('HH:mm:ss'); Id = $_.Id; App = $d.Application; Dir = $d.Direction
+              Src = "$($d.SourceAddress):$($d.SourcePort)"; Dst = "$($d.DestAddress):$($d.DestPort)"; Filter = $d.FilterRTID; Layer = $d.LayerName }
+          } | Where-Object { $_.Src -like '172.*' -or $_.Dst -like '172.*' }
+          $rows | Select-Object -First 40 | Format-Table -AutoSize | Out-String -Width 300
+          netsh wfp show filters file="$env:RUNNER_TEMP\filters.xml" | Out-Null
+          $ids = @($rows.Filter | Sort-Object -Unique)
+          ([xml](Get-Content "$env:RUNNER_TEMP\filters.xml")).SelectNodes('//filters/item') | Where-Object { $ids -contains $_.filterId } |
+            ForEach-Object { "filter $($_.filterId): $($_.displayData.name) / $($_.displayData.description) / $($_.action.type)" }
+          $routes = podman machine ssh "ip -4 route"
+          $routes
+          $gw = ([regex]'default via (\S+)').Match(($routes | Out-String)).Groups[1].Value
+          New-NetFirewallRule -DisplayName 'diag listener' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 18080 | Out-Null
+          $l = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Parse($gw), 18080); $l.Start()
+          podman machine ssh "timeout 5 bash -c 'echo > /dev/tcp/$gw/18080' && echo 'machine to gateway: ok' || echo 'machine to gateway: failed'"
+          $js = "for (const h of ['$gw', 'host.containers.internal']) { const s = require('net').connect({host: h, port: 18080}); const t = setTimeout(() => { console.log(h, 'timeout'); s.destroy(); }, 5000); s.on('connect', () => { clearTimeout(t); console.log(h, 'ok'); s.destroy(); }); s.on('error', e => { clearTimeout(t); console.log(h, e.code); }); }"
+          podman run --rm --network podman mudroom/agent-base:latest cat /etc/hosts
+          podman run --rm --network podman mudroom/agent-base:latest node -e $js
+          $l.Stop()
           & $env:MUDROOM_EXE network check --backend podman --mode locked
           exit 0
