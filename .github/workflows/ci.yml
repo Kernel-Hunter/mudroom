@@ -143,3 +143,19 @@ jobs:
         timeout-minutes: 15
         shell: pwsh
         run: scripts/windows-sandbox-check.ps1 $env:MUDROOM_EXE podman -SkipImageBuild
+      # What the firewall and WSL's network looked like when locked mode
+      # failed, and whether the check still passes afterwards.
+      - name: Firewall and network state
+        if: failure()
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          Get-NetFirewallRule -Direction Inbound | Where-Object { ($_ | Get-NetFirewallApplicationFilter).Program -like '*mudroom*' } |
+            Format-Table DisplayName, Action, Enabled, Profile, PolicyStoreSourceType -AutoSize | Out-String -Width 200
+          Get-NetFirewallProfile | Format-Table Name, Enabled, DefaultInboundAction, NotifyOnListen -AutoSize | Out-String -Width 200
+          Get-NetConnectionProfile | Format-Table InterfaceAlias, NetworkCategory -AutoSize | Out-String -Width 200
+          Get-NetIPAddress -AddressFamily IPv4 | Format-Table InterfaceAlias, IPAddress, PrefixLength -AutoSize | Out-String -Width 200
+          Get-NetFirewallHyperVVMSetting -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Out-String -Width 200
+          podman machine ssh "ip -4 route"
+          & $env:MUDROOM_EXE network check --backend podman --mode locked
+          exit 0
