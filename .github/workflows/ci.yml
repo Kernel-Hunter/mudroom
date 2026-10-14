@@ -133,6 +133,9 @@ jobs:
           Write-Host $out
           if ($LASTEXITCODE -eq 0) { throw "the locked check passed without a firewall rule" }
           if ($out -notmatch 'New-NetFirewallRule') { throw "no firewall hint in the error" }
+          # The failure above is the expected result; without this the
+          # runner's pwsh wrapper exits with mudroom's status.
+          exit 0
       - name: Allow Mudroom's proxy through Windows Firewall
         shell: pwsh
         run: New-NetFirewallRule -DisplayName 'Mudroom proxy' -Direction Inbound -Action Allow -Protocol TCP -Program $env:MUDROOM_EXE | Out-Null
