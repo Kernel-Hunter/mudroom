@@ -47,6 +47,28 @@ struct DockerBackendTests {
         #expect(pargs.contains("keep-id") && !pargs.contains("--user"))
     }
 
+    @Test("a Podman machine's default gateway and its subnet come from `ip -4 route`")
+    func machineGateway() {
+        // WSL 2 NAT, from a Podman machine on a GitHub Windows runner.
+        let nat = """
+        default via 172.20.224.1 dev eth0 proto kernel onlink
+        172.20.224.0/20 dev eth0 proto kernel scope link src 172.20.234.217
+        """
+        let found = DockerBackend.defaultGateway(routes: nat)
+        #expect(found?.gateway == "172.20.224.1" && found?.subnet == IPv4Subnet("172.20.224.0/20"))
+        // User-mode networking: a gateway, but gvproxy's, not an address on
+        // Windows (podmanMachineGateway then fails to bind and falls back).
+        let userMode = """
+        default via 192.168.127.1 dev podman-usermode
+        172.31.64.0/20 dev eth0 proto kernel scope link src 172.31.79.5
+        192.168.127.0/24 dev podman-usermode proto kernel scope link src 192.168.127.2
+        """
+        #expect(DockerBackend.defaultGateway(routes: userMode)?.subnet == IPv4Subnet("192.168.127.0/24"))
+        #expect(DockerBackend.defaultGateway(routes: "172.20.224.0/20 dev eth0 scope link") == nil)
+        #expect(DockerBackend.defaultGateway(routes: "default via 10.0.0.1 dev eth0") == nil)
+        #expect(DockerBackend.defaultGateway(routes: "") == nil)
+    }
+
     @Test("docker and podman network inspect output parse")
     func parseNetworks() {
         let docker = #"[{"Name":"mudroom-internal","Internal":true,"IPAM":{"Config":[{"Subnet":"fd00::/64"},{"Subnet":"172.19.0.0/16","Gateway":"172.19.0.1"}]}}]"#

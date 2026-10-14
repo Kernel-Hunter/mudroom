@@ -331,7 +331,10 @@ public struct DockerBackend: SandboxBackend {
     /// that forwards `host.docker.internal` to the Mac's loopback, so the
     /// proxy listens on 127.0.0.1 only. On Linux the sidecar reaches the
     /// host at the default bridge's gateway, so the proxy listens there and
-    /// accepts only that bridge.
+    /// accepts only that bridge. On Windows, Docker Desktop works as on
+    /// macOS; a Podman machine on WSL 2 can't reach Windows' loopback, so
+    /// the proxy listens on the WSL network's gateway instead (see
+    /// `podmanMachineGateway`).
     public func proxyListen(for plan: NetworkPlan) throws -> ProxyListen {
         let blocked = plan.clientSubnet.map { [$0] } ?? []
         #if os(Linux)
@@ -340,9 +343,71 @@ public struct DockerBackend: SandboxBackend {
         }
         return ProxyListen(bindHost: bridge.gateway, clientSubnets: [subnet], blockedSubnets: blocked)
         #else
+        #if os(Windows)
+        if let wsl = podmanMachineGateway() {
+            return ProxyListen(bindHost: wsl.gateway, clientSubnets: [wsl.subnet], blockedSubnets: blocked)
+        }
+        #endif
         return ProxyListen(bindHost: "127.0.0.1", clientSubnets: [], blockedSubnets: blocked)
         #endif
     }
+
+    /// The default gateway in `ip -4 route` output and the on-link subnet
+    /// it belongs to: ("172.20.224.1", 172.20.224.0/20) for
+    /// "default via 172.20.224.1 dev eth0" and
+    /// "172.20.224.0/20 dev eth0 proto kernel scope link src 172.20.234.217".
+    public static func defaultGateway(routes: String) -> (gateway: String, subnet: IPv4Subnet)? {
+        let lines = routes.split(whereSeparator: \.isNewline).map { $0.split(separator: " ").map(String.init) }
+        guard let route = lines.first(where: { $0.first == "default" }), let via = route.firstIndex(of: "via"),
+              via + 1 < route.count, let gateway = IPAddress(route[via + 1]), gateway.asIPv4 != nil else { return nil }
+        let subnet = lines.lazy.compactMap { $0.first.flatMap(IPv4Subnet.init) }.first { $0.prefix > 0 && $0.contains(gateway) }
+        return subnet.map { (route[via + 1], $0) }
+    }
+
+    #if os(Windows)
+    /// A Podman machine on WSL 2 reaches Windows only through WSL's NAT
+    /// network, at the machine's default gateway (Windows' "vEthernet (WSL)"
+    /// address), which is also what `host.containers.internal` resolves to.
+    /// Windows' 127.0.0.1 is out of reach from there. Returns that gateway
+    /// and the subnet the machine's connections come from, or nil when the
+    /// gateway isn't an address on this PC (no Podman machine, or one with
+    /// user-mode networking).
+    func podmanMachineGateway() -> (gateway: String, subnet: IPv4Subnet)? {
+        guard flavor == .podman, let exe = executable,
+              let out = try? ProcessRunner.capture(exe, ["machine", "ssh", "ip -4 route"], timeout: 30), out.status == 0,
+              let found = Self.defaultGateway(routes: out.stdout),
+              let bound = try? Sock.listen(host: found.gateway, port: 0) else { return nil }
+        Sock.close(bound.0)
+        return found
+    }
+
+    /// Node one-liner run in the sidecar: one connection to the proxy.
+    static let upstreamCheckScript = """
+    const s = require('net').connect({host: process.env.MUDROOM_UPSTREAM_HOST, port: +process.env.MUDROOM_UPSTREAM_PORT});
+    const t = setTimeout(() => { console.log('timeout'); process.exit(0); }, 5000);
+    s.on('connect', () => { console.log('ok'); process.exit(0); });
+    s.on('error', e => { console.log(e.code || 'error'); process.exit(0); });
+    """
+
+    /// Checks the sidecar reaches the proxy. Windows Firewall drops
+    /// connections from WSL to Windows unless a rule allows them, and the
+    /// sandbox would otherwise see every request time out, with no hint why.
+    func checkUpstream(_ container: String, port: UInt16, _ exe: String) throws {
+        let out = try ProcessRunner.capture(exe, ["exec", container, "node", "-e", Self.upstreamCheckScript], timeout: 30)
+        let result = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result == "ok" { return }
+        let why = out.timedOut ? "timeout" : result.isEmpty ? Self.failureDetail(out) : result
+        let program = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        throw MudroomError.backendUnavailable("""
+            the Podman machine can't reach Mudroom's proxy at \(hostAlias):\(port) (\(why)). \
+            Windows Firewall blocks connections from WSL to Windows unless a rule allows them. \
+            Allow Mudroom's proxy once, from an administrator PowerShell:
+              New-NetFirewallRule -DisplayName 'Mudroom proxy' -Direction Inbound -Action Allow -Protocol TCP -Program '\(program)'
+            Locked mode also needs the machine on WSL's own network: it doesn't work with user-mode networking \
+            (`podman machine set --user-mode-networking=false` turns that off).
+            """)
+    }
+    #endif
 
     /// Node one-liner for the sidecar: accept on 3128, pipe each connection
     /// to the host proxy. Half-closes pass through.
@@ -400,6 +465,9 @@ public struct DockerBackend: SandboxBackend {
             }
             let ip = try sidecarAddress(sidecar, network: internalNet, exe)
             try waitForSidecar(sidecar, exe)
+            #if os(Windows)
+            if flavor == .podman { try checkUpstream(sidecar, port: port, exe) }
+            #endif
             return ProxyRoute(host: ip, port: Self.sidecarPort, teardown: teardown)
         } catch {
             teardown()
