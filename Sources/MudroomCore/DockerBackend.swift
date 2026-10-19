@@ -331,7 +331,10 @@ public struct DockerBackend: SandboxBackend {
     /// that forwards `host.docker.internal` to the Mac's loopback, so the
     /// proxy listens on 127.0.0.1 only. On Linux the sidecar reaches the
     /// host at the default bridge's gateway, so the proxy listens there and
-    /// accepts only that bridge.
+    /// accepts only that bridge. On Windows, Docker Desktop works as on
+    /// macOS; a Podman machine on WSL 2 can't reach Windows' loopback, so
+    /// the proxy listens on the WSL network's gateway instead (see
+    /// `podmanMachineGateway`).
     public func proxyListen(for plan: NetworkPlan) throws -> ProxyListen {
         let blocked = plan.clientSubnet.map { [$0] } ?? []
         #if os(Linux)
@@ -340,9 +343,115 @@ public struct DockerBackend: SandboxBackend {
         }
         return ProxyListen(bindHost: bridge.gateway, clientSubnets: [subnet], blockedSubnets: blocked)
         #else
+        #if os(Windows)
+        if let wsl = try podmanMachineGateway() {
+            return ProxyListen(bindHost: wsl.gateway, clientSubnets: [wsl.subnet], blockedSubnets: blocked)
+        }
+        #endif
         return ProxyListen(bindHost: "127.0.0.1", clientSubnets: [], blockedSubnets: blocked)
         #endif
     }
+
+    /// The default gateway in `ip -4 route` output and the on-link subnet
+    /// it belongs to: ("172.20.224.1", 172.20.224.0/20) for
+    /// "default via 172.20.224.1 dev eth0" and
+    /// "172.20.224.0/20 dev eth0 proto kernel scope link src 172.20.234.217".
+    /// Tolerates what a Windows console can add: CRLF line ends, a byte
+    /// order mark, tabs.
+    public static func defaultGateway(routes: String) -> (gateway: String, subnet: IPv4Subnet)? {
+        let lines = routes.replacingOccurrences(of: "\u{FEFF}", with: "").split(whereSeparator: \.isNewline)
+            .map { $0.split(whereSeparator: \.isWhitespace).map(String.init) }
+        guard let route = lines.first(where: { $0.first == "default" }), let via = route.firstIndex(of: "via"),
+              via + 1 < route.count, let gateway = IPAddress(route[via + 1]), gateway.asIPv4 != nil else { return nil }
+        let subnet = lines.lazy.compactMap { $0.first.flatMap(IPv4Subnet.init) }.first { $0.prefix > 0 && $0.contains(gateway) }
+        return subnet.map { (route[via + 1], $0) }
+    }
+
+    /// `text` with line breaks, tabs, byte order marks and other control
+    /// characters spelled out, for an error message.
+    static func visible(_ text: String) -> String {
+        text.unicodeScalars.map { c -> String in
+            switch c {
+            case "\n": return "\\n"
+            case "\r": return "\\r"
+            case "\t": return "\\t"
+            case _ where c.value < 0x20 || c.value == 0x7f || c.value == 0xfeff:
+                return "\\u{" + String(c.value, radix: 16) + "}"
+            default: return String(c)
+            }
+        }.joined()
+    }
+
+    /// A path with Windows' separators, for a command to paste into
+    /// PowerShell: Foundation reports the executable's path with `/`.
+    public static func windowsPath(_ path: String) -> String {
+        path.replacingOccurrences(of: "/", with: "\\")
+    }
+
+    #if os(Windows)
+    /// A Podman machine on WSL 2 reaches Windows only through WSL's NAT
+    /// network, at the machine's default gateway (Windows' "vEthernet (WSL)"
+    /// address), which is also what `host.containers.internal` resolves to.
+    /// Windows' 127.0.0.1 is out of reach from there. Returns that gateway
+    /// and the subnet the machine's connections come from, or nil for
+    /// Docker. Throws when the routes can't be read, or when the gateway
+    /// isn't an address on this PC (user-mode networking, where it is
+    /// gvproxy's): a proxy on 127.0.0.1 would be out of the machine's reach.
+    func podmanMachineGateway() throws -> (gateway: String, subnet: IPv4Subnet)? {
+        guard flavor == .podman, let exe = executable else { return nil }
+        let command = "ip -4 route"
+        let out = try ProcessRunner.capture(exe, ["machine", "ssh", command], timeout: 30)
+        guard out.status == 0, !out.timedOut else {
+            let how = out.timedOut ? "didn't finish within 30 seconds" : "exited with \(out.status)"
+            throw MudroomError.backendUnavailable(
+                "couldn't read the Podman machine's network for the proxy: `podman machine ssh \"\(command)\"` \(how) (\(Self.failureDetail(out))). Is the machine running (`podman machine start`)?")
+        }
+        guard let found = Self.defaultGateway(routes: out.stdout) else {
+            let shown = Self.visible(out.stdout)
+            throw MudroomError.backendUnavailable(
+                "couldn't find the Podman machine's default gateway for the proxy in the output of `podman machine ssh \"\(command)\"`: \(shown.isEmpty ? "nothing" : String(shown.prefix(600)))")
+        }
+        do {
+            let bound = try Sock.listen(host: found.gateway, port: 0)
+            Sock.close(bound.0)
+        } catch {
+            throw MudroomError.backendUnavailable(
+                "the Podman machine's gateway, \(found.gateway), isn't an address Mudroom's proxy can listen on (\(error)). Locked mode needs the machine on WSL's own network; with user-mode networking it can't reach Windows (`podman machine set --user-mode-networking=false` turns that off).")
+        }
+        return found
+    }
+
+    /// Node one-liner run in the sidecar: one connection to the proxy.
+    /// Prints "ok", or what went wrong and the address it tried.
+    static let upstreamCheckScript = """
+    require('dns').lookup(process.env.MUDROOM_UPSTREAM_HOST, {family: 4}, (e, a) => {
+      if (e) { console.log(e.code || 'error'); process.exit(0); }
+      const s = require('net').connect({host: a, port: +process.env.MUDROOM_UPSTREAM_PORT});
+      setTimeout(() => { console.log('timeout connecting to ' + a); process.exit(0); }, 5000);
+      s.on('connect', () => { console.log('ok'); process.exit(0); });
+      s.on('error', e => { console.log((e.code || 'error') + ' connecting to ' + a); process.exit(0); });
+    });
+    """
+
+    /// Checks the sidecar reaches the proxy. Windows Firewall drops
+    /// connections from WSL to Windows unless a rule allows them, and the
+    /// sandbox would otherwise see every request time out, with no hint why.
+    func checkUpstream(_ container: String, port: UInt16, _ exe: String) throws {
+        let out = try ProcessRunner.capture(exe, ["exec", container, "node", "-e", Self.upstreamCheckScript], timeout: 30)
+        let result = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        if result == "ok" { return }
+        let why = out.timedOut ? "timeout" : result.isEmpty ? Self.failureDetail(out) : result
+        let program = Self.windowsPath(Bundle.main.executablePath ?? CommandLine.arguments[0])
+        throw MudroomError.backendUnavailable("""
+            the Podman machine can't reach Mudroom's proxy at \(hostAlias):\(port) (\(why)). \
+            Windows Firewall blocks connections from WSL to Windows unless a rule allows them. \
+            Allow Mudroom's proxy once, from an administrator PowerShell:
+              New-NetFirewallRule -DisplayName 'Mudroom proxy' -Direction Inbound -Action Allow -Protocol TCP -Program '\(program)'
+            Locked mode also needs the machine on WSL's own network: it doesn't work with user-mode networking \
+            (`podman machine set --user-mode-networking=false` turns that off).
+            """)
+    }
+    #endif
 
     /// Node one-liner for the sidecar: accept on 3128, pipe each connection
     /// to the host proxy. Half-closes pass through.
@@ -400,6 +509,9 @@ public struct DockerBackend: SandboxBackend {
             }
             let ip = try sidecarAddress(sidecar, network: internalNet, exe)
             try waitForSidecar(sidecar, exe)
+            #if os(Windows)
+            if flavor == .podman { try checkUpstream(sidecar, port: port, exe) }
+            #endif
             return ProxyRoute(host: ip, port: Self.sidecarPort, teardown: teardown)
         } catch {
             teardown()

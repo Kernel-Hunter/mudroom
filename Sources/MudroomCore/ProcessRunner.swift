@@ -57,7 +57,23 @@ public enum ProcessRunner {
         }
         process.standardOutput = outHandle
         process.standardError = errHandle
+        #if os(Windows)
+        // An empty file, not FileHandle.nullDevice: Foundation gives the
+        // child a NUL handle it doesn't mark inheritable, so the child's
+        // stdin is invalid. Most programs never notice, but one that hands
+        // its stdin on fails: `podman machine ssh` stops with "fork/exec
+        // ssh.exe: The handle is invalid".
+        let inURL = tmp.appendingPathComponent("mudroom-in-\(UUID().uuidString)")
+        _ = FileManager.default.createFile(atPath: inURL.path, contents: nil)
+        let inHandle = try FileHandle(forReadingFrom: inURL)
+        defer {
+            try? inHandle.close()
+            try? FileManager.default.removeItem(at: inURL)
+        }
+        process.standardInput = inHandle
+        #else
         process.standardInput = FileHandle.nullDevice
+        #endif
         try start(process)
         let timedOut = LockedBox(false)
         if let timeout {

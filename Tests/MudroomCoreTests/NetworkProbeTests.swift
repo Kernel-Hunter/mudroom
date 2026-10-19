@@ -122,6 +122,20 @@ struct NetworkProbeTests {
         #expect(r == .stuck(seconds: 2) && r.needsRepair && r.summary.contains("stuck"))
     }
 
+    @Test("a network check whose container never finishes fails in time instead of hanging")
+    func stuckCheck() throws {
+        let tmp = try TempDir()
+        let start = Date()
+        do {
+            _ = try NetworkCheck.run(mode: .locked, allowlist: Allowlist(strings: []), backend: HangingBackend(),
+                                     scratch: tmp.path("check"), timeout: 2)
+            Issue.record("the check should have failed")
+        } catch let e as MudroomError {
+            #expect(e.description.contains("within 2 seconds"))
+        }
+        #expect(Date().timeIntervalSince(start) < 15)
+    }
+
     @Test("an unreachable network stops a session before it starts, with the repair hint")
     func errorText() {
         let e = MudroomError.networkUnreachable(NetworkProbe.Result.unreachable(code: "EHOSTUNREACH", proxy: "192.168.128.1:1").summary)
