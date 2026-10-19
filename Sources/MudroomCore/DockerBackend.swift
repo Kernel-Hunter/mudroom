@@ -393,11 +393,10 @@ public struct DockerBackend: SandboxBackend {
     /// network, at the machine's default gateway (Windows' "vEthernet (WSL)"
     /// address), which is also what `host.containers.internal` resolves to.
     /// Windows' 127.0.0.1 is out of reach from there. Returns that gateway
-    /// and the subnet the machine's connections come from; nil for Docker,
-    /// and when the gateway isn't an address on this PC (a machine with
-    /// user-mode networking, where it is gvproxy's). Throws when the
-    /// machine's routes can't be read: the proxy would otherwise listen on
-    /// 127.0.0.1, where the machine can never reach it.
+    /// and the subnet the machine's connections come from, or nil for
+    /// Docker. Throws when the routes can't be read, or when the gateway
+    /// isn't an address on this PC (user-mode networking, where it is
+    /// gvproxy's): a proxy on 127.0.0.1 would be out of the machine's reach.
     func podmanMachineGateway() throws -> (gateway: String, subnet: IPv4Subnet)? {
         guard flavor == .podman, let exe = executable else { return nil }
         let command = "ip -4 route"
@@ -416,7 +415,8 @@ public struct DockerBackend: SandboxBackend {
             let bound = try Sock.listen(host: found.gateway, port: 0)
             Sock.close(bound.0)
         } catch {
-            return nil
+            throw MudroomError.backendUnavailable(
+                "the Podman machine's gateway, \(found.gateway), isn't an address Mudroom's proxy can listen on (\(error)). Locked mode needs the machine on WSL's own network; with user-mode networking it can't reach Windows (`podman machine set --user-mode-networking=false` turns that off).")
         }
         return found
     }
