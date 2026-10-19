@@ -69,6 +69,25 @@ struct DockerBackendTests {
         #expect(DockerBackend.defaultGateway(routes: "") == nil)
     }
 
+    @Test("the gateway parses from output as a Windows console delivers it")
+    func machineGatewayWindowsOutput() {
+        // From the windows-sandbox CI job, with a trailing space on each
+        // line, then the same with CRLF, a byte order mark and tabs.
+        let ci = "default via 172.22.192.1 dev eth0 proto kernel onlink \n172.22.192.0/20 dev eth0 proto kernel scope link src 172.22.204.138 \n"
+        let crlf = "\u{FEFF}default via 172.22.192.1 dev eth0 proto kernel onlink \r\n\r\n172.22.192.0/20\tdev eth0 proto kernel scope link src 172.22.204.138 \r\n"
+        for routes in [ci, crlf, "\r\n" + crlf.replacingOccurrences(of: "\r\n", with: "\r")] {
+            let found = DockerBackend.defaultGateway(routes: routes)
+            #expect(found?.gateway == "172.22.192.1" && found?.subnet == IPv4Subnet("172.22.192.0/20"), "\(DockerBackend.visible(routes))")
+        }
+    }
+
+    @Test("control characters are spelled out in error messages, and the firewall hint uses Windows paths")
+    func messageHelpers() {
+        #expect(DockerBackend.visible("\u{FEFF}a b\r\n\tc\u{1b}[0m") == "\\u{feff}a b\\r\\n\\tc\\u{1b}[0m")
+        #expect(DockerBackend.windowsPath("D:/a/_temp/mudroom-0.2.0-windows-x86_64/mudroom.exe")
+                == #"D:\a\_temp\mudroom-0.2.0-windows-x86_64\mudroom.exe"#)
+    }
+
     @Test("docker and podman network inspect output parse")
     func parseNetworks() {
         let docker = #"[{"Name":"mudroom-internal","Internal":true,"IPAM":{"Config":[{"Subnet":"fd00::/64"},{"Subnet":"172.19.0.0/16","Gateway":"172.19.0.1"}]}}]"#

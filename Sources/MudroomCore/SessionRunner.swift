@@ -146,6 +146,13 @@ public final class NetworkSetup: @unchecked Sendable {
                 route = try backend.attachProxy(port: p.port, plan: plan)
             } catch {
                 p.stop()
+                #if os(Windows)
+                // Where the proxy was, so a connection that never arrives
+                // can be told apart from one the firewall drops.
+                if let e = error as? MudroomError, case .backendUnavailable(let why) = e {
+                    throw MudroomError.backendUnavailable(why + "\n(Mudroom's proxy was listening on \(listen.bindHost ?? "all addresses"):\(p.port).)")
+                }
+                #endif
                 throw error
             }
             teardown.value = route.teardown

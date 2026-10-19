@@ -344,7 +344,7 @@ public struct DockerBackend: SandboxBackend {
         return ProxyListen(bindHost: bridge.gateway, clientSubnets: [subnet], blockedSubnets: blocked)
         #else
         #if os(Windows)
-        if let wsl = podmanMachineGateway() {
+        if let wsl = try podmanMachineGateway() {
             return ProxyListen(bindHost: wsl.gateway, clientSubnets: [wsl.subnet], blockedSubnets: blocked)
         }
         #endif
@@ -356,12 +356,36 @@ public struct DockerBackend: SandboxBackend {
     /// it belongs to: ("172.20.224.1", 172.20.224.0/20) for
     /// "default via 172.20.224.1 dev eth0" and
     /// "172.20.224.0/20 dev eth0 proto kernel scope link src 172.20.234.217".
+    /// Tolerates what a Windows console can add: CRLF line ends, a byte
+    /// order mark, tabs.
     public static func defaultGateway(routes: String) -> (gateway: String, subnet: IPv4Subnet)? {
-        let lines = routes.split(whereSeparator: \.isNewline).map { $0.split(separator: " ").map(String.init) }
+        let lines = routes.replacingOccurrences(of: "\u{FEFF}", with: "").split(whereSeparator: \.isNewline)
+            .map { $0.split(whereSeparator: \.isWhitespace).map(String.init) }
         guard let route = lines.first(where: { $0.first == "default" }), let via = route.firstIndex(of: "via"),
               via + 1 < route.count, let gateway = IPAddress(route[via + 1]), gateway.asIPv4 != nil else { return nil }
         let subnet = lines.lazy.compactMap { $0.first.flatMap(IPv4Subnet.init) }.first { $0.prefix > 0 && $0.contains(gateway) }
         return subnet.map { (route[via + 1], $0) }
+    }
+
+    /// `text` with line breaks, tabs, byte order marks and other control
+    /// characters spelled out, for an error message.
+    static func visible(_ text: String) -> String {
+        text.unicodeScalars.map { c -> String in
+            switch c {
+            case "\n": return "\\n"
+            case "\r": return "\\r"
+            case "\t": return "\\t"
+            case _ where c.value < 0x20 || c.value == 0x7f || c.value == 0xfeff:
+                return "\\u{" + String(c.value, radix: 16) + "}"
+            default: return String(c)
+            }
+        }.joined()
+    }
+
+    /// A path with Windows' separators, for a command to paste into
+    /// PowerShell: Foundation reports the executable's path with `/`.
+    public static func windowsPath(_ path: String) -> String {
+        path.replacingOccurrences(of: "/", with: "\\")
     }
 
     #if os(Windows)
@@ -369,24 +393,44 @@ public struct DockerBackend: SandboxBackend {
     /// network, at the machine's default gateway (Windows' "vEthernet (WSL)"
     /// address), which is also what `host.containers.internal` resolves to.
     /// Windows' 127.0.0.1 is out of reach from there. Returns that gateway
-    /// and the subnet the machine's connections come from, or nil when the
-    /// gateway isn't an address on this PC (no Podman machine, or one with
-    /// user-mode networking).
-    func podmanMachineGateway() -> (gateway: String, subnet: IPv4Subnet)? {
-        guard flavor == .podman, let exe = executable,
-              let out = try? ProcessRunner.capture(exe, ["machine", "ssh", "ip -4 route"], timeout: 30), out.status == 0,
-              let found = Self.defaultGateway(routes: out.stdout),
-              let bound = try? Sock.listen(host: found.gateway, port: 0) else { return nil }
-        Sock.close(bound.0)
+    /// and the subnet the machine's connections come from; nil for Docker,
+    /// and when the gateway isn't an address on this PC (a machine with
+    /// user-mode networking, where it is gvproxy's). Throws when the
+    /// machine's routes can't be read: the proxy would otherwise listen on
+    /// 127.0.0.1, where the machine can never reach it.
+    func podmanMachineGateway() throws -> (gateway: String, subnet: IPv4Subnet)? {
+        guard flavor == .podman, let exe = executable else { return nil }
+        let command = "ip -4 route"
+        let out = try ProcessRunner.capture(exe, ["machine", "ssh", command], timeout: 30)
+        guard out.status == 0, !out.timedOut else {
+            let how = out.timedOut ? "didn't finish within 30 seconds" : "exited with \(out.status)"
+            throw MudroomError.backendUnavailable(
+                "couldn't read the Podman machine's network for the proxy: `podman machine ssh \"\(command)\"` \(how) (\(Self.failureDetail(out))). Is the machine running (`podman machine start`)?")
+        }
+        guard let found = Self.defaultGateway(routes: out.stdout) else {
+            let shown = Self.visible(out.stdout)
+            throw MudroomError.backendUnavailable(
+                "couldn't find the Podman machine's default gateway for the proxy in the output of `podman machine ssh \"\(command)\"`: \(shown.isEmpty ? "nothing" : String(shown.prefix(600)))")
+        }
+        do {
+            let bound = try Sock.listen(host: found.gateway, port: 0)
+            Sock.close(bound.0)
+        } catch {
+            return nil
+        }
         return found
     }
 
     /// Node one-liner run in the sidecar: one connection to the proxy.
+    /// Prints "ok", or what went wrong and the address it tried.
     static let upstreamCheckScript = """
-    const s = require('net').connect({host: process.env.MUDROOM_UPSTREAM_HOST, port: +process.env.MUDROOM_UPSTREAM_PORT});
-    const t = setTimeout(() => { console.log('timeout'); process.exit(0); }, 5000);
-    s.on('connect', () => { console.log('ok'); process.exit(0); });
-    s.on('error', e => { console.log(e.code || 'error'); process.exit(0); });
+    require('dns').lookup(process.env.MUDROOM_UPSTREAM_HOST, {family: 4}, (e, a) => {
+      if (e) { console.log(e.code || 'error'); process.exit(0); }
+      const s = require('net').connect({host: a, port: +process.env.MUDROOM_UPSTREAM_PORT});
+      setTimeout(() => { console.log('timeout connecting to ' + a); process.exit(0); }, 5000);
+      s.on('connect', () => { console.log('ok'); process.exit(0); });
+      s.on('error', e => { console.log((e.code || 'error') + ' connecting to ' + a); process.exit(0); });
+    });
     """
 
     /// Checks the sidecar reaches the proxy. Windows Firewall drops
@@ -397,7 +441,7 @@ public struct DockerBackend: SandboxBackend {
         let result = out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         if result == "ok" { return }
         let why = out.timedOut ? "timeout" : result.isEmpty ? Self.failureDetail(out) : result
-        let program = Bundle.main.executablePath ?? CommandLine.arguments[0]
+        let program = Self.windowsPath(Bundle.main.executablePath ?? CommandLine.arguments[0])
         throw MudroomError.backendUnavailable("""
             the Podman machine can't reach Mudroom's proxy at \(hostAlias):\(port) (\(why)). \
             Windows Firewall blocks connections from WSL to Windows unless a rule allows them. \
