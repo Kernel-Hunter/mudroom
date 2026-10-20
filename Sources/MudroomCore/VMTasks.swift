@@ -35,10 +35,11 @@ public enum AgentLogin {
             handoff.start { url in AuthLinkHandoff.deliver(url) { log($0) } }
         }
         defer { handoff?.stop() }
-        let spec = SandboxSpec(name: "mudroom-login-\(preset.id)-\(UInt16.random(in: 0...0xffff))", image: image,
+        var spec = SandboxSpec(name: "mudroom-login-\(preset.id)-\(UInt16.random(in: 0...0xffff))", image: image,
                                workspace: scratch, command: preset.loginCommand, environmentNames: [],
                                interactive: true, tty: tty, mounts: mounts, environment: env,
                                network: net.plan.vmNetwork)
+        spec.firewall = net.firewall
         let status = try backend.run(spec)
         if status == 0 && !home.hasCredentials && preset.id != "gemini" {
             log("warning: the login finished but no credentials were saved in \(home.hostDirectory.path)")
@@ -68,11 +69,17 @@ public enum NetworkCheck {
         public var matchesExpectation: Bool { outcomes.allSatisfy { $0.expected == nil || $0.expected == $0.connected } }
     }
 
-    static func script(allowed: String, blocked: String, gateway: String?) -> String {
+    /// `hostPort`: a port Mudroom listens on, on all of the host's
+    /// interfaces, for the check; nil probes 7000 instead (often AirPlay
+    /// Receiver on a Mac). `firewall`: also try to remove the VM firewall
+    /// as the sandbox's user.
+    static func script(allowed: String, blocked: String, gateway: String?, hostPort: UInt16? = nil,
+                       firewall: Bool = false) -> String {
         """
         const net = require('net'), dns = require('dns'), dgram = require('dgram');
         const proxy = process.env.HTTPS_PROXY;
         const ALLOWED = \(jsString(allowed)), BLOCKED = \(jsString(blocked)), GATEWAY = \(jsString(gateway ?? ""));
+        const HOSTPORT = \(hostPort ?? 0), FIREWALL = \(firewall);
         const out = [];
         const add = (name, detail, result, connected) => out.push({name, detail, result, connected});
         function tcp(host, port, ms = 5000) {
@@ -121,8 +128,17 @@ public enum NetworkCheck {
           [res, ok] = await tcp('1.1.1.1', 443); add('direct-ipv4', 'TCP 1.1.1.1:443, ignoring the proxy', res, ok === true);
           [res, ok] = await tcp('2606:4700:4700::1111', 443); add('direct-ipv6', 'TCP [2606:4700:4700::1111]:443, ignoring the proxy', res, ok === true);
           [res, ok] = await udpDNS('8.8.8.8'); add('direct-udp', 'UDP DNS query to 8.8.8.8:53', res, ok);
-          if (GATEWAY) { [res, ok] = await tcp(GATEWAY, 7000, 3000);
+          if (GATEWAY && HOSTPORT) { [res, ok] = await tcp(GATEWAY, HOSTPORT, 3000);
+            add('mac-services', `TCP ${GATEWAY}:${HOSTPORT} (a port Mudroom opened on all of the host's interfaces)`, res, ok === true || ok === 'refused'); }
+          else if (GATEWAY) { [res, ok] = await tcp(GATEWAY, 7000, 3000);
             add('mac-services', `TCP ${GATEWAY}:7000 (the host on the sandbox network; macOS often listens on 7000)`, res, ok === true || ok === 'refused'); }
+          if (FIREWALL) {
+            const r = require('child_process').spawnSync('nft', ['flush', 'ruleset'], {encoding: 'utf8'});
+            const msg = r.error ? (r.error.code || String(r.error)) : r.status === 0 ? 'flushed' : ((r.stderr || '').trim().split('\\n')[0] || `exit ${r.status}`);
+            add('firewall-flush', 'nft flush ruleset as the sandbox user', msg, !r.error && r.status === 0);
+            if (GATEWAY && HOSTPORT) { [res, ok] = await tcp(GATEWAY, HOSTPORT, 3000);
+              add('mac-services-after-flush', `TCP ${GATEWAY}:${HOSTPORT} again, after that`, res, ok === true || ok === 'refused'); }
+          }
           // Exit now: a fetch aborted by its timeout can leave its tunnel
           // to the forwarder open (seen with Podman on Windows, where the
           // forwarder can't reach the proxy), and Node would wait for it.
@@ -137,11 +153,13 @@ public enum NetworkCheck {
         return String(arr.dropFirst().dropLast())
     }
 
-    /// Which outcomes should connect in each mode. Reaching the Mac itself is
-    /// reported but not judged: it's a known limitation (see README).
+    /// Which outcomes should connect in each mode. Reaching the host itself
+    /// is judged only behind a VM firewall; otherwise it's a known
+    /// limitation (see README) and only reported.
     static func expectation(_ name: String, _ network: SessionNetwork) -> Bool? {
         switch (network.mode, name) {
-        case (_, "mac-services"): return nil
+        case (_, "mac-services"), (_, "mac-services-after-flush"), (_, "firewall-flush"):
+            return network.guestFirewall == true ? false : nil
         // The runtime's NAT network may have no IPv6 route at all.
         case (.open, "proxy-allowed"), (.open, "proxy-blocked"), (.open, "direct-ipv6"): return nil
         case (.open, _): return true
@@ -174,10 +192,21 @@ public enum NetworkCheck {
         let gateway = [net.plan.proxyHost, (try? backend.hostOnlyNetwork())?.map(\.gateway),
                        (try? backend.defaultNetwork())?.map(\.gateway)]
             .compactMap { $0 }.first { !$0.isEmpty }
+        // Something listening on all of the host's interfaces, as a dev
+        // server bound to 0.0.0.0 would. Not on Windows, where a new
+        // listener can bring up a firewall prompt.
+        #if os(Windows)
+        let listener: HostListener? = nil
+        #else
+        let listener = mode == .open ? nil : try? HostListener()
+        #endif
+        defer { listener?.close() }
         var spec = SandboxSpec(name: "mudroom-check-\(UInt16.random(in: 0...0xffff))", image: image, workspace: scratch,
                                command: ["node", "-e", script(allowed: allowed, blocked: blocked,
-                                                              gateway: mode == .open ? nil : gateway)],
+                                                              gateway: mode == .open ? nil : gateway,
+                                                              hostPort: listener?.port, firewall: net.firewall != nil)],
                                interactive: false, tty: false, environment: net.environment, network: net.plan.vmNetwork)
+        spec.firewall = net.firewall
         // As in NetworkProbe: a stuck runtime would otherwise leave the
         // check waiting for good, with nothing on screen.
         spec.timeout = timeout
@@ -186,6 +215,9 @@ public enum NetworkCheck {
             backend.stop(spec.name)
             throw MudroomError.backendUnavailable(
                 "the network check's container didn't finish within \(Int(timeout)) seconds; \(backend.name) seems stuck (`\(backend.stopHint(spec.name))` stops it if it is still there)")
+        }
+        if net.firewall != nil, let refusal = output.stderr.split(separator: "\n").last(where: { $0.hasPrefix(GuestFirewall.failureMarker) }) {
+            throw MudroomError.backendUnavailable("the firewall inside the VM couldn't be set up: " + refusal.dropFirst(GuestFirewall.failureMarker.count))
         }
         guard let line = output.stdout.split(separator: "\n").last(where: { $0.hasPrefix("MUDROOM_CHECK ") }),
               let arr = try? JSONSerialization.jsonObject(with: Data(line.dropFirst("MUDROOM_CHECK ".count).utf8)) as? [[String: Any]]
@@ -200,4 +232,18 @@ public enum NetworkCheck {
         net.stop()
         return Report(network: net.record, outcomes: outcomes, log: net.proxy?.loggedEntries ?? [])
     }
+}
+
+/// A TCP port open on all of the host's addresses for the network check.
+/// Connections are left in the backlog: a completed handshake is all the
+/// check looks for.
+final class HostListener {
+    let fd: Int32
+    let port: UInt16
+
+    init() throws {
+        (fd, port) = try Sock.listen(host: nil, port: 0)
+    }
+
+    func close() { Sock.close(fd) }
 }

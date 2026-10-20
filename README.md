@@ -208,8 +208,8 @@ The Setup window opens on the first launch. It has four steps:
 1. **VM runtime**: Install runs `brew install container`, and Start starts
    it. The first start also downloads Apple's recommended Linux kernel.
 2. **Agent image**: Build creates `mudroom/agent-base:latest` with Node LTS,
-   git, ripgrep and the agent CLIs (Claude Code, Codex, Gemini CLI, opencode
-   and Aider). It takes a few minutes and about 1.5 GB the first time.
+   git, ripgrep, nftables and the agent CLIs (Claude Code, Codex, Gemini CLI,
+   opencode and Aider). It takes a few minutes and about 1.5 GB the first time.
 3. **VM network**: a quick check that a VM reaches Mudroom's network proxy,
    with a Repair button if it doesn't.
 4. **Sign in**: "Use my Claude account" opens your browser; approve there and
@@ -532,9 +532,12 @@ Each project has a mode:
   `HTTP_PROXY`/`HTTPS_PROXY` pointing at it. The proxy handles `CONNECT`
   (HTTPS) and plain HTTP, lets through only allowlisted hosts, and writes one
   line per connection (host, port, allowed or blocked, bytes, duration) to
-  the session's `network.jsonl`.
+  the session's `network.jsonl`. With the apple backend, a firewall inside
+  the VM also limits it to that one port on the Mac (see [The firewall in
+  the VM](#the-firewall-in-the-vm)).
 - **Open**. Normal outbound access. Nothing is filtered or logged.
-- **Offline**. The host-only network with no proxy: no internet at all.
+- **Offline**. The host-only network with no proxy: no internet at all, and
+  with the apple backend no connections to the Mac either.
 
 The allowlist is the agent's own hosts plus whatever you add:
 
@@ -570,8 +573,10 @@ The proxy is strict about what it accepts:
 ### What the isolation stops
 
 `mudroom network check` starts a sandbox with a project's settings and tries
-to get out. This is its output on macOS 27 with `container` 1.5.0, locked
-mode:
+to get out. It also opens a port on all of the Mac's interfaces, as a dev
+server bound to `0.0.0.0` would, and tries to reach it from the VM, then tries
+to remove the VM's firewall as the sandbox's user and reach it again. This is
+its output on macOS 27 with `container` 1.5.0, locked mode:
 
 ```
 ok        got through  CONNECT api.anthropic.com:443 via proxy: HTTP/1.1 200 Connection Established
@@ -579,16 +584,51 @@ ok        got through  HTTPS GET https://api.anthropic.com/ (proxy variables, if
 ok        stopped      CONNECT example.com:443 via proxy: HTTP/1.1 403 Forbidden
 ok        stopped      HTTPS GET https://example.com/ (proxy variables, if set): Request was cancelled.
 ok        stopped      resolve example.com in the sandbox: EAI_AGAIN
-ok        stopped      TCP 1.1.1.1:443, ignoring the proxy: timeout
+ok        stopped      TCP 1.1.1.1:443, ignoring the proxy: EHOSTUNREACH
 ok        stopped      TCP [2606:4700:4700::1111]:443, ignoring the proxy: ENETUNREACH
 ok        stopped      UDP DNS query to 8.8.8.8:53: no reply
-note      got through  TCP 192.168.128.1:7000 (the host on the sandbox network; macOS often listens on 7000): connected
+ok        stopped      TCP 192.168.128.1:50817 (a port Mudroom opened on all of the host's interfaces): EHOSTUNREACH
+ok        stopped      nft flush ruleset as the sandbox user: Error: Could not process rule: Operation not permitted
+ok        stopped      TCP 192.168.128.1:50817 again, after that: EHOSTUNREACH
 ```
 
 A program in the VM that ignores the proxy settings, or opens raw sockets,
-gets nowhere: no DNS, no route over IPv4, IPv6 or UDP. Offline mode stops
-all of these, including the proxy lines; only the last line (the Mac itself)
-still gets through. Run the check on your own machine before relying on it.
+gets nowhere: no DNS, no route over IPv4, IPv6 or UDP, and no other port on
+the Mac. Offline mode stops all of these, including the proxy lines. Run the
+check on your own machine before relying on it. `--image` runs it in another
+image (it needs `node`).
+
+### The firewall in the VM
+
+The host-only network's gateway is the Mac itself, so without more than the
+network, a VM could connect to anything on the Mac that listens on all
+interfaces: AirPlay Receiver on port 7000, a dev server bound to `0.0.0.0`, a
+database. With the apple backend, locked and offline sessions (and the
+network check, the pre-session probe and `agent login`) close that:
+
+- The sandbox starts as root with one added capability, `CAP_NET_ADMIN`, in a
+  small shell script instead of the agent.
+- The script loads an nftables table, `inet mudroom`: outgoing, only
+  loopback and TCP to the proxy's address and port are allowed (in offline
+  mode, only loopback), and everything else, IPv4 and IPv6, is rejected.
+  Incoming, only loopback and replies to those connections are allowed.
+- It checks the table is there, then runs the image's entrypoint and the
+  agent through `setpriv` as the image's user (`node` in Mudroom's image),
+  with no capabilities, an empty capability bounding set and
+  `no_new_privs`. Nothing the agent starts, setuid programs included, can get
+  `CAP_NET_ADMIN` back, so it can't change or remove the rules.
+- If `nft` or `setpriv` is missing, or the rules don't load, the script
+  stops with a `mudroom-firewall:` message and exit status 125, and the agent
+  never runs. Before a locked session, the network probe runs behind the same
+  firewall, so an image that can't set it up stops the session before it
+  starts.
+
+Mudroom's image has `nftables`, and `setpriv` comes with util-linux. Images
+built by Mudroom 0.2.1 or earlier have no `nftables`: Setup and `mudroom
+setup` report them as built by an older Mudroom, and `mudroom image build`
+rebuilds them. A custom image needs `nft`, `setpriv` and `/bin/sh` for locked
+and offline mode. The Docker and Podman backends don't use this firewall
+(see [Docker and Podman](#docker-and-podman)).
 
 If your `container` version can't create host-only networks, locked mode
 falls back to the normal NAT network with the proxy variables set. The
@@ -738,8 +778,10 @@ ok        stopped      UDP DNS query to 8.8.8.8:53: no reply
 note      stopped      TCP 172.18.0.1:7000 (the host on the sandbox network; macOS often listens on 7000): ENETUNREACH
 ```
 
-Unlike the VM backend, the last line is stopped too: the internal network
-has no host address, so services on the host aren't reachable.
+The last line is stopped here by the network itself: the internal network
+has no host address, so services on the host aren't reachable, and no
+firewall inside the container is needed. (This output is from before the
+check opened a port of its own; it now probes that port instead of 7000.)
 
 ### How strong is the isolation
 
@@ -892,14 +934,20 @@ If your project is a git repo and you're happy reviewing with git, Docker Sandbo
 
 ## Limitations
 
-- **With the apple backend, the VM can reach services on your Mac.** The
-  host-only network's gateway is the Mac itself, so anything listening on all
-  interfaces (AirPlay Receiver on port 7000, a dev server bound to `0.0.0.0`,
-  a database) is reachable from the VM. `network check` reports this. Bind
-  local services to `127.0.0.1`, or turn off the ones you don't need. Closing
-  this needs packet filtering that neither `container` nor Mudroom offers
-  yet. The Docker backend doesn't have this gap (see [Docker and
-  Podman](#docker-and-podman)), but has a weaker boundary on Linux.
+- **With the apple backend, the Mac's own services are blocked by a firewall
+  inside the VM, not by the network.** In locked and offline mode the VM can
+  reach only the proxy's port on the Mac (see [The firewall in the
+  VM](#the-firewall-in-the-vm)), and `network check` tests that. The rules
+  live in the VM's kernel and the agent can't change them, but anything on
+  your Mac that can run `container exec` (any process running as you) can
+  get a root shell in the VM and remove them, just as it could stop the VM. The proxy
+  itself is still reachable, and through `host.mudroom.internal` it connects
+  to Ollama and LM Studio on the Mac when local models are on. In open mode
+  nothing is filtered, so the VM can reach services listening on all of the
+  Mac's interfaces. With Docker, the internal network has no address on the
+  host, so there is nothing to filter, but containers have a weaker boundary
+  on Linux. A Podman network may have one; `network check` shows whether
+  the host is reachable.
 - **While a session runs, its tokens and keys are on disk in plain text.**
   Apple's `container` keeps the session's environment in a 0644
   `config.json`, and Docker shows it in `docker inspect`. See [How secrets

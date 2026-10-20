@@ -10,8 +10,10 @@ public enum AgentBaseImage {
 # Build with `mudroom image build` (tags it mudroom/agent-base:latest).
 FROM docker.io/library/node:lts-slim
 
+# nftables: locked and offline sessions load a firewall in the VM before the
+# agent starts (see GuestFirewall.swift). setpriv comes with util-linux.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends git ripgrep ca-certificates less procps \
+ && apt-get install -y --no-install-recommends git ripgrep ca-certificates less procps nftables \
  && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli opencode-ai \

@@ -84,14 +84,18 @@ public struct SessionNetwork: Codable, Sendable, Equatable {
     public var proxy: String?
     /// VM network name; nil means the runtime's default (NAT) network.
     public var vmNetwork: String?
+    /// True if a firewall inside the VM allowed only the proxy (see
+    /// `GuestFirewall`). nil in sessions from before it existed.
+    public var guestFirewall: Bool?
 
     public init(mode: NetworkMode, enforcement: NetworkEnforcement, allowlist: [String] = [],
-                proxy: String? = nil, vmNetwork: String? = nil) {
+                proxy: String? = nil, vmNetwork: String? = nil, guestFirewall: Bool? = nil) {
         self.mode = mode
         self.enforcement = enforcement
         self.allowlist = allowlist
         self.proxy = proxy
         self.vmNetwork = vmNetwork
+        self.guestFirewall = guestFirewall
     }
 }
 

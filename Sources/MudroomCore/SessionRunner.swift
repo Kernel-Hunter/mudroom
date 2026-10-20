@@ -125,6 +125,9 @@ public final class NetworkSetup: @unchecked Sendable {
     public let record: SessionNetwork
     /// Proxy variables for the VM (empty unless locked).
     public let environment: [String: String]
+    /// Rules for inside the VM: set for locked and offline runs on backends
+    /// that use them. A sandbox started from this setup must carry them.
+    public let firewall: GuestFirewall?
     private let teardown = LockedBox<(@Sendable () -> Void)?>(nil)
 
     public init(mode: NetworkMode, allowlist: Allowlist, backend: SandboxBackend, logURL: URL?,
@@ -160,10 +163,22 @@ public final class NetworkSetup: @unchecked Sendable {
             let url = "http://\(route.host):\(route.port)"
             record.proxy = url
             environment = NetworkPlan.proxyEnvironment(url)
+            if backend.usesGuestFirewall {
+                guard let f = GuestFirewall(proxyHost: route.host, port: route.port) else {
+                    route.teardown?()
+                    p.stop()
+                    throw MudroomError.backendUnavailable("can't firewall the VM: the proxy address \(route.host) isn't an IP address")
+                }
+                firewall = f
+            } else {
+                firewall = nil
+            }
         } else {
             proxy = nil
             environment = [:]
+            firewall = backend.usesGuestFirewall && mode != .open ? .closed : nil
         }
+        if firewall != nil { record.guestFirewall = true }
         self.record = record
     }
 
@@ -178,6 +193,7 @@ public final class NetworkSetup: @unchecked Sendable {
         switch record.mode {
         case .locked:
             var lines = ["network: locked (\(record.enforcement.title)), \(plan.allowlist.patterns.count) allowed hosts, proxy \(record.proxy ?? "-")"]
+            if firewall != nil { lines.append("firewall: inside the VM, only the proxy port on this Mac is reachable") }
             if record.enforcement == .advisory {
                 lines.append("warning: this runtime can't give the sandbox a host-only network, so a program that ignores the proxy settings can still connect directly")
             }
@@ -185,7 +201,8 @@ public final class NetworkSetup: @unchecked Sendable {
         case .open:
             return ["network: open. The VM has normal internet access and nothing is filtered or logged."]
         case .offline:
-            return ["network: offline (no internet)"]
+            return firewall != nil ? ["network: offline (no internet, and a firewall in the VM blocks this Mac too)"]
+                                   : ["network: offline (no internet)"]
         }
     }
 }
@@ -250,6 +267,7 @@ public struct SessionRunner {
             let probe = NetworkProbe.check(backend: backend, store: store, image: s.image)
             if !probe.isOK {
                 if probe.needsRepair { throw MudroomError.networkUnreachable(probe.summary) }
+                if case .firewall = probe { throw MudroomError.backendUnavailable(probe.summary) }
                 log("network check: \(probe.summary)")
             }
         }
@@ -301,6 +319,7 @@ public struct SessionRunner {
             environmentNames: passNames, interactive: true, tty: options.tty,
             cpus: options.cpus, memory: options.memory, mounts: mounts, environment: env, network: net.plan.vmNetwork)
         var runSpec = spec
+        runSpec.firewall = net.firewall
         runSpec.secretEnvironment = secrets
         let log = self.log
         handoff?.start { url in AuthLinkHandoff.deliver(url) { log($0) } }
@@ -349,6 +368,9 @@ public struct SessionRunner {
         do {
             status = try backend.run(runSpec)
             runnerKilled = status == 128 + SIGKILL
+            if status == GuestFirewall.failureStatus && runSpec.firewall != nil {
+                log("the agent may not have started: exit status \(status) is what the VM firewall setup returns when it fails (see the message above)")
+            }
         } catch {
             _ = snapshotter?.finish()
             if runsSession {

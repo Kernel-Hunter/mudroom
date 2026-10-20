@@ -28,6 +28,9 @@ public enum NetworkProbe {
         case failed(String)
         /// The probe VM didn't even finish: the runtime itself is stuck.
         case stuck(seconds: Int)
+        /// The firewall inside the VM couldn't be set up (see
+        /// `GuestFirewall`), so a session must not start.
+        case firewall(String)
 
         public var isOK: Bool { if case .ok = self { true } else { false } }
 
@@ -47,6 +50,7 @@ public enum NetworkProbe {
             case .refused(let p): "the Mac refused the VM's connection to \(p); a firewall may be blocking Mudroom"
             case .failed(let why): "the check couldn't run: \(why)"
             case .stuck(let s): "the check's VM didn't finish within \(s) seconds; the VM runtime seems stuck"
+            case .firewall(let why): "the firewall inside the VM couldn't be set up: \(why)"
             }
         }
     }
@@ -74,6 +78,9 @@ public enum NetworkProbe {
             return .failed("the check VM didn't finish within \(Int(timeout)) seconds; the VM runtime may be stuck (`container list` shows what it is running)")
         }
         let line = (out.stdout + "\n" + out.stderr).split(separator: "\n").last { $0.hasPrefix(marker) }
+        if line == nil, let refusal = out.stderr.split(separator: "\n").last(where: { $0.hasPrefix(GuestFirewall.failureMarker) }) {
+            return .firewall(String(refusal.dropFirst(GuestFirewall.failureMarker.count)))
+        }
         guard let line else {
             let detail = (out.stderr + out.stdout).trimmingCharacters(in: .whitespacesAndNewlines)
             return .failed(detail.isEmpty ? "exit status \(out.status)" : String(detail.suffix(400)))
@@ -105,6 +112,9 @@ public enum NetworkProbe {
             var spec = SandboxSpec(name: "mudroom-probe-\(UInt16.random(in: 0...0xffff))", image: image, workspace: scratch,
                                    command: ["node", "-e", script(host: host, port: UInt16(port))],
                                    interactive: false, tty: false, environment: net.environment, network: net.plan.vmNetwork)
+            // The same firewall a session gets: a probe that passes has
+            // also shown the image can set it up.
+            spec.firewall = net.firewall
             // A wedged runtime can leave `container run` waiting forever,
             // with setup (or a session about to start) silent all along.
             spec.timeout = timeout
