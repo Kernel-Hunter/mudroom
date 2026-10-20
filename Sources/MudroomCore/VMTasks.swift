@@ -35,10 +35,11 @@ public enum AgentLogin {
             handoff.start { url in AuthLinkHandoff.deliver(url) { log($0) } }
         }
         defer { handoff?.stop() }
-        let spec = SandboxSpec(name: "mudroom-login-\(preset.id)-\(UInt16.random(in: 0...0xffff))", image: image,
+        var spec = SandboxSpec(name: "mudroom-login-\(preset.id)-\(UInt16.random(in: 0...0xffff))", image: image,
                                workspace: scratch, command: preset.loginCommand, environmentNames: [],
                                interactive: true, tty: tty, mounts: mounts, environment: env,
                                network: net.plan.vmNetwork)
+        spec.firewall = net.firewall
         let status = try backend.run(spec)
         if status == 0 && !home.hasCredentials && preset.id != "gemini" {
             log("warning: the login finished but no credentials were saved in \(home.hostDirectory.path)")
@@ -178,6 +179,7 @@ public enum NetworkCheck {
                                command: ["node", "-e", script(allowed: allowed, blocked: blocked,
                                                               gateway: mode == .open ? nil : gateway)],
                                interactive: false, tty: false, environment: net.environment, network: net.plan.vmNetwork)
+        spec.firewall = net.firewall
         // As in NetworkProbe: a stuck runtime would otherwise leave the
         // check waiting for good, with nothing on screen.
         spec.timeout = timeout

@@ -37,6 +37,10 @@ public struct SandboxSpec: Sendable, Equatable {
     public var secretEnvironment: [String: String] = [:]
     /// For `capture`: stop the sandbox after this many seconds.
     public var timeout: TimeInterval?
+    /// Rules to load inside the VM before the command starts (backends with
+    /// `usesGuestFirewall`). The command then runs without root and without
+    /// capabilities; if the rules can't be loaded it doesn't run at all.
+    public var firewall: GuestFirewall?
 
     /// Every name passed with `--env NAME`.
     public var passedNames: [String] {
@@ -117,6 +121,10 @@ public struct ProxyRoute: Sendable {
 public protocol SandboxBackend: Sendable {
     /// "apple-container", "docker" or "podman".
     var name: String { get }
+    /// True if locked and offline sandboxes get a `GuestFirewall`: the
+    /// sandbox network reaches the host, and only rules inside the VM keep
+    /// it to the proxy.
+    var usesGuestFirewall: Bool { get }
     /// Throws `MudroomError.backendUnavailable` with a human-readable reason.
     func checkAvailable() throws
     /// Runs the agent attached to this terminal and returns its exit status.
@@ -161,6 +169,7 @@ extension SandboxBackend {
         return ProxyRoute(host: host, port: port)
     }
 
+    public var usesGuestFirewall: Bool { false }
     public func isRunning(_ name: String) -> Bool { false }
     public func stop(_ name: String) {}
     public func stopHint(_ name: String) -> String { "stop the container \(name)" }
@@ -227,6 +236,9 @@ public struct AppleContainerBackend: SandboxBackend {
 
     public static let defaultImage = AgentBaseImage.tag
 
+    /// The host-only network's gateway is the Mac itself.
+    public var usesGuestFirewall: Bool { true }
+
     public func checkAvailable() throws {
         guard let exe = executable else {
             throw MudroomError.backendUnavailable(
@@ -253,9 +265,16 @@ public struct AppleContainerBackend: SandboxBackend {
     }
 
     /// The exact `container run` arguments for a spec. Kept separate so it can
-    /// be unit tested without a VM.
-    public static func runArguments(for spec: SandboxSpec) -> [String] {
+    /// be unit tested without a VM. A spec with a firewall needs the image's
+    /// config (`imageConfig`; without it the command runs as root, still
+    /// without capabilities): the sandbox then starts as root with
+    /// CAP_NET_ADMIN in `/bin/sh`, loads the rules, and runs what the image
+    /// would have run as the image's user (see `GuestFirewall`).
+    public static func runArguments(for spec: SandboxSpec, image: GuestFirewall.ImageConfig? = nil) -> [String] {
         var args = ["run", "--rm", "--name", spec.name]
+        if spec.firewall != nil {
+            args += ["--user", "0:0", "--cap-add", "CAP_NET_ADMIN", "--entrypoint", "/bin/sh"]
+        }
         if spec.interactive { args.append("--interactive") }
         if spec.tty { args.append("--tty") }
         args += ["--mount", "type=bind,source=\(spec.workspace.path),target=\(spec.guestWorkspace)"]
@@ -275,13 +294,35 @@ public struct AppleContainerBackend: SandboxBackend {
         if let cpus = spec.cpus { args += ["--cpus", String(cpus)] }
         if let memory = spec.memory { args += ["--memory", memory] }
         args.append(spec.image)
-        args += spec.command
+        if let firewall = spec.firewall {
+            args += firewall.arguments(image: image ?? .init(), command: spec.command)
+        } else {
+            args += spec.command
+        }
         return args
+    }
+
+    /// `runArguments`, reading the image's config first when the spec has
+    /// a firewall. Throws rather than start a locked sandbox without one.
+    func arguments(for spec: SandboxSpec) throws -> [String] {
+        guard spec.firewall != nil else { return Self.runArguments(for: spec) }
+        guard let config = imageConfig(spec.image) else {
+            throw MudroomError.backendUnavailable(
+                "couldn't read the user and entrypoint of \(spec.image) (`container image inspect \(spec.image)`), which Mudroom needs to start it behind the VM firewall. Build or pull the image first.")
+        }
+        return Self.runArguments(for: spec, image: config)
+    }
+
+    /// The image's user, entrypoint and CMD, or nil if it isn't here.
+    public func imageConfig(_ tag: String) -> GuestFirewall.ImageConfig? {
+        guard let exe = executable, let out = try? ProcessRunner.capture(exe, ["image", "inspect", tag], timeout: 60),
+              out.status == 0 else { return nil }
+        return GuestFirewall.parseImageConfig(Data(out.stdout.utf8))
     }
 
     public func run(_ spec: SandboxSpec) throws -> Int32 {
         try checkAvailable()
-        return try ProcessRunner.runAttached(executable!, Self.runArguments(for: spec), environment: spec.secretEnvironment)
+        return try ProcessRunner.runAttached(executable!, arguments(for: spec), environment: spec.secretEnvironment)
     }
 
     public func isRunning(_ name: String) -> Bool {
@@ -353,7 +394,7 @@ public struct AppleContainerBackend: SandboxBackend {
 
     public func capture(_ spec: SandboxSpec) throws -> CapturedOutput {
         try checkAvailable()
-        return try ProcessRunner.capture(executable!, ["run", "--progress", "none"] + Self.runArguments(for: spec).dropFirst(),
+        return try ProcessRunner.capture(executable!, ["run", "--progress", "none"] + arguments(for: spec).dropFirst(),
                                          environment: spec.secretEnvironment, timeout: spec.timeout)
     }
 
