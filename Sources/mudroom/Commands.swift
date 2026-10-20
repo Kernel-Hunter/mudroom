@@ -248,7 +248,9 @@ struct NetworkCommand: ParsableCommand {
             abstract: "Start a sandbox with a project's network settings and try to get out.",
             discussion: """
             Tries an allowed and a blocked host through the proxy, then DNS, direct \
-            TCP (IPv4 and IPv6) and UDP around it, and reports what connected.
+            TCP (IPv4 and IPv6) and UDP around it, and a port Mudroom opens on all of \
+            this computer's interfaces, and reports what connected. Behind the VM \
+            firewall it also tries to remove the firewall as the sandbox's user.
             """)
         @OptionGroup var where_: ProjectOption
         @Option(help: "Agent whose default hosts to include.")
@@ -257,6 +259,8 @@ struct NetworkCommand: ParsableCommand {
         var mode: NetworkMode?
         @Option(help: "A host that should be blocked.")
         var blocked: String = "example.com"
+        @Option(help: "Container image to run the check in (it needs node).")
+        var image: String = AgentBaseImage.tag
         @OptionGroup var backendOptions: BackendOptions
 
         func run() throws {
@@ -270,7 +274,7 @@ struct NetworkCommand: ParsableCommand {
                 print("checking \(m.rawValue) network with \(backend.name)...")
                 fflush(nil)
                 let report = try NetworkCheck.run(mode: m, allowlist: config.allowlist(agent: AgentPreset.find(agent)?.id),
-                                                  backend: backend, blocked: blocked, scratch: scratch)
+                                                  backend: backend, image: image, blocked: blocked, scratch: scratch)
                 print("mode \(report.network.mode.rawValue) (\(report.network.enforcement.title))\(report.network.proxy.map { ", proxy \($0)" } ?? "")\n")
                 for o in report.outcomes {
                     let got = o.connected ? "got through" : "stopped    "
@@ -283,10 +287,16 @@ struct NetworkCommand: ParsableCommand {
                 }
                 if report.outcomes.contains(where: { $0.name == "mac-services" && $0.connected }) {
                     if backend.name == "apple-container" {
-                    print("\nnote: the VM can reach services on this Mac that listen on all interfaces (the host-only network's gateway is the Mac).")
-                } else {
-                    print("\nnote: the sandbox can reach the internal network's gateway. On Linux that is the host itself, so services listening on all interfaces are reachable; with Docker Desktop or a Podman VM it is the runtime's VM.")
-                }
+                        print("\nnote: the VM can reach services on this Mac that listen on all interfaces (the host-only network's gateway is the Mac).")
+                    } else {
+                        print("\nnote: the sandbox can reach the internal network's gateway. On Linux that is the host itself, so services listening on all interfaces are reachable; with Docker Desktop or a Podman VM it is the runtime's VM.")
+                    }
+                } else if report.network.guestFirewall == true {
+                    if let proxy = report.network.proxy {
+                        print("\nA firewall inside the VM lets it connect only to the proxy (\(proxy)). Other ports on this Mac and other VMs are blocked, and the sandbox's user can't remove the firewall.")
+                    } else {
+                        print("\nA firewall inside the VM blocks every connection out of it, this Mac and other VMs included, and the sandbox's user can't remove it.")
+                    }
                 }
                 if !report.matchesExpectation { throw ExitCode(3) }
             } catch let e as ExitCode { throw e } catch { fail(error) }

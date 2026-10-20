@@ -153,6 +153,19 @@ struct GuestFirewallTests {
         #expect(!r.isOK && !r.needsRepair && r.summary.contains("firewall"))
     }
 
+    @Test("the network check judges reaching the host only behind the firewall")
+    func checkExpectations() {
+        var n = SessionNetwork(mode: .locked, enforcement: .enforced)
+        #expect(NetworkCheck.expectation("mac-services", n) == nil)
+        n.guestFirewall = true
+        for name in ["mac-services", "firewall-flush", "mac-services-after-flush"] {
+            #expect(NetworkCheck.expectation(name, n) == false)
+        }
+        let s = NetworkCheck.script(allowed: "a.example", blocked: "b.example", gateway: "192.168.128.1", hostPort: 40001, firewall: true)
+        #expect(s.contains("HOSTPORT = 40001, FIREWALL = true"))
+        #expect(s.contains("'flush', 'ruleset'"))
+    }
+
     @Test("sessions recorded before the firewall still load")
     func oldRecord() throws {
         let old = #"{"mode":"locked","enforcement":"enforced","allowlist":[],"proxy":"http://192.168.128.1:1"}"#
