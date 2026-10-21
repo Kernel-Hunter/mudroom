@@ -111,7 +111,7 @@ footer { padding: 36px 0 56px; color: var(--muted); font-size: 14px; border-top:
     <div class="steps">
       <div class="card"><h3>Clone</h3><p>An APFS copy-on-write clone of the project, untracked and ignored files included. It costs no disk until files change. Your real folder is never mounted.</p></div>
       <div class="card"><h3>Boot</h3><p>A Linux micro-VM per session with Apple's container runtime, with only the clone inside.</p></div>
-      <div class="card"><h3>Allowlist</h3><p>No DNS and no route out. The only exit is a proxy on your Mac that allows the agent's API hosts plus the ones you add, and logs every connection.</p></div>
+      <div class="card"><h3>Allowlist</h3><p>No DNS and no route out. The only exit is a proxy on your Mac that allows the agent's API hosts plus the ones you add, and logs every connection. A firewall inside the VM blocks every other port on your Mac, and the agent can't turn it off.</p></div>
       <div class="card"><h3>Review</h3><p>Read the diff like a pull request. Apply everything, some files or single hunks. Any apply can be undone.</p></div>
     </div>
   </section>
