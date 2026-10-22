@@ -273,8 +273,23 @@ and follows progress through `session.json`, which `mudroom start` keeps up
 to date.
 
 The review app is macOS only. Elsewhere, `mudroom review <session>` is a
-basic terminal review screen (toggle files, read diffs, apply the selection),
-next to `mudroom diff`, `hunks` and `apply`.
+terminal review screen: toggle files, read diffs, pick single hunks and apply
+the selection. Its keys:
+
+- File list: up/down or j/k move, space toggles a file, a toggles all, enter
+  opens the file, x applies the selection after a y/N prompt, q quits.
+- A modified text file opens as numbered hunks with a checkbox each: j/k or
+  up/down move between hunks, space toggles the one under the cursor, a and n
+  select all or none of them, b/f page, x applies, q or esc goes back to the
+  list. A file with only some hunks selected shows `[~]` in the list, and
+  hunks applied earlier show `[=]`.
+- Other files (added, deleted, binary, mode or symlink changes, files over
+  4 MB) open as a plain diff and are applied whole: up/down scroll, space/b
+  page, q back.
+
+Whole files and selected hunks go into the project in one apply, so one
+`mudroom undo` takes all of it back. `mudroom diff`, `hunks` and `apply` do
+the same from scripts.
 
 ## Command line
 
@@ -283,7 +298,7 @@ next to `mudroom diff`, `hunks` and `apply`.
 mudroom run ~/code/myapp -- claude --dangerously-skip-permissions
 
 # Review.
-mudroom review last             # terminal review: space toggles, enter shows the diff, x applies
+mudroom review last             # terminal review: space toggles, enter shows the diff or hunks, x applies
 mudroom diff last --stat
 mudroom diff last
 mudroom network log last        # what the VM connected to, and what was blocked
@@ -964,8 +979,9 @@ If your project is a git repo and you're happy reviewing with git, Docker Sandbo
 - Snapshots skip unchanged trees by comparing file size, mode and mtime. An
   edit that keeps both size and mtime the same doesn't trigger a snapshot on
   its own. The review diff always compares content.
-- No review app on Linux or Windows. `mudroom review` covers files and
-  diffs; per-hunk applies go through `mudroom hunks` and `apply --hunks`.
+- No review app on Linux or Windows. `mudroom review` is a terminal screen
+  for files, diffs and single hunks; `mudroom hunks` and `apply --hunks` are
+  the scriptable way to apply hunks.
 - On Windows, files have no permission bits to review, Claude sign-in
   through the host's `claude` CLI isn't available yet, and clones are full
   copies unless the project is on ReFS. See [Windows](#windows-1).

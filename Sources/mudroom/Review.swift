@@ -15,11 +15,14 @@ import MudroomCore
 /// Plain ANSI escapes, no curses.
 struct Review: ParsableCommand {
     static let configuration = CommandConfiguration(
-        abstract: "Review a session in the terminal: toggle files, read diffs, apply the selection.",
+        abstract: "Review a session in the terminal: toggle files and hunks, read diffs, apply the selection.",
         discussion: """
         Keys: up/down (or j/k) move, space toggles, a toggles all, enter shows the diff, \
         x applies the selected paths (after a y/N prompt), q quits. Conflicting paths \
-        start unselected. For per-hunk applies use `mudroom hunks` and `apply --hunks`.
+        start unselected. For a modified text file the diff is split into hunks: j/k \
+        move between them, space toggles one, a/n select all or none, q goes back. A \
+        file with only some hunks selected shows [~] and is applied hunk by hunk. \
+        `mudroom hunks` and `apply --hunks` do the same from scripts.
         """)
 
     @Argument(help: "Session id, unique prefix, or 'last'.")
@@ -70,13 +73,33 @@ struct Review: ParsableCommand {
             case .quit:
                 return
             case .openDiff(let i):
-                do { state.showDiff(try renderer.renderOne(state.items[i].change)) } catch { state.message = "\(error)" }
-            case .apply(let paths):
+                do {
+                    let change = state.items[i].change
+                    // Hunk by hunk where the app allows it: modified text
+                    // files under the size limit, as the Applier numbers them.
+                    if let hunks = state.items[i].hunks {
+                        state.showHunks(hunks)
+                    } else if change.kind == .modified,
+                              case .text(let hunks, true) = try ReviewSnapshot.content(for: change, before: handle.base, after: handle.work, applier: applier),
+                              !hunks.isEmpty {
+                        state.showHunks(hunks, applied: try applier.appliedHunks(for: change, hunks: hunks))
+                    } else {
+                        state.showDiff(try renderer.renderOne(change))
+                    }
+                } catch { state.message = "\(error)" }
+            case .apply(let paths, let hunks):
                 do {
                     try SessionGuard.ensureIdle(handle)
-                    let report = try applier.apply(paths: paths, reviewed: reviewed)
+                    // One call, so one rollback bundle and one `mudroom undo`.
+                    let report = try applier.apply(paths: paths, hunks: hunks, reviewed: reviewed)
                     let conflicts = Dictionary(report.conflicts.map { ($0.path, $0.reason) }) { a, _ in a }
-                    state.markApplied(report.applied + report.alreadyApplied, conflicts: conflicts)
+                    // Hunks now in the project, for files applied in part.
+                    var nowApplied: [String: Set<Int>] = [:]
+                    for path in hunks.keys {
+                        guard let item = state.items.first(where: { $0.path == path }) else { continue }
+                        nowApplied[path] = (try? applier.appliedHunks(for: item.change, hunks: item.hunks)) ?? hunks[path]
+                    }
+                    state.markApplied(report.applied + report.alreadyApplied, conflicts: conflicts, hunks: nowApplied)
                     if !report.applied.isEmpty { try handle.setStatus(.applied) }
                     var parts = ["applied \(report.applied.count)"]
                     if !report.conflicts.isEmpty { parts.append("\(report.conflicts.count) conflict(s)") }
@@ -92,12 +115,19 @@ struct Review: ParsableCommand {
     func draw(_ term: Terminal, state: TerminalReview, title: String, cols: Int, rows: Int, bodyHeight: Int) {
         // Home, then overwrite each line and clear its tail: no flicker.
         var out = "\u{1b}[H"
-        let selected = state.selectedPaths.count
+        let selected = state.selectedCount
+        let partial = state.selectedHunks.count
         let header: String
-        if case .diff = state.mode, let path = state.items.indices.contains(state.cursor) ? state.items[state.cursor].path : nil {
-            header = "\(title)  \(TextLines.visible(path))"
-        } else {
-            header = "\(title)  \(state.items.count) changes, \(selected) selected"
+        let current = state.items.indices.contains(state.cursor) ? state.items[state.cursor] : nil
+        switch (state.mode, current) {
+        case (.diff, let item?):
+            header = "\(title)  \(TextLines.visible(item.path))"
+        case (.hunks(_, _, let hunk, _), let item?):
+            let chosen = item.selectedHunks.intersection(item.openHunks).count
+            header = "\(title)  \(TextLines.visible(item.path))  hunk \(hunk + 1)/\(item.hunks?.count ?? 0), \(chosen) selected"
+                + (item.appliedHunks.isEmpty ? "" : ", \(item.appliedHunks.count) applied")
+        default:
+            header = "\(title)  \(state.items.count) changes, \(selected) selected" + (partial > 0 ? " (\(partial) in part)" : "")
         }
         let eol = "\u{1b}[0m\u{1b}[K\r\n"
         out += Terminal.style(String(header.prefix(cols)), .bold) + eol
