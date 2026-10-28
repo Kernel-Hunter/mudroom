@@ -80,6 +80,13 @@ struct FileListColumn: View {
         return "\(names)\(more) changed in your project since the session started. Mudroom won't overwrite them."
     }
 
+    /// Files the agent wrote at paths on the session's exclude list.
+    var excludedNote: String? {
+        guard let paths = review.snapshot?.excluded, !paths.isEmpty else { return nil }
+        let names = paths.prefix(5).joined(separator: ", ") + (paths.count > 5 ? " and \(paths.count - 5) more" : "")
+        return "On the exclude list, never applied: \(names)."
+    }
+
     @ViewBuilder var fileList: some View {
         if !review.handle.hasClones {
             ContentUnavailableView("Session discarded", systemImage: "trash",
@@ -101,6 +108,7 @@ struct FileListColumn: View {
                 Text(review.isTimelineView ? "Nothing changed after this snapshot."
                      : review.isRunning ? "Files the agent edits will show up here."
                      : "The agent didn't change any files.")
+                if let note = excludedNote { Text(note) }
             }
         } else {
             List(selection: $review.focusedPath) {
@@ -130,6 +138,13 @@ struct FileListColumn: View {
                                 Text("\(items.count)").foregroundStyle(.tertiary)
                             }
                         }
+                    }
+                }
+                if let note = excludedNote {
+                    Section {
+                        Label(note, systemImage: "eye.slash")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                            .selectionDisabled()
                     }
                 }
                 if let git = review.snapshot?.gitMetadataChanges, git > 0 {
@@ -190,6 +205,12 @@ struct SessionHeader: View {
                     if let snap = review.baseSnapshot, !files.isEmpty {
                         Text("·")
                         DiffStat(added: snap.totalAdded, removed: snap.totalRemoved)
+                    }
+                    if let left = ExcludedEntry.summary(s.excluded ?? [], limit: 3) {
+                        Text("·")
+                        Label("Left out: \(left)", systemImage: "eye.slash")
+                            .help("Kept out of the agent's copy by the project's exclude list: "
+                                  + (s.excluded ?? []).map(\.path).joined(separator: ", "))
                     }
                 }
                 .font(.system(size: 11))
