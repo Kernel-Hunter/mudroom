@@ -24,10 +24,14 @@ public struct ProjectConfig: Codable, Sendable, Equatable {
     /// through the proxy, as http://host.mudroom.internal:<port>. Locked
     /// mode only.
     public var localModels: Bool
+    /// gitignore-style patterns for files new sessions leave out of the
+    /// clones (see `ExcludeRules`). Starts as `ExcludeList.defaults`.
+    public var excludePatterns: [String]
 
     public init(projectPath: String, networkMode: NetworkMode = .locked, allowedHosts: [HostPattern] = [],
                 includeAgentHosts: Bool = true, includePackageRegistries: Bool = false,
-                snapshotMinutes: Int = 5, snapshotLimit: Int = 24, localModels: Bool = false) {
+                snapshotMinutes: Int = 5, snapshotLimit: Int = 24, localModels: Bool = false,
+                excludePatterns: [String] = ExcludeList.defaults) {
         self.projectPath = projectPath
         self.networkMode = networkMode
         self.allowedHosts = allowedHosts
@@ -36,6 +40,7 @@ public struct ProjectConfig: Codable, Sendable, Equatable {
         self.snapshotMinutes = snapshotMinutes
         self.snapshotLimit = snapshotLimit
         self.localModels = localModels
+        self.excludePatterns = excludePatterns
     }
 
     // Missing keys fall back to defaults, so older files keep loading.
@@ -49,6 +54,8 @@ public struct ProjectConfig: Codable, Sendable, Equatable {
         snapshotMinutes = try c.decodeIfPresent(Int.self, forKey: .snapshotMinutes) ?? 5
         snapshotLimit = try c.decodeIfPresent(Int.self, forKey: .snapshotLimit) ?? 24
         localModels = try c.decodeIfPresent(Bool.self, forKey: .localModels) ?? false
+        // Files saved before exclusions existed get the defaults.
+        excludePatterns = try c.decodeIfPresent([String].self, forKey: .excludePatterns) ?? ExcludeList.defaults
     }
 
     /// The hosts a session of `agent` (a preset id) may reach. `keys` are
@@ -70,6 +77,24 @@ public struct ProjectConfig: Codable, Sendable, Equatable {
         guard !allowedHosts.contains(pattern) else { return false }
         allowedHosts.append(pattern)
         return true
+    }
+
+    /// Adds an exclude pattern; returns false if it is already in the list.
+    @discardableResult
+    public mutating func exclude(_ pattern: String) -> Bool {
+        let p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ExcludeRules.isPattern(p), !excludePatterns.contains(p) else { return false }
+        excludePatterns.append(p)
+        return true
+    }
+
+    /// Removes an exclude pattern; returns false if it wasn't in the list.
+    @discardableResult
+    public mutating func unexclude(_ pattern: String) -> Bool {
+        let p = pattern.trimmingCharacters(in: .whitespacesAndNewlines)
+        let before = excludePatterns.count
+        excludePatterns.removeAll { $0 == p }
+        return excludePatterns.count != before
     }
 
     @discardableResult
