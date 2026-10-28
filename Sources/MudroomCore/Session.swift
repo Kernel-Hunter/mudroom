@@ -51,6 +51,11 @@ public struct Session: Codable, Sendable, Equatable {
     /// Entries of the project the clones don't have (sockets, FIFOs,
     /// unreadable files). Nil when nothing was left out.
     public var cloneSkipped: [SkippedEntry]?
+    /// The exclude patterns the clones were made with. Diff and apply use
+    /// these too. Nil for sessions from before exclusions existed.
+    public var exclude: ExcludeList?
+    /// What the clones left out because of `exclude`. Nil when nothing was.
+    public var excluded: [ExcludedEntry]?
 
     public init(id: String, projectPath: String, created: Date, command: [String], image: String,
                 status: SessionStatus, cloneMethod: CloneMethod, exitCode: Int32? = nil, agent: String? = nil) {
@@ -66,6 +71,9 @@ public struct Session: Codable, Sendable, Equatable {
     }
 
     public var projectName: String { URL(fileURLWithPath: projectPath).lastPathComponent }
+
+    /// The rules this session's diff and apply use.
+    public var excludeRules: ExcludeRules { exclude?.rules ?? .empty }
 
     /// The agent label to show: the preset name, else the command's first word.
     public var agentLabel: String {
@@ -207,10 +215,17 @@ public struct SessionStore: Sendable {
 
     /// Creates the session directory with `base/` and `work/` cloned from the
     /// project. The project itself is only read.
+    ///
+    /// `exclude` defaults to the project's list (`ProjectConfig`) plus its
+    /// `.mudroomignore`. Matching entries are left out of both clones, and
+    /// session.json, which a sandbox needs to start, is only written after
+    /// they are gone.
     public func create(project: URL, command: [String], image: String, agent: String? = nil,
-                       allowClonefile: Bool = true) throws -> SessionHandle {
+                       allowClonefile: Bool = true, exclude: ExcludeList? = nil) throws -> SessionHandle {
         let project = project.resolvingSymlinksInPath().standardizedFileURL
         if let problem = projectProblem(project) { throw problem }
+        let exclude = try exclude ?? ExcludeList.forProject(project, config: ProjectConfigStore(store: self).load(project.path))
+        let rules = exclude.rules
         try FileManager.default.createDirectory(at: sessionsDirectory, withIntermediateDirectories: true)
         let id = Self.newID()
         let dir = sessionsDirectory.appendingPathComponent(id, isDirectory: true)
@@ -219,15 +234,23 @@ public struct SessionStore: Sendable {
             id: id, projectPath: project.path, created: Date(), command: command, image: image,
             status: .created, cloneMethod: .clonefile, agent: agent))
         do {
-            let r1 = try Cloner.clone(from: project, to: handle.base, allowClonefile: allowClonefile)
-            let r2 = try Cloner.clone(from: project, to: handle.work, allowClonefile: allowClonefile)
+            let r1 = try Cloner.clone(from: project, to: handle.base, allowClonefile: allowClonefile, exclude: rules)
+            let r2 = try Cloner.clone(from: project, to: handle.work, allowClonefile: allowClonefile, exclude: rules)
             handle.session.cloneMethod = r1.method == r2.method ? r1.method : .copy
             var skipped = r1.skipped
             for e in r2.skipped where !skipped.contains(e) { skipped.append(e) }
             if !skipped.isEmpty { handle.session.cloneSkipped = skipped }
+            handle.session.exclude = exclude
+            var excluded = r1.excluded
+            for e in r2.excluded where !excluded.contains(where: { $0.path == e.path }) { excluded.append(e) }
+            if !excluded.isEmpty { handle.session.excluded = excluded.sorted { $0.path < $1.path } }
             try handle.save()
         } catch {
+            #if os(Windows)
             try? FileManager.default.removeItem(at: dir)
+            #else
+            try? ExcludeWalk.removeEntry(dir.path)
+            #endif
             throw error
         }
         return handle

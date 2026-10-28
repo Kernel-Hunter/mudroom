@@ -7,19 +7,23 @@ import Foundation
 // Windows 11 24H2 and later also block-clone inside CopyFile on their own.
 
 extension Cloner {
-    public static func clone(from source: URL, to destination: URL, allowClonefile: Bool = true) throws -> CloneResult {
+    /// Files are copied (or block-cloned) one by one, so entries `exclude`
+    /// matches are simply never copied.
+    public static func clone(from source: URL, to destination: URL, allowClonefile: Bool = true,
+                             exclude: ExcludeRules = .empty) throws -> CloneResult {
         let blockClone = allowClonefile && WinFS.supportsBlockClone(source.path)
             && WinFS.volumeRoot(source.path) == WinFS.volumeRoot(destination.deletingLastPathComponent().path)
         var allCloned = blockClone
         var skipped: [SkippedEntry] = []
+        var excluded: [ExcludedEntry] = []
         do {
-            try copyTree(Win32.path(source.path), Win32.path(destination.path), relative: "",
-                         blockClone: blockClone, allCloned: &allCloned, skipped: &skipped)
+            try copyTree(Win32.path(source.path), Win32.path(destination.path), relative: "", canonical: [], exclude: exclude,
+                         blockClone: blockClone, allCloned: &allCloned, skipped: &skipped, excluded: &excluded)
         } catch {
             try? FileManager.default.removeItem(at: destination)
             throw error
         }
-        return CloneResult(method: blockClone && allCloned ? .blockClone : .copy, skipped: skipped)
+        return CloneResult(method: blockClone && allCloned ? .blockClone : .copy, skipped: skipped, excluded: excluded)
     }
 
     /// Copies a single file or symlink, trying a block clone first.
@@ -42,8 +46,9 @@ extension Cloner {
     /// (CopyFile keeps their modification time, which snapshots compare);
     /// anything else, and anything that can't be read, is recorded and
     /// left out.
-    static func copyTree(_ src: String, _ dst: String, relative: String, blockClone: Bool, allCloned: inout Bool,
-                         skipped: inout [SkippedEntry]) throws {
+    static func copyTree(_ src: String, _ dst: String, relative: String, canonical: [String], exclude: ExcludeRules,
+                         blockClone: Bool, allCloned: inout Bool,
+                         skipped: inout [SkippedEntry], excluded: inout [ExcludedEntry]) throws {
         if let e = WinFS.makeDirectory(dst) { throw Win32.error("CreateDirectoryW", dst, e) }
         let handle = WinFS.open(src, access: DWORD(FILE_LIST_DIRECTORY) | DWORD(SYNCHRONIZE), directory: true)
         guard let handle, let names = WinFS.list(handle) else {
@@ -56,9 +61,18 @@ extension Cloner {
             let rel = relative.isEmpty ? e.name : relative + "/" + e.name
             let s = src + "\\" + e.name
             let d = dst + "\\" + e.name
-            switch WinFS.kind(attributes: e.attributes, tag: e.tag) {
+            let kind = WinFS.kind(attributes: e.attributes, tag: e.tag)
+            let canon = exclude.isEmpty ? [] : canonical + [ExcludeRules.canonicalName(e.name)]
+            if !exclude.isEmpty,
+               let pattern = exclude.matchEntry(canon[...], isDirectory: kind == .directory || kind == .symlink) {
+                let isDir = kind == .directory
+                excluded.append(ExcludedEntry(path: rel + (isDir ? "/" : ""), files: isDir ? countFiles(s) : 1, pattern: pattern))
+                continue
+            }
+            switch kind {
             case .directory:
-                try copyTree(s, d, relative: rel, blockClone: blockClone, allCloned: &allCloned, skipped: &skipped)
+                try copyTree(s, d, relative: rel, canonical: canon, exclude: exclude, blockClone: blockClone,
+                             allCloned: &allCloned, skipped: &skipped, excluded: &excluded)
             case .symlink:
                 guard let target = try? WinFS.readLink(s) else {
                     skipped.append(SkippedEntry(path: rel, reason: "symlink can't be read"))
@@ -79,6 +93,18 @@ extension Cloner {
                     : e.tag == WinFS.tagMountPoint ? "junction" : "device or other special file"
                 skipped.append(SkippedEntry(path: rel, reason: reason))
             }
+        }
+    }
+
+    /// Non-folder entries under `dir` (an excluded folder), for the
+    /// summary. Links are not followed. Best effort.
+    static func countFiles(_ dir: String) -> Int {
+        let handle = WinFS.open(dir, access: DWORD(FILE_LIST_DIRECTORY) | DWORD(SYNCHRONIZE), directory: true)
+        guard let handle else { return 0 }
+        let names = WinFS.list(handle)
+        CloseHandle(handle)
+        return (names ?? []).reduce(0) { n, e in
+            n + (WinFS.kind(attributes: e.attributes, tag: e.tag) == .directory ? countFiles(dir + "\\" + e.name) : 1)
         }
     }
 
