@@ -237,29 +237,61 @@ public struct Applier {
     private func applyLocked(paths: [String]?, hunks hunkSelection: [String: Set<Int>], includeGit: Bool, dryRun: Bool,
                              reviewed: ReviewedChanges?, diff precomputed: DiffResult?) throws -> ApplyReport {
         try requireProjectFolder()
-        let diff = try precomputed ?? Differ.compare(base: handle.base, work: handle.work)
+        let diff = try precomputed ?? Differ.compare(handle)
         var changes = diff.changes + (includeGit ? diff.gitMetadataChanges : [])
         var report = ApplyReport()
         let hunkSel = Dictionary(hunkSelection.map { (Self.normalize($0.key), $0.value) }, uniquingKeysWith: { $0.union($1) })
         let written = lastWrittenIndex()
 
-        if let paths {
-            let selection = paths.map(Self.normalize) + hunkSel.keys
-            if !selection.contains(".") {
-                let exact = Set(selection)
-                changes = changes.filter { c in
-                    if exact.contains(c.path) { return true }
-                    var p = Substring(c.path)
-                    while let slash = p.lastIndex(of: "/") {
-                        p = p[..<slash]
-                        if exact.contains(String(p)) { return true }
-                    }
-                    return false
-                }
+        // Paths on the session's exclude list are never written, whatever
+        // the diff passed in says: the clones never had them, so anything
+        // there is the agent's own (a new .env, say).
+        let rules = handle.session.excludeRules
+        var excluded = diff.excludedChanges
+        if !rules.isEmpty {
+            var folders: [String: String?] = [:]
+            changes.removeAll { c in
+                guard rules.match(c.path, before: c.before, after: c.after, folders: &folders) != nil else { return false }
+                excluded.append(c)
+                return true
+            }
+        }
+        func underSelection(_ path: String, _ exact: Set<String>) -> Bool {
+            if exact.contains(path) { return true }
+            var p = Substring(path)
+            while let slash = p.lastIndex(of: "/") {
+                p = p[..<slash]
+                if exact.contains(String(p)) { return true }
+            }
+            return false
+        }
+        let selection = paths.map { $0.map(Self.normalize) + hunkSel.keys }
+        let selectsAll = selection.map { $0.contains(".") } ?? true
+        let exactSelection = Set(selection ?? [])
+        var excludedCovered = Set<String>()
+        for c in Differ.topmost(excluded) {
+            guard selectsAll || underSelection(c.path, exactSelection)
+                    || exactSelection.contains(where: { $0.hasPrefix(c.path + "/") }) else { continue }
+            let pattern = rules.match(c.path, before: c.before, after: c.after)
+            let reason = pattern.map { "matches the exclude pattern \(TextLines.visible($0)); never applied" }
+                ?? "on the session's exclude list; never applied"
+            report.skipped.append(PathIssue(path: c.path, reason: reason))
+            excludedCovered.insert(c.path)
+        }
+
+        if let selection {
+            if !selectsAll {
+                let exact = exactSelection
+                changes = changes.filter { underSelection($0.path, exact) }
                 var covered = Set<String>()
-                for c in changes {
-                    covered.insert(c.path)
-                    var p = Substring(c.path)
+                // A selection naming an excluded path (or inside or above
+                // one) was answered above.
+                for e in excludedCovered {
+                    for sel in exact where sel.hasPrefix(e + "/") { covered.insert(sel) }
+                }
+                for path in changes.map(\.path) + excludedCovered {
+                    covered.insert(path)
+                    var p = Substring(path)
                     while let slash = p.lastIndex(of: "/") {
                         p = p[..<slash]
                         covered.insert(String(p))

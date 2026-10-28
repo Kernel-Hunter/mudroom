@@ -137,6 +137,9 @@ public struct ReviewSnapshot: Sendable {
     /// Applied when every row under them is selected.
     public var hiddenDeletedDirectories: [String]
     public var gitMetadataChanges: Int
+    /// Paths the agent wrote that are on the session's exclude list (top
+    /// level only, folders end in `/`). Shown, never applied.
+    public var excluded: [String] = []
     public var canUndo: Bool
     /// The changes as loaded: passed to the Applier so only what was
     /// reviewed is applied.
@@ -214,15 +217,18 @@ public struct ReviewSnapshot: Sendable {
     /// Changes from `from` (a snapshot directory) to work/, read-only: the
     /// review timeline. Apply always works on base -> work.
     public static func loadTimeline(_ handle: SessionHandle, from: URL) throws -> ReviewSnapshot {
-        let diff = try Differ.compare(base: from, work: handle.work)
+        let diff = try Differ.compare(base: from, work: handle.work, exclude: handle.session.excludeRules)
         let rows = visibleRows(diff.changes)
         let contents = parallelMap(rows.map(\.0)) { change in
             (try? content(for: change, before: from, after: handle.work, applier: nil)) ?? .meta(title: "Unreadable", detail: change.path)
         }
         var files = zip(rows, contents).map { FileEntry(change: $0.0.0, content: $0.1, readOnly: true) }
         files.sort { ($0.group, $0.path) < ($1.group, $1.path) }
-        return ReviewSnapshot(files: files, gitMetadataChanges: diff.gitMetadataChanges.count)
+        var snap = ReviewSnapshot(files: files, gitMetadataChanges: diff.gitMetadataChanges.count)
+        snap.excluded = diff.excludedNames
+        return snap
     }
+
 
     /// Rows to show: every change except added or deleted directories that
     /// have changed children (those children are shown instead).
@@ -248,7 +254,7 @@ public struct ReviewSnapshot: Sendable {
     }
 
     public static func load(_ handle: SessionHandle) throws -> ReviewSnapshot {
-        let diff = try Differ.compare(base: handle.base, work: handle.work)
+        let diff = try Differ.compare(handle)
         let applier = Applier(handle: handle)
         let preflight = try applier.preflight(diff: diff)
         let conflicts = Dictionary(preflight.conflicts.map { ($0.path, $0.reason) }, uniquingKeysWith: { a, _ in a })
@@ -280,9 +286,11 @@ public struct ReviewSnapshot: Sendable {
                                    isApplied: applied.contains(change.path), appliedHunks: appliedHunks))
         }
         files.sort { ($0.group, $0.path) < ($1.group, $1.path) }
-        return ReviewSnapshot(files: files, hiddenDeletedDirectories: hiddenDeleted,
-                              gitMetadataChanges: diff.gitMetadataChanges.count, canUndo: applier.canUndo,
-                              reviewed: ReviewedChanges(diff.changes))
+        var snap = ReviewSnapshot(files: files, hiddenDeletedDirectories: hiddenDeleted,
+                                  gitMetadataChanges: diff.gitMetadataChanges.count, canUndo: applier.canUndo,
+                                  reviewed: ReviewedChanges(diff.changes))
+        snap.excluded = diff.excludedNames
+        return snap
     }
 
     /// `applier` is nil for timeline views: hunks are then computed between

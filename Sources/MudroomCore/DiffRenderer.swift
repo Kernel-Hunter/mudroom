@@ -71,8 +71,9 @@ public struct DiffRenderer: Sendable {
         if !result.gitMetadataChanges.isEmpty {
             emit("git metadata changed (\(Self.entries(result.gitMetadataChanges.count)) under .git/)")
         }
+        writeExcluded(result, emit)
         if result.changes.isEmpty && result.gitMetadataChanges.isEmpty {
-            emit("no changes")
+            if result.excludedChanges.isEmpty { emit("no changes") }
             return
         }
         var counts: [ChangeKind: Int] = [:]
@@ -95,7 +96,17 @@ public struct DiffRenderer: Sendable {
         if !result.gitMetadataChanges.isEmpty {
             emit("git metadata changed (\(Self.entries(result.gitMetadataChanges.count)) under .git/; use --include-git to list)")
         }
-        if result.changes.isEmpty && result.gitMetadataChanges.isEmpty { emit("no changes") }
+        writeExcluded(result, emit)
+        if result.isEmpty { emit("no changes") }
+    }
+
+    /// One line per path the agent wrote that is on the session's exclude
+    /// list, e.g. "X  .env  (on the exclude list; never applied)". Folders
+    /// are named once, not file by file.
+    public func writeExcluded(_ result: DiffResult, _ emit: (String) -> Void) {
+        for name in result.excludedNames {
+            emit("X  \(TextLines.visible(name))  (on the exclude list; never applied)")
+        }
     }
 
     func render(_ c: Change) throws -> String {
