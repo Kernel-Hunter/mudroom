@@ -1,159 +1,42 @@
-<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/mudroom-banner-dark.png">
+  <img alt="Mudroom: run coding agents in a sandbox and review their changes before they touch your project" src="docs/assets/mudroom-banner-light.png">
+</picture>
 
-<img src="App/AppIcon.png" alt="Mudroom app icon: an open door with a green check mark" width="112" height="112">
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="https://kernel-hunter.github.io/mudroom/">Website</a> ·
+  <a href="#contents">Docs</a> ·
+  <a href="#how-it-compares">How it compares</a> ·
+  <a href="https://github.com/Kernel-Hunter/mudroom/releases">Releases</a>
+</p>
 
-# Mudroom
+<p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/Kernel-Hunter/mudroom?color=17647d"></a>
+  <a href="https://github.com/Kernel-Hunter/mudroom/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Kernel-Hunter/mudroom?color=17647d"></a>
+</p>
 
-**Run coding agents in a sandbox, then review their changes like a pull request.**<br>
-Mudroom runs Claude Code, Codex, Gemini CLI, opencode, Aider or any command on a clone of your
-project in a Linux micro-VM, behind a network allowlist. Nothing reaches your folder until you apply it.
-
-[![Release](https://img.shields.io/github/v/release/Kernel-Hunter/mudroom?style=for-the-badge&logo=github&logoColor=white&labelColor=0d1117&color=218c9e)](https://github.com/Kernel-Hunter/mudroom/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Kernel-Hunter/mudroom/total?style=for-the-badge&logo=github&logoColor=white&labelColor=0d1117&color=218c9e)](https://github.com/Kernel-Hunter/mudroom/releases)
-[![Stars](https://img.shields.io/github/stars/Kernel-Hunter/mudroom?style=for-the-badge&logo=github&logoColor=white&labelColor=0d1117&color=218c9e)](https://github.com/Kernel-Hunter/mudroom/stargazers)
-[![License: MIT](https://img.shields.io/badge/license-MIT-218c9e?style=for-the-badge&labelColor=0d1117)](LICENSE)
-<br>
-[![macOS 26, Apple silicon](https://img.shields.io/badge/macOS_26-Apple_silicon-218c9e?style=for-the-badge&logo=apple&logoColor=white&labelColor=0d1117)](#install)
-[![CLI for Linux and Windows](https://img.shields.io/badge/CLI-Linux_%2B_Windows-218c9e?style=for-the-badge&logo=linux&logoColor=white&labelColor=0d1117)](#requirements)
-[![CI](https://img.shields.io/github/actions/workflow/status/Kernel-Hunter/mudroom/ci.yml?branch=main&style=for-the-badge&logo=githubactions&logoColor=white&labelColor=0d1117&label=CI)](https://github.com/Kernel-Hunter/mudroom/actions/workflows/ci.yml)
-
-[Website](https://kernel-hunter.github.io/mudroom/) &nbsp;·&nbsp;
-[Download](https://github.com/Kernel-Hunter/mudroom/releases/latest) &nbsp;·&nbsp;
-[Docs](#documentation) &nbsp;·&nbsp;
-[Report a bug](https://github.com/Kernel-Hunter/mudroom/issues/new)
-
-<br>
-
-<img src="docs/demo.gif" alt="Mudroom: start a session, review the diff, check the network log, apply" width="820">
-
-</div>
-
-<br>
-
-Coding agents work best with permission prompts turned off, and that means
-they can delete files or reach any host while you aren't looking. Mudroom
-gives each run a disposable copy-on-write clone of your project inside a
-Linux micro-VM, with network access limited to the hosts you allow. Your real
-folder is never mounted. When the agent is done you read the diff like a pull
-request, apply all of it, some files, some hunks or none, and undo any apply
-later.
-
-> **Status:** early prototype. Expect rough edges and breaking changes.
-
-<details>
-<summary><b>Watch the video</b></summary>
-
-<br>
+**Mudroom** runs coding agents like Claude Code, Codex, Gemini CLI, opencode
+and Aider (or any command) on a clone of your project, inside a Linux
+micro-VM, with network access limited to the hosts you allow. When the agent
+is done, you review its changes like a pull request, apply all of it, some
+files, some hunks or none, and undo any apply later. It's a free, local
+alternative to cloud agent sandboxes, and your real folder is never mounted.
 
 https://github.com/user-attachments/assets/ff599cbc-fbd9-4c8f-801d-fd2e52ccb0c6
 
-</details>
+<p align="center"><sub>33 seconds, with sound: the agent edits a clone in a VM, reaches only the hosts you allow, and you apply what you pick.</sub></p>
 
-## What you get
-
-<table>
-<tr>
-<td width="50%" valign="top">
-
-**Your folder stays untouched**<br>
-The agent edits a copy-on-write clone (APFS, or a reflink on btrfs and XFS),
-untracked and ignored files included, minus `.env` files and keys. Your
-project is never mounted.
-
-</td>
-<td width="50%" valign="top">
-
-**A VM per session**<br>
-Apple's `container` boots one lightweight Linux VM for each session. Docker
-and Podman work too, with gVisor or Kata if you have them.
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-**Network allowlist**<br>
-Locked by default: no DNS and no route out. The only exit is a proxy on your
-machine that lets through the agent's API hosts plus the ones you add.
-
-</td>
-<td valign="top">
-
-**A log of every connection**<br>
-In locked mode: host, port, bytes, allowed or blocked, and which program in
-the sandbox opened it (`git-remote-https`, `node`, `python3`).
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-**Keys stay out**<br>
-`.env` files, `*.pem`, SSH keys and `.netrc` are left out of the agent's
-copy by default. Edit the list per project or with a `.mudroomignore`.
-
-</td>
-<td valign="top">
-
-**Review like a pull request**<br>
-Files grouped by change, unified or side-by-side diffs, a checkbox per file
-and per hunk. Your own edits since the start are flagged, never overwritten.
-
-</td>
-</tr>
-<tr>
-<td valign="top">
-
-**Undo and snapshots**<br>
-Any apply can be undone in one step, even one killed halfway. Snapshots
-taken every 5 minutes show what changed after any point.
-
-</td>
-<td valign="top">
-
-**Any agent, your sign-in**<br>
-Five agents set up for you, or any command. Sign in with your Claude account,
-the ChatGPT and Google logins you already have, API keys, or local models.
-
-</td>
-</tr>
-</table>
-
-## How it works
-
-```mermaid
-flowchart LR
-    P["Your project"] -->|"copy-on-write clone"| W["Session copy"]
-    W -->|"mounted at /workspace"| A
-    subgraph VM["Linux micro-VM or container"]
-        A["Coding agent"]
-    end
-    A -->|"only way out"| X["Allowlist proxy"]
-    X -->|"allowed hosts"| N(("Internet"))
-    W --> R["Diff review"]
-    R -->|"apply what you pick"| P
-    R -.->|"undo"| P
-```
-
-1. Mudroom clones the project twice: `base/` is the starting point and `work/`
-   is what the agent edits. On APFS the clones take no extra disk until files
-   change.
-2. The agent runs in its own VM (or container) with only `work/` inside. In
-   locked mode its one way out is the proxy, which checks every host against
-   the project's allowlist and logs the connection.
-3. You review `base/` against `work/` in the app or the terminal and apply
-   what you pick. Mudroom checks that each file in your project still matches
-   `base/`, so your own edits are never overwritten. Any apply can be undone.
-
-More detail in [Under the hood](#under-the-hood), [Network](#network) and
-[Review and apply](#review-and-apply).
+> **Status:** early prototype. Expect rough edges and breaking changes.
 
 ## Install
 
+The Mac app and CLI run on Apple-silicon Macs with macOS 26 or later. On
+Linux, Windows and Intel Macs, Mudroom is a CLI that uses Docker or Podman.
+
 ### macOS
 
-Apple silicon, macOS 26 or later. App and CLI. With Homebrew, which also
-installs Apple's `container` CLI:
+With Homebrew, which also installs Apple's `container` CLI:
 
 ```sh
 brew install --cask kernel-hunter/tap/mudroom
@@ -207,6 +90,20 @@ scoop bucket add kernel-hunter https://github.com/Kernel-Hunter/scoop-bucket
 scoop install mudroom
 ```
 
+Then install a container runtime: [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
+with the WSL 2 backend (Linux containers, the default), or
+[Podman](https://podman.io/docs/installation#windows) with a Podman machine
+(`podman machine init`, then `podman machine start`). Build the agent image
+once and check the network:
+
+```powershell
+mudroom image build --backend docker      # or --backend podman
+mudroom network check --backend docker
+```
+
+Run `mudroom` from Windows Terminal or any console with VT support. See
+[Windows](#windows-1) for what is different from macOS and Linux.
+
 <details>
 <summary><b>Without Scoop: install from the release zip</b></summary>
 
@@ -237,31 +134,22 @@ To upgrade, run the same lines with the new version, without the PATH
 line. `mudroom.exe` isn't code-signed; if Windows blocks it after you unzip
 with Explorer, run `Get-ChildItem $dir | Unblock-File`.
 
-</details>
-
 The Scoop and winget manifests are in [packaging/scoop](packaging/scoop)
 and [packaging/winget](packaging/winget). The winget package is waiting for
 review in the winget repository, so `winget install` doesn't find it yet.
 
-Then install a container runtime: [Docker Desktop](https://docs.docker.com/desktop/setup/install/windows-install/)
-with the WSL 2 backend (Linux containers, the default), or
-[Podman](https://podman.io/docs/installation#windows) with a Podman machine
-(`podman machine init`, then `podman machine start`). Build the agent image
-once and check the network:
-
-```powershell
-mudroom image build --backend docker      # or --backend podman
-mudroom network check --backend docker
-```
-
-Run `mudroom` from Windows Terminal or any console with VT support. See
-[Windows](#windows-1) for what is different from macOS and Linux.
+</details>
 
 ### Linux
 
 CLI only, x86_64 and arm64, built from source. You need Swift 6.2 or later
 ([swift.org/install](https://www.swift.org/install/)) and Docker Engine or
-Podman:
+Podman.
+
+<details>
+<summary><b>Build and install the CLI</b></summary>
+
+<br>
 
 ```sh
 git clone https://github.com/Kernel-Hunter/mudroom
@@ -271,6 +159,271 @@ cp .build/release/mudroom /usr/local/bin/   # or anywhere on your PATH
 mudroom image build --backend docker        # or --backend podman, once
 mudroom network check --backend docker      # see what the sandbox can reach
 ```
+
+</details>
+
+## Quick start
+
+In the app:
+
+1. Open Mudroom and work through the Setup window: install and start the VM
+   runtime, build the agent image (a few minutes, once), and sign in an
+   agent.
+2. Click New Session, pick a folder and an agent, and start.
+3. When the agent finishes, review the diff in Mudroom and apply what you
+   want.
+
+From a terminal. On Linux and Windows the same commands use Docker, or
+Podman when Docker isn't there; `--backend` picks one.
+
+```sh
+# Once: start the VM runtime, build the agent image, sign in an agent
+mudroom setup
+
+# Run an agent on a clone of your project
+mudroom run ~/code/myapp -- claude --dangerously-skip-permissions
+
+# Read the diff, pick files or hunks, press x to apply
+mudroom review last
+
+# See what the agent connected to, and what was blocked
+mudroom network log last
+
+# Changed your mind
+mudroom undo last
+```
+
+## Features
+
+Coding agents work best with permission prompts turned off, and that means
+they can delete files or reach any host while you aren't looking. Mudroom
+puts a sandbox and a review step between the agent and your project.
+
+- **Your folder stays untouched.** The agent edits a copy-on-write clone
+  (APFS, or a reflink on btrfs and XFS), untracked and ignored files
+  included, minus `.env` files and keys. Your project is never mounted.
+- **A VM per session.** Apple's `container` boots one lightweight Linux VM
+  for each session. Docker and Podman work too, with gVisor or Kata if you
+  have them.
+- **Network allowlist.** Locked by default: no DNS and no route out. The
+  only exit is a proxy on your machine that lets through the agent's API
+  hosts plus the ones you add.
+- **A log of every connection.** In locked mode: host, port, bytes, allowed
+  or blocked, and which program in the sandbox opened it
+  (`git-remote-https`, `node`, `python3`).
+- **Keys stay out.** `.env` files, `*.pem`, SSH keys and `.netrc` are left
+  out of the agent's copy by default. Edit the list per project or with a
+  `.mudroomignore`.
+- **Review like a pull request.** Files grouped by change, unified or
+  side-by-side diffs, a checkbox per file and per hunk. Your own edits since
+  the start are flagged, never overwritten.
+- **Undo and snapshots.** Any apply can be undone in one step, even one
+  killed halfway. Snapshots taken every 5 minutes show what changed after
+  any point.
+- **Any agent, your sign-in.** Five agents set up for you, or any command.
+  Sign in with your Claude account, the ChatGPT and Google logins you
+  already have, API keys, or local models.
+
+### Pick what to keep, file by file or hunk by hunk
+
+Changed files are grouped into Added, Modified, Deleted and Mode & Type,
+each with a checkbox, next to a unified or side-by-side diff. Modified text
+files have a checkbox per hunk, so you can take some edits and leave others.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/review-dark.png">
+  <img alt="The review screen: files grouped by change on the left, a diff with a checkbox per hunk on the right" src="docs/screenshots/review-light.png">
+</picture>
+
+### See every host the agent tried to reach
+
+The Network tab lists blocked hosts first, with bytes and connection
+counts. Allow adds a blocked host to the project's allowlist for the next
+session.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/network-dark.png">
+  <img alt="The Network tab: two hosts blocked, api.anthropic.com allowed, and a log of each blocked connection" src="docs/screenshots/network-light.png">
+</picture>
+
+### Your own edits are never overwritten
+
+Files you changed yourself since the session started are flagged in the
+list and above the diff. Apply leaves them alone and takes the rest.
+
+<img alt="A file flagged as a conflict because it changed in the project after the session started" src="docs/screenshots/conflict-light.png">
+
+### Look back at any point in the run
+
+Snapshots are taken while the agent works. Move the timeline slider and the
+file list shows only what changed after that point.
+
+<img alt="The timeline set to snapshot 2, showing only the changes made after it" src="docs/screenshots/timeline-light.png">
+
+## How it compares
+
+How the usual ways of running an agent differ, in their default setup:
+
+| | Edits reach your folder | Network |
+|---|---|---|
+| Agent on your machine | Right away | Anything your machine reaches |
+| Dev container | Right away | Open by default |
+| Cloud sandbox | When you pull them | Depends on the provider |
+| **Mudroom** | **When you apply them** | **Allowlist, each connection logged** |
+
+<details>
+<summary><b>The full comparison</b></summary>
+
+<br>
+
+**Agent on your machine**
+
+- Where it edits: your real folder, and edits land right away.
+- Boundary: your user account, plus the agent's own prompts or sandbox.
+- Network: anything your machine reaches, unless the agent's own sandbox
+  limits it.
+- Review: `git diff`, or per-edit prompts.
+- Your code leaves your machine: only what the agent sends.
+- Account or bill for the sandbox: none.
+
+**Dev container**
+
+- Where it edits: your folder, usually bind-mounted, and edits land right
+  away.
+- Boundary: a container (the host's kernel on Linux).
+- Network: open by default.
+- Review: `git diff`.
+- Your code leaves your machine: only what the agent sends.
+- Account or bill for the sandbox: none.
+
+**Cloud sandbox**
+
+- Where it edits: a copy on the provider's servers. Edits reach your folder
+  when you pull or download them.
+- Boundary: the provider's VM or container.
+- Network: depends on the provider.
+- Review: through git or the provider's tools.
+- Your code leaves your machine: yes, it runs remotely.
+- Account or bill for the sandbox: a provider account, usually paid by
+  usage.
+
+**Mudroom**
+
+- Where it edits: a clone; your folder is never mounted. Edits reach your
+  folder when you apply them.
+- Boundary: one micro-VM per session, or a container with Docker or Podman.
+- Network: allowlist through a proxy (locked mode, the default), each
+  connection logged with the command that opened it.
+- Review: review app or terminal screen, per file and per hunk, with undo.
+- Your code leaves your machine: only what the agent sends to allowed
+  hosts.
+- Account or bill for the sandbox: none, MIT.
+
+</details>
+
+A dev container gives you a reproducible toolchain, and a cloud sandbox runs
+many agents in parallel without using your machine. Mudroom does neither: it
+runs on your own computer, the review app needs a Mac with macOS 26, and the
+agent image is one general-purpose image unless you pass your own with
+`--image`.
+
+### Other agent sandboxes
+
+Checked against each project's docs on 2026-09-30. Corrections welcome.
+
+- **Mudroom.** Linux micro-VM, on an APFS clone; your folder is never
+  mounted. The agent's writes reach your folder when you apply them, after
+  a diff review per file and per hunk, with undo.
+- **[Docker Sandboxes](https://docs.docker.com/ai/sandboxes/security/).**
+  A microVM, with your folder mounted read-write by default, or a private
+  git clone with `--clone`. Writes reach your folder right away by default;
+  with `--clone`, when you fetch. Review goes through git, in clone mode.
+- **[Apple's `sandboxy` example](https://github.com/apple/containerization/tree/main/examples/sandboxy).**
+  A Linux VM with your folder shared in. Writes land right away, with no
+  review step.
+- **[ArcBox](https://github.com/arcboxlabs/arcbox/blob/master/docs/agent-sandbox.md).**
+  A microVM with nothing mounted. Only what you copy out reaches your
+  folder, with no review step.
+- **[Claude Code sandboxing](https://code.claude.com/docs/en/sandboxing).**
+  Your real folder, with OS-level limits (no VM). Writes land right away,
+  with per-edit prompts unless you skip permissions.
+
+If your project is a git repo and you're happy reviewing with git, Docker
+Sandboxes' `--clone` mode gets you close. Mudroom also covers untracked and
+ignored files and folders that aren't repos, and gives you a review screen
+and per-apply undo.
+
+## How it works
+
+```mermaid
+flowchart LR
+    P["Your project"] -->|"copy-on-write clone"| W["Session copy"]
+    W -->|"mounted at /workspace"| A
+    subgraph VM["Linux micro-VM or container"]
+        A["Coding agent"]
+    end
+    A -->|"only way out"| X["Allowlist proxy"]
+    X -->|"allowed hosts"| N(("Internet"))
+    W --> R["Diff review"]
+    R -->|"apply what you pick"| P
+    R -.->|"undo"| P
+```
+
+1. Mudroom clones the project twice: `base/` is the starting point and `work/`
+   is what the agent edits. On APFS the clones take no extra disk until files
+   change.
+2. The agent runs in its own VM (or container) with only `work/` inside. In
+   locked mode its one way out is the proxy, which checks every host against
+   the project's allowlist and logs the connection.
+3. You review `base/` against `work/` in the app or the terminal and apply
+   what you pick. Mudroom checks that each file in your project still matches
+   `base/`, so your own edits are never overwritten. Any apply can be undone.
+
+More detail in [Under the hood](#under-the-hood), [Network](#network) and
+[Review and apply](#review-and-apply).
+
+<a name="contents"></a>
+
+## Documentation
+
+The rest of this page is the full reference:
+[Requirements](#requirements) ·
+[Build from source](#build-from-source) ·
+[Setup](#setup) ·
+[The app](#the-app) ·
+[Command line](#command-line) ·
+[Agents, sign-in and API keys](#agents-sign-in-and-api-keys) ·
+[Keep files out of the sandbox](#keep-files-out-of-the-sandbox) ·
+[Network](#network) ·
+[Review and apply](#review-and-apply) ·
+[Docker and Podman](#docker-and-podman) ·
+[Under the hood](#under-the-hood) ·
+[Limitations](#limitations) ·
+[FAQ](#faq) ·
+[Development](#development)
+
+## Requirements
+
+- **macOS 26+, Apple silicon:** app and CLI. Sandbox backend `apple`
+  (Apple's `container`, one VM per session), or `docker`/`podman`.
+- **macOS 26+, Intel:** CLI only (build from source), with `docker` or
+  `podman`.
+- **Linux x86_64 and arm64:** CLI only (build from source), with `docker`
+  or `podman`.
+- **Windows 10/11, x86_64 and arm64:** CLI only ([release
+  zip](#install-on-windows) or build from source), with `docker` (Docker
+  Desktop) or `podman` (Podman machine).
+
+The `apple` backend needs Apple's [`container`](https://github.com/apple/container)
+CLI, version 1.5 or later. Setup installs it with Homebrew if you don't have
+it.
+
+The CLI picks a backend with `--backend apple|docker|podman|auto` (or
+`MUDROOM_BACKEND`). `auto`, the default, uses Apple's `container` on an
+Apple-silicon Mac with macOS 26+ where it is installed, otherwise Docker,
+otherwise Podman. A session remembers its backend, so `mudroom start` uses
+the same one again. See [Docker and Podman](#docker-and-podman) for how
+isolation differs from the VM backend.
 
 ### Build from source
 
@@ -313,109 +466,6 @@ Clang in your Swift toolchain (Visual Studio 2026 with Swift 6.2): the C++
 headers then refuse to build swift-crypto's BoringSSL. Run `mudroom` from
 Windows Terminal or any console with VT support (Windows 10 1809 or later).
 See [Windows](#windows-1) for what is different there.
-
-## Quick start
-
-In the app:
-
-1. Open Mudroom and work through the Setup window: install and start the VM
-   runtime, build the agent image (a few minutes, once), and sign in an
-   agent.
-2. Click New Session, pick a folder and an agent, and start.
-3. When the agent finishes, review the diff in Mudroom and apply what you
-   want.
-
-From a terminal. On Linux and Windows the same commands use Docker, or
-Podman when Docker isn't there; `--backend` picks one.
-
-```sh
-# Once: start the VM runtime, build the agent image, sign in an agent
-mudroom setup
-
-# Run an agent on a clone of your project
-mudroom run ~/code/myapp -- claude --dangerously-skip-permissions
-
-# Read the diff, pick files or hunks, press x to apply
-mudroom review last
-
-# See what the agent connected to, and what was blocked
-mudroom network log last
-
-# Changed your mind
-mudroom undo last
-```
-
-## How it compares
-
-How the usual ways of running an agent differ, in their default setup:
-
-| | Agent on your machine | Dev container | Cloud sandbox | Mudroom |
-|---|---|---|---|---|
-| Where the agent edits | Your real folder | Your folder, usually bind-mounted | A copy on the provider's servers | A clone; your folder is never mounted |
-| When edits reach your folder | Right away | Right away | When you pull or download them | When you apply them |
-| Boundary | Your user account, plus the agent's own prompts or sandbox | A container (the host's kernel on Linux) | The provider's VM or container | One micro-VM per session, or a container with Docker or Podman |
-| Network | Anything your machine reaches, unless the agent's own sandbox limits it | Open by default | Depends on the provider | Allowlist through a proxy (locked mode, the default), each connection logged with the command that opened it |
-| Review | `git diff`, or per-edit prompts | `git diff` | Through git or the provider's tools | Review app or terminal screen, per file and per hunk, with undo |
-| Your code leaves your machine | Only what the agent sends | Only what the agent sends | Yes, it runs remotely | Only what the agent sends to allowed hosts |
-| Account or bill for the sandbox | None | None | A provider account, usually paid by usage | None, MIT |
-
-A dev container gives you a reproducible toolchain, and a cloud sandbox runs
-many agents in parallel without using your machine. Mudroom does neither: it
-runs on your own computer, the review app needs a Mac with macOS 26, and the
-agent image is one general-purpose image unless you pass your own with
-`--image`.
-
-### Other agent sandboxes
-
-Checked against each project's docs on 2026-09-30. Corrections welcome.
-
-| | Where the agent works | When its writes reach your folder | Review before they land |
-|---|---|---|---|
-| Mudroom | Linux micro-VM, on an APFS clone; your folder is never mounted | When you apply | Diff app, per file and per hunk, with undo |
-| [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/security/) | microVM; your folder mounted read-write by default, or a private git clone with `--clone` | Right away by default; with `--clone`, when you fetch | Through git, in clone mode |
-| [Apple's `sandboxy` example](https://github.com/apple/containerization/tree/main/examples/sandboxy) | Linux VM with your folder shared in | Right away | No |
-| [ArcBox](https://github.com/arcboxlabs/arcbox/blob/master/docs/agent-sandbox.md) | microVM with nothing mounted | Only what you copy out | No |
-| [Claude Code sandboxing](https://code.claude.com/docs/en/sandboxing) | Your real folder, with OS-level limits (no VM) | Right away | Per-edit prompts, unless you skip permissions |
-
-If your project is a git repo and you're happy reviewing with git, Docker Sandboxes' `--clone` mode gets you close. Mudroom also covers untracked and ignored files and folders that aren't repos, and gives you a review screen and per-apply undo.
-
-<a name="contents"></a>
-
-## Documentation
-
-- [Requirements](#requirements)
-- [Setup](#setup)
-- [The app](#the-app)
-- [Command line](#command-line)
-- [Agents, sign-in and API keys](#agents-sign-in-and-api-keys)
-- [Keep files out of the sandbox](#keep-files-out-of-the-sandbox)
-- [Network](#network)
-- [Review and apply](#review-and-apply)
-- [Docker and Podman](#docker-and-podman)
-- [Under the hood](#under-the-hood)
-- [Limitations](#limitations)
-- [FAQ](#faq)
-- [Development](#development)
-
-## Requirements
-
-| Platform | What you get | Sandbox backend |
-|---|---|---|
-| macOS 26+, Apple silicon | App and CLI | `apple` (Apple's `container`, one VM per session), or `docker`/`podman` |
-| macOS 26+, Intel | CLI only (build from source) | `docker` or `podman` |
-| Linux x86_64 and arm64 | CLI only (build from source) | `docker` or `podman` |
-| Windows 10/11, x86_64 and arm64 | CLI only ([release zip](#install-on-windows) or build from source) | `docker` (Docker Desktop) or `podman` (Podman machine) |
-
-The `apple` backend needs Apple's [`container`](https://github.com/apple/container)
-CLI, version 1.5 or later. Setup installs it with Homebrew if you don't have
-it.
-
-The CLI picks a backend with `--backend apple|docker|podman|auto` (or
-`MUDROOM_BACKEND`). `auto`, the default, uses Apple's `container` on an
-Apple-silicon Mac with macOS 26+ where it is installed, otherwise Docker,
-otherwise Podman. A session remembers its backend, so `mudroom start` uses
-the same one again. See [Docker and Podman](#docker-and-podman) for how
-isolation differs from the VM backend.
 
 ## Setup
 
@@ -477,11 +527,27 @@ claude`.
   **Discard** (⌘⌫). Each apply can be undone in one step. Space toggles the
   selected file.
 
-| | |
-|---|---|
-| ![Network tab: two hosts blocked](docs/screenshots/network-light.png) | ![Timeline: changes after snapshot 2](docs/screenshots/timeline-light.png) |
-| ![Dark mode, split diff](docs/screenshots/review-split-dark.png) | ![A conflict](docs/screenshots/conflict-light.png) |
-| ![After a partial apply](docs/screenshots/applied-light.png) | ![New session](docs/screenshots/new-session-light.png) |
+The Network tab, the timeline and conflicts are shown under
+[Features](#features).
+
+<details>
+<summary><b>More screenshots</b></summary>
+
+<br>
+
+Dark mode, split diff:
+
+<img alt="Dark mode, split diff" src="docs/screenshots/review-split-dark.png">
+
+After a partial apply:
+
+<img alt="After a partial apply" src="docs/screenshots/applied-light.png">
+
+New session:
+
+<img alt="New session" src="docs/screenshots/new-session-light.png">
+
+</details>
 
 Agents are interactive terminal programs, and you often need to answer them,
 so sessions run in Terminal.app instead of a terminal built into Mudroom. The
@@ -1573,12 +1639,3 @@ MIT. See [LICENSE](LICENSE).
 
 Built by [Karim Masmoudi](https://github.com/Kernel-Hunter). My other projects are at [karimmasmoudi.vercel.app](https://karimmasmoudi.vercel.app/projects/).
 
-## Star history
-
-<a href="https://star-history.com/#Kernel-Hunter/mudroom&Date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=kernel-hunter/mudroom&type=Date&theme=dark">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=kernel-hunter/mudroom&type=Date">
-    <img alt="Star history of Kernel-Hunter/mudroom" src="https://api.star-history.com/svg?repos=kernel-hunter/mudroom&type=Date" width="600">
-  </picture>
-</a>
