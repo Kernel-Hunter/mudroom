@@ -98,7 +98,9 @@ struct ExcludeHardeningTests {
         #expect(try ignoreFileError { root in symlink("/dev/zero", root.appendingPathComponent(name).path) } != nil)
         #expect(try ignoreFileError { root in symlink("missing", root.appendingPathComponent(name).path) } != nil)
         // A FIFO is refused without blocking.
+        #if !os(Windows)
         #expect(try ignoreFileError { root in mkfifo(root.appendingPathComponent(name).path, 0o644) } != nil)
+        #endif
         // A folder.
         #expect(try ignoreFileError { root in
             try FileManager.default.createDirectory(at: root.appendingPathComponent(name), withIntermediateDirectories: false)
