@@ -728,13 +728,14 @@ the process holding each socket through `/proc/<pid>/fd`, and sends the proxy
 the connection's source port, the pid and the command lines over its own
 connection, which starts with a random token only the watcher has. The proxy
 matches the report to the connection it accepted from that port, and writes
-the fields into `network.jsonl`. A refused connection waits up to half a
-second for its report before getting its 403, so blocked requests are almost
-always attributed. Logs from older sessions have no command and still load.
+the fields into `network.jsonl`. While the watcher is connected, a refused
+connection waits up to half a second for its report before getting its 403,
+so blocked requests are almost always attributed. Logs from older sessions have no command and still load.
 
 With the apple backend the watcher starts from the firewall script as root,
 keeping only `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH` (to read the agent's
-`/proc/<pid>/fd`); the agent can't stop it or read its token. With Docker and
+`/proc/<pid>/fd`), from `/` with a fixed `PATH`, so nothing the agent can
+write runs as root; the agent can't stop it or read its token. With Docker and
 Podman it starts with `exec` a moment after the container, as the container's
 user, and the forwarder container passes each client's source port to the
 proxy in a PROXY protocol line. The image needs bash (Mudroom's has it);
