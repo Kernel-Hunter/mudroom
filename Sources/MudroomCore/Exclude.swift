@@ -1,3 +1,12 @@
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#elseif canImport(Musl)
+import Musl
+#elseif canImport(WinSDK)
+import WinSDK
+#endif
 import Foundation
 
 /// gitignore-style patterns for files that stay out of the sandbox.
@@ -39,8 +48,37 @@ public struct ExcludeRules: Sendable, Equatable {
         case literal(Character)
         case any            // *
         case one            // ?
-        case set([ClosedRange<Character>], negated: Bool)
+        case set([ClosedRange<Character>], classes: [CharClass], negated: Bool)
     }
+
+    /// POSIX classes inside a set, e.g. `[[:digit:]]`. Names are compared
+    /// lower-cased, so `upper` and `lower` both match any letter that has
+    /// case.
+    enum CharClass: String, Sendable, Equatable, CaseIterable {
+        case alpha, digit, alnum, upper, lower, space, punct, xdigit
+
+        func contains(_ c: Character) -> Bool {
+            switch self {
+            case .alpha: c.isLetter
+            case .digit: c.isASCII && c.isWholeNumber
+            case .alnum: c.isLetter || (c.isASCII && c.isWholeNumber)
+            case .upper, .lower: c.isCased
+            case .space: c.isWhitespace
+            case .punct: c.isASCII && (c.isPunctuation || c.isSymbol)
+            case .xdigit: c.isHexDigit
+            }
+        }
+    }
+
+    /// Why a line isn't a usable pattern.
+    public struct PatternError: Error, Equatable, CustomStringConvertible {
+        public let line: String
+        public let reason: String
+        public var description: String { "\(line.debugDescription): \(reason)" }
+    }
+
+    /// Longest pattern line accepted, in characters.
+    public static let maxLineLength = 1024
 
     let sets: [[Rule]]
 
@@ -57,10 +95,25 @@ public struct ExcludeRules: Sendable, Equatable {
     /// Whether `pattern` is a usable pattern line (not blank, not a comment).
     public static func isPattern(_ pattern: String) -> Bool { compile(pattern) != nil }
 
+    /// Why `line` can't be used, or nil if it is a pattern, a comment or
+    /// blank.
+    public static func problem(_ line: String) -> String? {
+        if case .failure(let e) = parse(line) { return e.reason }
+        return nil
+    }
+
     /// The pattern lines of a `.mudroomignore` (or `.gitignore`-style) file.
-    public static func lines(of text: String) -> [String] {
-        text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
-            .filter { isPattern($0) }
+    /// Throws on a line that is neither a pattern nor a comment or blank.
+    public static func lines(of text: String) throws -> [String] {
+        var out: [String] = []
+        for (n, line) in text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated() {
+            switch parse(String(line)) {
+            case .success(.some): out.append(String(line))
+            case .success(.none): continue
+            case .failure(let e): throw PatternError(line: e.line, reason: "line \(n + 1): \(e.reason)")
+            }
+        }
+        return out
     }
 
     // MARK: Matching
@@ -152,22 +205,37 @@ public struct ExcludeRules: Sendable, Equatable {
     static let isWindowsHost = false
     #endif
 
+    /// Segments against path components, by dynamic programming over
+    /// (segment, component) so a pattern full of `**` can't take
+    /// exponential time: at most segments x components name matches.
     static func matches(_ segs: ArraySlice<[GlobToken]?>, _ parts: ArraySlice<String>) -> Bool {
-        guard let first = segs.first else { return parts.isEmpty }
-        guard let glob = first else {
-            // `**`: any number of components, including none.
-            let rest = segs.dropFirst()
-            // A trailing `**` matches what is inside, not the folder itself.
-            if rest.isEmpty { return !parts.isEmpty }
-            var p = parts
-            while true {
-                if matches(rest, p) { return true }
-                if p.isEmpty { return false }
-                p = p.dropFirst()
+        let s = Array(segs), p = Array(parts)
+        let cols = p.count + 1
+        // ok[i * cols + j]: s[i...] matches p[j...]. Filled from the end.
+        var ok = [Bool](repeating: false, count: (s.count + 1) * cols)
+        ok[s.count * cols + p.count] = true
+        var names: [[Character]?] = Array(repeating: nil, count: p.count)
+        for i in stride(from: s.count - 1, through: 0, by: -1) {
+            for j in stride(from: p.count, through: 0, by: -1) {
+                let v: Bool
+                if let glob = s[i] {
+                    if j < p.count, ok[(i + 1) * cols + j + 1] {
+                        if names[j] == nil { names[j] = Array(p[j]) }
+                        v = globMatch(glob[...], names[j]![...])
+                    } else {
+                        v = false
+                    }
+                } else if i == s.count - 1 {
+                    // A trailing `**` matches what is inside, not the folder itself.
+                    v = j < p.count
+                } else {
+                    // `**`: none of the components, or one more.
+                    v = ok[(i + 1) * cols + j] || (j < p.count && ok[i * cols + j + 1])
+                }
+                ok[i * cols + j] = v
             }
         }
-        guard let part = parts.first, globMatch(glob[...], Array(part)[...]) else { return false }
-        return matches(segs.dropFirst(), parts.dropFirst())
+        return ok[0]
     }
 
     /// One name against one segment's tokens. `*` backtracks to the last
@@ -188,7 +256,8 @@ public struct ExcludeRules: Sendable, Equatable {
                 case .literal(let c) where c == name[n]:
                     p += 1; n += 1
                     continue
-                case .set(let ranges, let negated) where ranges.contains { $0.contains(name[n]) } != negated:
+                case .set(let ranges, let classes, let negated)
+                    where (ranges.contains { $0.contains(name[n]) } || classes.contains { $0.contains(name[n]) }) != negated:
                     p += 1; n += 1
                     continue
                 default:
@@ -207,6 +276,15 @@ public struct ExcludeRules: Sendable, Equatable {
     // MARK: Parsing
 
     static func compile(_ line: String) -> Rule? {
+        if case .success(let rule) = parse(line) { return rule }
+        return nil
+    }
+
+    /// A rule, nil for a comment or blank line, or why the line is unusable.
+    static func parse(_ line: String) -> Result<Rule?, PatternError> {
+        func bad(_ why: String) -> Result<Rule?, PatternError> { .failure(PatternError(line: line, reason: why)) }
+        if line.count > maxLineLength { return bad("longer than \(maxLineLength) characters") }
+        if line.contains("\u{0}") { return bad("contains a NUL character") }
         var chars = Array(line.precomposedStringWithCanonicalMapping)
         // Line endings, then trailing spaces unless escaped.
         while let last = chars.last, last == "\r" || last == "\n" { chars.removeLast() }
@@ -214,22 +292,31 @@ public struct ExcludeRules: Sendable, Equatable {
             if chars.count >= 2, chars[chars.count - 2] == "\\" { break }
             chars.removeLast()
         }
-        guard let first = chars.first, first != "#" else { return nil }
+        guard let first = chars.first, first != "#" else { return .success(nil) }
         var negated = false
         if first == "!" {
             negated = true
             chars.removeFirst()
         }
+        var directoryOnly = false
         if chars.last == "/" {
             while chars.last == "/" { chars.removeLast() }
-            guard !chars.isEmpty else { return nil }
-            return build(chars, source: line, negated: negated, directoryOnly: true)
+            directoryOnly = true
         }
-        guard !chars.isEmpty else { return nil }
-        return build(chars, source: line, negated: negated, directoryOnly: false)
+        guard !chars.isEmpty else { return bad("no pattern") }
+        do {
+            guard let rule = try build(chars, source: line, negated: negated, directoryOnly: directoryOnly) else {
+                return bad("no pattern")
+            }
+            return .success(rule)
+        } catch let e as PatternError {
+            return .failure(PatternError(line: line, reason: e.reason))
+        } catch {
+            return bad("\(error)")
+        }
     }
 
-    private static func build(_ chars: [Character], source: String, negated: Bool, directoryOnly: Bool) -> Rule? {
+    private static func build(_ chars: [Character], source: String, negated: Bool, directoryOnly: Bool) throws -> Rule? {
         // Split on unescaped slashes.
         var raw: [[Character]] = [[]]
         var i = 0
@@ -254,7 +341,7 @@ public struct ExcludeRules: Sendable, Equatable {
                 if segments.last.map({ $0 == nil }) != true { segments.append(nil) }
                 continue
             }
-            segments.append(tokenize(seg))
+            segments.append(try tokenize(seg))
         }
         if !anchored, segments.first.map({ $0 != nil }) ?? false { segments.insert(nil, at: 0) }
         return Rule(source: source.trimmingCharacters(in: .whitespacesAndNewlines), negated: negated,
@@ -263,7 +350,7 @@ public struct ExcludeRules: Sendable, Equatable {
 
     /// Lower-cased tokens for one segment. Runs of `*` are one `*`; an
     /// unclosed `[` is a literal.
-    static func tokenize(_ seg: [Character]) -> [GlobToken] {
+    static func tokenize(_ seg: [Character]) throws -> [GlobToken] {
         var out: [GlobToken] = []
         var i = 0
         func lower(_ c: Character) -> Character { Character(String(c).lowercased()) }
@@ -280,7 +367,7 @@ public struct ExcludeRules: Sendable, Equatable {
                 out.append(.one)
                 i += 1
             case "[":
-                if let (set, next) = parseSet(seg, from: i + 1) {
+                if let (set, next) = try parseSet(seg, from: i + 1) {
                     out.append(set)
                     i = next
                 } else {
@@ -295,8 +382,9 @@ public struct ExcludeRules: Sendable, Equatable {
         return out
     }
 
-    /// `[...]` starting after the `[`; returns the token and the index after `]`.
-    static func parseSet(_ seg: [Character], from start: Int) -> (GlobToken, Int)? {
+    /// `[...]` starting after the `[`; returns the token and the index after
+    /// `]`, or nil if the set isn't closed. Throws on an unknown `[:class:]`.
+    static func parseSet(_ seg: [Character], from start: Int) throws -> (GlobToken, Int)? {
         var i = start
         var negated = false
         if i < seg.count, seg[i] == "!" || seg[i] == "^" {
@@ -304,12 +392,27 @@ public struct ExcludeRules: Sendable, Equatable {
             i += 1
         }
         var ranges: [ClosedRange<Character>] = []
+        var classes: [CharClass] = []
         var first = true
         func lower(_ c: Character) -> Character { Character(String(c).lowercased()) }
         while i < seg.count {
             var c = seg[i]
-            if c == "]" && !first { return (.set(ranges, negated: negated), i + 1) }
+            if c == "]" && !first { return (.set(ranges, classes: classes, negated: negated), i + 1) }
             first = false
+            if c == "[", i + 1 < seg.count, seg[i + 1] == ":" {
+                // [:name:]
+                var j = i + 2
+                while j + 1 < seg.count, !(seg[j] == ":" && seg[j + 1] == "]") { j += 1 }
+                guard j + 1 < seg.count else { return nil }
+                let name = String(seg[(i + 2)..<j])
+                guard let cls = CharClass(rawValue: name) else {
+                    throw PatternError(line: "", reason: "unknown character class [:\(name):]; use one of "
+                                       + CharClass.allCases.map { "[:\($0.rawValue):]" }.joined(separator: " "))
+                }
+                classes.append(cls)
+                i = j + 2
+                continue
+            }
             if c == "\\", i + 1 < seg.count {
                 i += 1
                 c = seg[i]
@@ -370,18 +473,48 @@ public struct ExcludeList: Codable, Sendable, Equatable {
     ]
 
     /// The project's list from its config plus its `.mudroomignore`.
-    public static func forProject(_ project: URL, config: ProjectConfig) -> ExcludeList {
-        ExcludeList(patterns: config.excludePatterns, ignoreFile: readIgnoreFile(project))
+    public static func forProject(_ project: URL, config: ProjectConfig) throws -> ExcludeList {
+        ExcludeList(patterns: config.excludePatterns, ignoreFile: try readIgnoreFile(project))
     }
 
+    public static let maxIgnoreFileBytes = 1 << 20
+    public static let maxIgnoreFilePatterns = 1000
+
     /// Pattern lines of `<project>/.mudroomignore`, or [] if there is none.
-    /// Larger than 1 MB is not a pattern file; it is ignored.
-    public static func readIgnoreFile(_ project: URL) -> [String] {
+    /// Throws if it exists but can't be used: a symlink, not a regular file,
+    /// unreadable, over 1 MB, over 1,000 patterns, not UTF-8, or a line that
+    /// isn't a pattern. It is opened without following links or blocking on
+    /// a FIFO, so it can't point the read somewhere else.
+    public static func readIgnoreFile(_ project: URL) throws -> [String] {
         let url = project.appendingPathComponent(ignoreFileName)
-        guard let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
-              (attrs[.size] as? NSNumber)?.intValue ?? 0 <= 1 << 20,
-              let data = try? Data(contentsOf: url) else { return [] }
-        return ExcludeRules.lines(of: String(decoding: data, as: UTF8.self))
+        guard entryExists(url) else { return [] }
+        func unusable(_ why: String) -> MudroomError {
+            .invalid("\(url.path) can't be used: \(why). Make it a regular file (at most 1 MB, \(maxIgnoreFilePatterns) patterns) or remove it")
+        }
+        let data: Data
+        do {
+            data = try SafeFS.readBeneath(project, ignoreFileName, limit: maxIgnoreFileBytes + 1)
+        } catch {
+            throw unusable(MudroomError.message(error))
+        }
+        guard data.count <= maxIgnoreFileBytes else { throw unusable("it is larger than 1 MB") }
+        guard let text = String(data: data, encoding: .utf8) else { throw unusable("it is not UTF-8 text") }
+        let lines: [String]
+        do { lines = try ExcludeRules.lines(of: text) } catch { throw unusable("\(error)") }
+        guard lines.count <= maxIgnoreFilePatterns else { throw unusable("it has more than \(maxIgnoreFilePatterns) patterns") }
+        return lines
+    }
+
+    /// Whether anything (a dangling symlink included) is at `url`.
+    static func entryExists(_ url: URL) -> Bool {
+        #if os(Windows)
+        if case .failure(let e) = WinFS.lstat(url.path),
+           e.code == DWORD(ERROR_FILE_NOT_FOUND) || e.code == DWORD(ERROR_PATH_NOT_FOUND) { return false }
+        return true
+        #else
+        var st = stat()
+        return lstat(url.path, &st) == 0 || errno != ENOENT
+        #endif
     }
 }
 
@@ -420,6 +553,28 @@ extension ExcludeList {
         #else
         return ((try? ExcludeWalk.list(dir)) ?? []).map { ($0.name, $0.isDirectory, $0.isSymlink) }
         #endif
+    }
+}
+
+extension ExcludedEntry {
+    /// The entries of `entries` that git tracks in `project`: they look
+    /// deleted to git inside the sandbox. Empty when the project isn't a git
+    /// work tree, git isn't installed, or it fails. Runs `git ls-files`
+    /// with fsmonitor off and no optional locks, so it runs no hooks and
+    /// writes nothing.
+    public static func trackedByGit(_ entries: [ExcludedEntry], project: URL,
+                                    git: String? = ProcessRunner.which("git")) -> [String] {
+        guard !entries.isEmpty, let git, ExcludeList.entryExists(project.appendingPathComponent(".git")) else { return [] }
+        let names = entries.prefix(500).map { $0.path.hasSuffix("/") ? String($0.path.dropLast()) : $0.path }
+        let args = ["-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false", "ls-files", "-z", "--"]
+            + names.map { ":(literal)" + $0 }
+        guard let out = try? ProcessRunner.capture(git, args, cwd: project, environment: ["GIT_OPTIONAL_LOCKS": "0"], timeout: 15),
+              out.status == 0, !out.timedOut else { return [] }
+        let files = out.stdout.split(separator: "\u{0}").map(String.init)
+        return entries.prefix(500).filter { e in
+            let name = e.path.hasSuffix("/") ? String(e.path.dropLast()) : e.path
+            return files.contains { $0 == name || $0.hasPrefix(name + "/") }
+        }.map(\.path)
     }
 }
 

@@ -37,7 +37,7 @@ struct Exclude: ParsableCommand {
             do {
                 let path = try where_.path()
                 let config = try Exclude.configStore().load(path)
-                let ignore = ExcludeList.readIgnoreFile(URL(fileURLWithPath: path, isDirectory: true))
+                let ignore = try ExcludeList.readIgnoreFile(URL(fileURLWithPath: path, isDirectory: true))
                 print("project   \(path)")
                 print("config    \(Exclude.configStore().url(for: path).path)")
                 if config.excludePatterns.isEmpty {
@@ -71,8 +71,10 @@ struct Exclude: ParsableCommand {
         @OptionGroup var where_: ProjectOption
 
         func validate() throws {
-            for p in patterns where !ExcludeRules.isPattern(p.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                throw ValidationError("not a pattern: \(p.debugDescription)")
+            for raw in patterns {
+                let p = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let why = ExcludeRules.problem(p) { throw ValidationError("not a pattern: \(raw.debugDescription) (\(why))") }
+                if !ExcludeRules.isPattern(p) { throw ValidationError("not a pattern: \(raw.debugDescription) (blank or a comment)") }
             }
         }
 
@@ -107,7 +109,7 @@ struct Exclude: ParsableCommand {
         func run() throws {
             do {
                 let path = try where_.path()
-                let ignore = ExcludeList.readIgnoreFile(URL(fileURLWithPath: path, isDirectory: true))
+                let ignore = (try? ExcludeList.readIgnoreFile(URL(fileURLWithPath: path, isDirectory: true))) ?? []
                 try Exclude.configStore().update(path) { c in
                     if all {
                         c.excludePatterns = []

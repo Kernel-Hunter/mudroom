@@ -108,7 +108,7 @@ struct ExcludeMatcherTests {
     }
 
     @Test("comments, blank lines, escapes and trailing spaces")
-    func syntax() {
+    func syntax() throws {
         #expect(!ExcludeRules.isPattern(""))
         #expect(!ExcludeRules.isPattern("   "))
         #expect(!ExcludeRules.isPattern("# a comment"))
@@ -120,7 +120,7 @@ struct ExcludeMatcherTests {
         #expect(ex([".env   "], ".env"))
         #expect(ex(["a\\*b"], "a*b"))
         #expect(!ex(["a\\*b"], "axxb"))
-        #expect(ExcludeRules.lines(of: "# team list\r\n.env\r\n\r\n*.sqlite\n!keep.sqlite\n") == [".env", "*.sqlite", "!keep.sqlite"])
+        #expect(try ExcludeRules.lines(of: "# team list\r\n.env\r\n\r\n*.sqlite\n!keep.sqlite\n") == [".env", "*.sqlite", "!keep.sqlite"])
     }
 
     @Test("names are compared after Unicode normalization")
@@ -199,8 +199,8 @@ struct ExcludeConfigTests {
     func ignoreFile() throws {
         let tmp = try TempDir()
         try write("# team\n*.sqlite\n\nlocal/\n", to: tmp.path(".mudroomignore"))
-        #expect(ExcludeList.readIgnoreFile(tmp.url) == ["*.sqlite", "local/"])
-        #expect(ExcludeList.readIgnoreFile(tmp.path("missing")) == [])
+        #expect(try ExcludeList.readIgnoreFile(tmp.url) == ["*.sqlite", "local/"])
+        #expect(try ExcludeList.readIgnoreFile(tmp.path("missing")) == [])
     }
 
     @Test("the summary names paths and counts files")
