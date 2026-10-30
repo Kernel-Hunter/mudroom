@@ -23,7 +23,7 @@ struct Mudroom: ParsableCommand {
         """,
         version: mudroomVersion,
         subcommands: [SetupCommand.self, Run.self, New.self, Start.self, Diff.self, Review.self, Hunks.self, Apply.self, Undo.self,
-                      Snapshots.self, NetworkCommand.self, Agent.self, Keys.self, List.self, Stop.self, Discard.self, Image.self]
+                      Snapshots.self, NetworkCommand.self, Exclude.self, Agent.self, Keys.self, List.self, Stop.self, Discard.self, Image.self]
     )
 
     #if os(Windows)
@@ -148,10 +148,24 @@ struct Run: ParsableCommand {
         let s = handle.session
         print("session \(s.id)  (\(s.cloneMethod.label))")
         print("project \(s.projectPath) stays untouched; the agent sees a copy at /workspace")
+        printExcluded(s)
         print("backend \(backend.name)")
 
         try runAgent(&handle, backend: backend, flags: flags)
     }
+}
+
+/// "left out of the sandbox: .env, secrets/ (3 files)", when the clones
+/// left anything out.
+func printExcluded(_ s: Session, to out: FileHandle? = nil) {
+    guard let summary = ExcludedEntry.summary(s.excluded ?? []) else { return }
+    var text = "left out of the sandbox: \(summary). Change the list with `mudroom exclude`.\n"
+    if let tracked = s.excludedTracked, !tracked.isEmpty {
+        let names = tracked.prefix(8).joined(separator: ", ") + (tracked.count > 8 ? " and \(tracked.count - 8) more" : "")
+        text += "warning: git tracks \(names), so inside the sandbox git sees \(tracked.count == 1 ? "it" : "them") as deleted. "
+            + "If the agent commits, its commit deletes \(tracked.count == 1 ? "it" : "them"); check before using apply --include-git.\n"
+    }
+    if let out { out.write(Data(text.utf8)) } else { print(text, terminator: "") }
 }
 
 /// Shared by `run` and `start`: runs the agent attached to this terminal and
@@ -187,7 +201,7 @@ func runAgent(_ handle: inout SessionHandle, backend: SandboxBackend, flags: Run
 
     let id = handle.session.id
     print("\nagent exited with status \(result.status). Changes in session \(id):")
-    let diff = try Differ.compare(base: handle.base, work: handle.work)
+    let diff = try Differ.compare(handle)
     DiffRenderer(base: handle.base, work: handle.work).writeStat(diff, limit: 200) { print($0) }
     if result.network.mode == .locked {
         let blocked = result.blocked.isEmpty ? "" : "; blocked: \(result.blocked.joined(separator: ", "))"
@@ -228,6 +242,8 @@ struct New: ParsableCommand {
                 handle.session.backend = backend.rawValue
                 try handle.save()
             }
+            // stdout is just the id, for scripts.
+            printExcluded(handle.session, to: FileHandle.standardError)
             print(handle.session.id)
         } catch { fail(error) }
     }
@@ -260,6 +276,7 @@ struct Start: ParsableCommand {
         let s = handle.session
         print("session \(s.id)  \(s.agentLabel) on \(s.projectName)")
         print("project \(s.projectPath) stays untouched; the agent sees a copy at /workspace")
+        printExcluded(s)
         print("backend \(backend.name)")
         try runAgent(&handle, backend: backend, flags: flags)
     }
@@ -280,8 +297,11 @@ struct Hunks: ParsableCommand {
             let handle = try store().open(session)
             let applier = Applier(handle: handle)
             let path = Applier.normalizePath(self.path)
-            let diff = try Differ.compare(base: handle.base, work: handle.work)
+            let diff = try Differ.compare(handle)
             guard let change = diff.changes.first(where: { $0.path == path }) else {
+                if diff.excludedChanges.contains(where: { $0.path == path }) {
+                    throw MudroomError.invalid("\(path) is on this session's exclude list; it is never applied")
+                }
                 throw MudroomError.invalid("no change at \(path)")
             }
             // What you see here is what `apply --hunks` will apply.
@@ -328,7 +348,7 @@ struct Diff: ParsableCommand {
             let snaps = SnapshotStore(handle: handle)
             let a = try snaps.url(for: TreeRef(from)!)
             let b = try snaps.url(for: TreeRef(to)!)
-            var result = try Differ.compare(base: a, work: b)
+            var result = try Differ.compare(base: a, work: b, exclude: handle.session.excludeRules)
             if TreeRef(from) == .base && TreeRef(to) == .work {
                 // `apply` later refuses paths that changed after this.
                 try? ReviewedChanges(result.changes + result.gitMetadataChanges).save(handle)

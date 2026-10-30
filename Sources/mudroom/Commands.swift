@@ -42,11 +42,11 @@ struct Snapshots: ParsableCommand {
             var previous = handle.base
             print("  #  taken                changes since previous")
             for s in snaps {
-                let d = try Differ.compare(base: previous, work: s.directory)
+                let d = try Differ.compare(base: previous, work: s.directory, exclude: handle.session.excludeRules)
                 print(String(format: "%3d  %@  %d", s.number, timeFormatter.string(from: s.date), d.changes.count))
                 previous = s.directory
             }
-            let tail = try Differ.compare(base: previous, work: handle.work).changes.count
+            let tail = try Differ.compare(base: previous, work: handle.work, exclude: handle.session.excludeRules).changes.count
             print("     work                 \(tail)")
         } catch { fail(error) }
     }

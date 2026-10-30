@@ -47,6 +47,14 @@ public struct CloneResult: Sendable {
     public var method: CloneMethod
     /// Sockets, FIFOs, devices and unreadable entries that weren't copied.
     public var skipped: [SkippedEntry]
+    /// Entries left out because they match an exclude pattern.
+    public var excluded: [ExcludedEntry] = []
+
+    public init(method: CloneMethod, skipped: [SkippedEntry], excluded: [ExcludedEntry] = []) {
+        self.method = method
+        self.skipped = skipped
+        self.excluded = excluded
+    }
 }
 
 public enum Cloner {
@@ -60,29 +68,45 @@ public enum Cloner {
     }
 
     #if !os(Windows)
-    public static func clone(from source: URL, to destination: URL, allowClonefile: Bool = true) throws -> CloneResult {
+    /// With `exclude`, entries it matches are left out: a copy skips them,
+    /// and a whole-folder clone (clonefile, reflink) has them deleted before
+    /// this returns. If that fails the clone is removed and this throws.
+    public static func clone(from source: URL, to destination: URL, allowClonefile: Bool = true,
+                             exclude: ExcludeRules = .empty) throws -> CloneResult {
+        var whole: CloneMethod?
         #if canImport(Darwin)
         if allowClonefile {
             if clonefile(source.path, destination.path, UInt32(CLONE_NOFOLLOW)) == 0 {
-                return CloneResult(method: .clonefile, skipped: [])
+                whole = .clonefile
+            } else {
+                // ENOTSUP / EXDEV: can't clone here. EACCES and friends: something
+                // inside can't be read. Either way, copy what can be copied.
+                try? FileManager.default.removeItem(at: destination)
             }
-            // ENOTSUP / EXDEV: can't clone here. EACCES and friends: something
-            // inside can't be read. Either way, copy what can be copied.
-            try? FileManager.default.removeItem(at: destination)
         }
         #else
         if allowClonefile, try copyWithCP(["--reflink=always"], source, destination) {
-            return CloneResult(method: .reflink, skipped: [])
+            whole = .reflink
         }
         #endif
+        if let whole {
+            guard !exclude.isEmpty else { return CloneResult(method: whole, skipped: []) }
+            do {
+                return CloneResult(method: whole, skipped: [], excluded: try ExcludeWalk.prune(destination, rules: exclude))
+            } catch {
+                try? ExcludeWalk.removeEntry(destination.path)
+                throw error
+            }
+        }
         var skipped: [SkippedEntry] = []
+        var excluded: [ExcludedEntry] = []
         do {
-            try copyTree(source, destination, relative: "", skipped: &skipped)
+            try copyTree(source, destination, relative: "", canonical: [], exclude: exclude, skipped: &skipped, excluded: &excluded)
         } catch {
-            try? FileManager.default.removeItem(at: destination)
+            try? ExcludeWalk.removeEntry(destination.path)
             throw error
         }
-        return CloneResult(method: .copy, skipped: skipped)
+        return CloneResult(method: .copy, skipped: skipped, excluded: excluded)
     }
 
     /// Copies a single file or symlink, trying a clone first.
@@ -97,6 +121,13 @@ public enum Cloner {
     /// (same APFS volume), else copied; symlinks are recreated; anything
     /// else, and anything that can't be read, is recorded and left out.
     static func copyTree(_ src: URL, _ dst: URL, relative: String, skipped: inout [SkippedEntry]) throws {
+        var excluded: [ExcludedEntry] = []
+        try copyTree(src, dst, relative: relative, canonical: [], exclude: .empty, skipped: &skipped, excluded: &excluded)
+    }
+
+    /// `canonical` is `relative`'s components as `ExcludeRules` compares them.
+    static func copyTree(_ src: URL, _ dst: URL, relative: String, canonical: [String], exclude: ExcludeRules,
+                         skipped: inout [SkippedEntry], excluded: inout [ExcludedEntry]) throws {
         var st = stat()
         guard lstat(src.path, &st) == 0 else { throw MudroomError.posix("lstat", src.path, errno) }
         guard mkdir(dst.path, 0o700) == 0 else { throw MudroomError.posix("mkdir", dst.path, errno) }
@@ -117,9 +148,18 @@ public enum Cloner {
                 skipped.append(SkippedEntry(path: rel, reason: String(cString: strerror(errno))))
                 continue
             }
-            switch est.st_mode & S_IFMT {
+            let type = est.st_mode & S_IFMT
+            let canon = exclude.isEmpty ? [] : canonical + [ExcludeRules.canonicalName(name)]
+            if !exclude.isEmpty,
+               let pattern = exclude.matchEntry(canon[...], isDirectory: type == S_IFDIR || type == S_IFLNK) {
+                let isDir = type == S_IFDIR
+                excluded.append(ExcludedEntry(path: rel + (isDir ? "/" : ""), files: isDir ? ExcludeWalk.countFiles(s.path) : 1,
+                                              pattern: pattern))
+                continue
+            }
+            switch type {
             case S_IFDIR:
-                try copyTree(s, d, relative: rel, skipped: &skipped)
+                try copyTree(s, d, relative: rel, canonical: canon, exclude: exclude, skipped: &skipped, excluded: &excluded)
             case S_IFLNK:
                 guard let target = try? FileNode.readLink(s), symlink(target, d.path) == 0 else {
                     skipped.append(SkippedEntry(path: rel, reason: "symlink can't be read"))

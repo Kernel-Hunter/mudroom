@@ -17,6 +17,14 @@ struct NewSessionSheet: View {
     @State private var projectHosts: [String] = []
     @State private var checkingNetwork = false
     @State private var networkProblem: NetworkProbe.Result?
+    @State private var excludePatterns = ExcludeList.defaults
+    @State private var ignoreFilePatterns: [String] = []
+    @State private var newPattern = ""
+    @State private var showPatterns = false
+    /// "Leaves out .env, secrets/ (3 files)" for the chosen folder.
+    @State private var leftOut: String?
+    /// The project's .mudroomignore exists but can't be used.
+    @State private var ignoreFileProblem: String?
     /// Set on the first click, so a double-click starts one session.
     @State private var starting = false
 
@@ -55,7 +63,9 @@ struct NewSessionSheet: View {
         return text.prefix(1).uppercased() + text.dropFirst() + "."
     }
 
-    var canStart: Bool { project != nil && projectProblem == nil && !command.isEmpty && isReady && !checkingNetwork && !starting }
+    var canStart: Bool {
+        project != nil && projectProblem == nil && ignoreFileProblem == nil && !command.isEmpty && isReady && !checkingNetwork && !starting
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -169,6 +179,25 @@ struct NewSessionSheet: View {
                 }
             }
 
+            section("Kept out of the sandbox") {
+                HStack(spacing: 6) {
+                    Image(systemName: "eye.slash").foregroundStyle(.secondary)
+                    Text(project == nil ? "Choose a folder to see which files stay out." : leftOut ?? "Checking the folder…")
+                        .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                        .lineLimit(2).truncationMode(.middle)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let problem = ignoreFileProblem {
+                    Label(problem, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11.5)).foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                DisclosureGroup("Patterns (\(excludePatterns.count + ignoreFilePatterns.count))", isExpanded: $showPatterns) {
+                    excludeEditor.padding(.top, 6)
+                }
+                .font(.system(size: 12))
+            }
+
             DisclosureGroup("Advanced", isExpanded: $showAdvanced) {
                 LabeledContent("Image") {
                     TextField("Image", text: $image).textFieldStyle(.roundedBorder)
@@ -224,6 +253,78 @@ struct NewSessionSheet: View {
             app.setup.refreshSignIn()
         }
         .onChange(of: project) { loadNetwork() }
+        .onChange(of: excludePatterns) { refreshLeftOut() }
+    }
+
+    /// The project's patterns, each removable, and a field to add one.
+    /// Saved when the session starts.
+    var excludeEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(excludePatterns, id: \.self) { p in
+                        HStack(spacing: 6) {
+                            Text(p).font(.system(size: 11.5, design: .monospaced))
+                            if ExcludeList.defaults.contains(p) {
+                                Text("default").font(.system(size: 10)).foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            Button {
+                                excludePatterns.removeAll { $0 == p }
+                            } label: { Image(systemName: "minus.circle") }
+                                .buttonStyle(.borderless)
+                                .help("Copy files matching \(p) into the sandbox again")
+                        }
+                    }
+                    ForEach(ignoreFilePatterns, id: \.self) { p in
+                        HStack(spacing: 6) {
+                            Text(p).font(.system(size: 11.5, design: .monospaced))
+                            Text(ExcludeList.ignoreFileName).font(.system(size: 10)).foregroundStyle(.tertiary)
+                            Spacer()
+                        }
+                        .help("From the project's \(ExcludeList.ignoreFileName); edit that file to change it")
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            .frame(maxHeight: 110)
+            HStack(spacing: 6) {
+                TextField("Pattern, e.g. .npmrc, secrets/, config/*.json, !.env.test", text: $newPattern)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12, design: .monospaced))
+                    .onSubmit(addPattern)
+                Button("Add", action: addPattern)
+                    .disabled(!ExcludeRules.isPattern(newPattern.trimmingCharacters(in: .whitespaces)))
+                Button("Defaults") { excludePatterns = ExcludeList.defaults }
+                    .help("Put back Mudroom's default list")
+                    .disabled(excludePatterns == ExcludeList.defaults)
+            }
+            Text("Patterns work like .gitignore. Matching files stay out of the agent's copy, and apply never writes them. "
+                 + "A \(ExcludeList.ignoreFileName) file in the project can add more.")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    func addPattern() {
+        let p = newPattern.trimmingCharacters(in: .whitespaces)
+        guard ExcludeRules.isPattern(p) else { return }
+        if !excludePatterns.contains(p) { excludePatterns.append(p) }
+        newPattern = ""
+    }
+
+    /// Walks the folder off the main thread for the "Leaves out" line.
+    func refreshLeftOut() {
+        guard let project else { leftOut = nil; return }
+        let list = ExcludeList(patterns: excludePatterns, ignoreFile: ignoreFilePatterns)
+        leftOut = nil
+        Task {
+            let found = await Task.detached(priority: .utility) { ExcludeList.preview(project, rules: list.rules) }.value
+            // A newer folder or list wins.
+            guard project == self.project, list.patterns == excludePatterns else { return }
+            leftOut = ExcludedEntry.summary(found, limit: 4).map { "Leaves out \($0)." }
+                ?? "Nothing in this folder matches the patterns below."
+        }
     }
 
     var configStore: ProjectConfigStore { ProjectConfigStore(store: app.store) }
@@ -249,7 +350,9 @@ struct NewSessionSheet: View {
     /// repaired here instead of in a session that can't reach its API.
     func start() async {
         guard let project else { starting = false; return }
-        saveNetwork(project)
+        // The session gets the list shown here even if saving it failed;
+        // a failed save stops the start so nothing differs from what you see.
+        guard saveNetwork(project) else { starting = false; return }
         if networkMode == .locked {
             checkingNetwork = true
             let r = await app.setup.probeBeforeSession()
@@ -260,7 +363,8 @@ struct NewSessionSheet: View {
                 return
             }
         }
-        app.startSession(project: project, preset: preset, customCommand: customCommand, image: image)
+        app.startSession(project: project, preset: preset, customCommand: customCommand, image: image,
+                         exclude: excludePatterns)
         dismiss()
     }
 
@@ -270,17 +374,30 @@ struct NewSessionSheet: View {
         registries = c.includePackageRegistries
         localModels = c.localModels
         projectHosts = c.allowedHosts.map(\.value)
+        excludePatterns = c.excludePatterns
+        do {
+            ignoreFilePatterns = try ExcludeList.readIgnoreFile(project)
+            ignoreFileProblem = nil
+        } catch {
+            ignoreFilePatterns = []
+            ignoreFileProblem = MudroomError.message(error)
+        }
+        refreshLeftOut()
     }
 
-    func saveNetwork(_ project: URL) {
+    /// False (with the error shown) if the settings couldn't be saved.
+    func saveNetwork(_ project: URL) -> Bool {
         do {
             try configStore.update(project.path) {
                 $0.networkMode = networkMode
                 $0.includePackageRegistries = registries
                 $0.localModels = localModels
+                $0.excludePatterns = excludePatterns
             }
+            return true
         } catch {
-            app.errorMessage = "Couldn't save the network setting: \(MudroomError.message(error))"
+            app.errorMessage = "Couldn't save the project settings: \(MudroomError.message(error))"
+            return false
         }
     }
 

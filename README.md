@@ -47,6 +47,7 @@ https://github.com/user-attachments/assets/ff599cbc-fbd9-4c8f-801d-fd2e52ccb0c6
 - [The app](#the-app)
 - [Command line](#command-line)
 - [Agents, sign-in and API keys](#agents-sign-in-and-api-keys)
+- [Keep files out of the sandbox](#keep-files-out-of-the-sandbox)
 - [Network](#network)
 - [Review and apply](#review-and-apply)
 - [Docker and Podman](#docker-and-podman)
@@ -242,8 +243,10 @@ claude`.
   status (running, ready to review, applied, discarded).
 - **New Session** (⌘N): pick a folder, an agent (Claude Code, Codex, Gemini
   CLI, opencode, Aider or a custom command) and a network mode (Locked, Open,
-  Offline), then start. Mudroom clones the folder and opens the agent in a
-  new Terminal window.
+  Offline), then start. Mudroom clones the folder, leaving out `.env` files
+  and keys (see [Keep files out of the
+  sandbox](#keep-files-out-of-the-sandbox)), and opens the agent in a new
+  Terminal window.
 - **Review, Files**: changed files grouped into Added, Modified, Deleted and
   Mode & Type, each with a checkbox. The right pane shows a unified or
   side-by-side diff with line numbers. Modified text files have a checkbox per
@@ -316,6 +319,10 @@ mudroom undo last
 mudroom snapshots last
 mudroom diff last --from 2 --to work           # what changed after snapshot 2
 mudroom diff last --from 1 --to 3
+
+# Files kept out of the agent's copy (.env and keys by default).
+mudroom exclude list
+mudroom exclude add secrets/
 
 # Housekeeping.
 mudroom list
@@ -499,6 +506,11 @@ command line. The runtime does write them down while the session runs:
 The entry goes away when the session's container is removed at the end of
 the session.
 
+Secrets kept in files inside the project, such as a `.env`, are a different
+matter: they would be copied along with the rest of the folder. Mudroom
+leaves the usual ones out of the agent's copy by default; see [Keep files out
+of the sandbox](#keep-files-out-of-the-sandbox).
+
 ### Local models (Ollama, LM Studio)
 
 Turn on Local models for a project (New Session, or `mudroom network
@@ -535,6 +547,108 @@ the project:
 and then `opencode run -m ollama/qwen2.5:7b-instruct "..."` (or pick the model
 in opencode). Small models often get tool calls wrong; that is the model, not
 the sandbox.
+
+## Keep files out of the sandbox
+
+The agent works on a copy of the whole project folder, so a `.env` with real
+keys would be in that copy too. Files that match the project's exclude list
+are left out of both copies (`base/` and `work/`). The agent never sees them,
+`diff` has nothing to show for them, and `apply` can't create, change or
+delete them in your project.
+
+Each project starts with `.env`, `.env.*` (but not `.env.example`,
+`.env.sample` or `.env.template`), `.envrc`, `*.pem`, `*.key`, `*.p12`,
+`*.pfx`, `id_rsa`, `id_dsa`, `id_ecdsa`, `id_ed25519` and `.netrc`. `.npmrc`
+isn't on the list, because a project's `.npmrc` usually holds settings rather
+than a token; add it if yours has one. `*.key` also catches Keynote files.
+
+Session start says what was left out:
+
+```
+session 20261028-143852-24c4  Claude Code on myapp
+project /Users/me/code/myapp stays untouched; the agent sees a copy at /workspace
+left out of the sandbox: .env, config/server.pem (2 files). Change the list with `mudroom exclude`.
+```
+
+The list is on by default because a key the agent can read is a key it can
+send to any host you allowed. The cost is that an agent that needs `.env` to
+run your tests won't find it. When that happens, take the pattern off the
+list for that project (`mudroom exclude remove .env`), let one file back in
+with a `!` line (`mudroom exclude add '!.env.test'`), or keep a `.env.example`
+with dummy values, which is copied.
+
+```sh
+mudroom exclude list                    # the patterns, and what a new session would leave out
+mudroom exclude add secrets/ 'config/*.json' .npmrc
+mudroom exclude add '!.env.test'        # let one file back in
+mudroom exclude remove .env             # defaults can be removed too
+mudroom exclude remove --all            # copy everything again
+mudroom exclude reset                   # back to the default list
+```
+
+Like the network commands, these work on the current directory, or take
+`--project <dir>` or `--session <id>`. In the app, New Session has a "Kept out
+of the sandbox" section that shows what the chosen folder would leave out
+and lets you add and remove patterns.
+
+Patterns use `.gitignore` syntax, relative to the project root:
+
+- `name` matches a file or folder with that name at any depth. `/name` and
+  `dir/name` match from the project root only.
+- `secrets/` matches folders (and symlinks) only, and everything inside them.
+- `*`, `?` and `[a-z]` match within one name, `**` across folders
+  (`**/id_rsa`, `logs/**`, `a/**/b`). Sets take the POSIX classes
+  `[:alpha:]`, `[:digit:]`, `[:alnum:]`, `[:upper:]`, `[:lower:]`,
+  `[:space:]`, `[:punct:]` and `[:xdigit:]` (`key[[:digit:]].pem`). Since
+  case is ignored, `[:upper:]` and `[:lower:]` both match any letter that has
+  case. An unknown class is an error.
+- `!pattern` lets a file back in. As in git, nothing inside an excluded
+  folder can be let back in.
+- Lines starting with `#` are comments, and `\` escapes the next character.
+- Names are compared without case and after Unicode normalization, so
+  `.ENV` is caught too: on a default APFS or NTFS disk it is the same file as
+  `.env`. On Windows, trailing dots and spaces are ignored as well.
+
+A `.mudroomignore` file at the project root, in the same syntax, adds
+patterns for everyone who uses the project, and can be committed. It can only
+add: a `!` line in it takes back a pattern from the same file, never one from
+your list, so a repository can't use it to pull your `.env` into the sandbox.
+It must be a regular file (not a symlink), at most 1 MB, with at most 1,000
+patterns of at most 1,024 characters each. If it breaks one of these rules,
+or has a line that isn't a pattern, Mudroom refuses to create the session
+and says why.
+
+The list is read when a session is created and recorded in its
+`session.json`. Changing it later affects new sessions only. Diff and apply
+use the recorded list, never the agent's copy of `.mudroomignore`. If the
+agent writes a file at an excluded path (it creates its own `.env`, say),
+`diff` lists it with an `X` and `apply` skips it:
+
+```
+M  README.md
+X  .env  (on the exclude list; never applied)
+```
+
+The app and `mudroom review` show these below the file list and never apply
+them. An agent's edit to `.mudroomignore` itself is flagged and starts
+unselected, like `.envrc`.
+
+Symlinks are copied as links and never followed. A link named `.env` is left
+out, and a link that points at an excluded file (`config.env -> ../.env`) is
+copied but finds nothing at the other end.
+
+Two things to know when the project is a git repository:
+
+- An excluded file that git tracks is missing from the agent's copy, so
+  inside the sandbox `git status` shows it as deleted, and a `git commit -a`
+  by the agent records the deletion. `apply` leaves `.git` alone unless you
+  pass `--include-git`, but with it that commit would land in your
+  repository's history. Session start prints a warning when git tracks
+  any of the files left out.
+- If the agent deletes a folder that holds an excluded file in your project
+  (`src/` with your `src/.env` in it), apply removes the other files, reports
+  the folder as a conflict because it isn't empty on your side, and applies
+  the rest. Your `src/.env` stays.
 
 ## Network
 
@@ -690,7 +804,10 @@ Text files get a unified diff from Mudroom's own line diff. Binary files show
 `binary changed (size a -> b)` (or `binary added`, `binary deleted`). Changes
 inside any `.git` directory (also nested ones, and `.GIT` on case-insensitive
 disks) are collapsed into one line unless you pass `--include-git`; `apply`
-skips them by default for the same reason.
+skips them by default for the same reason. Check them before applying with
+`--include-git` if the project has files on the exclude list that git
+tracks: the agent's repository sees those files as deleted (see [Keep files
+out of the sandbox](#keep-files-out-of-the-sandbox)).
 
 Some lines get a marker:
 
@@ -701,7 +818,9 @@ A  .husky/pre-commit  ! a git hook script that runs on the host
 ```
 
 `?` is an entry Mudroom couldn't read (permissions, a socket or a FIFO). It is
-listed so it isn't silently missing, and it is never applied. Files that your
+listed so it isn't silently missing, and it is never applied. `X` is a file
+the agent wrote at a path on the exclude list (see [Keep files out of the
+sandbox](#keep-files-out-of-the-sandbox)); it is never applied either. Files that your
 tools may run on your side, such as `.envrc`, `.gitattributes`,
 `.gitmodules`, `.pre-commit-config.yaml`, `.npmrc`, `.vscode/tasks.json` and
 scripts under `.husky/` or `.githooks/`, are marked and start unselected in
@@ -725,6 +844,8 @@ applies. Other rules:
 - Directories are removed with `rmdir`, so a directory that gained a file on
   your side is not deleted.
 - Mudroom won't write through a symlinked directory in your project.
+- Paths on the session's exclude list are never written, even if the agent
+  created them in its copy.
 - Before touching a file, Mudroom copies it into a rollback bundle in the
   session directory. `undo` restores from there, and skips any path you changed
   again after the apply (`--force` overrides, and keeps a copy of the edit it
@@ -903,18 +1024,28 @@ on it. What is different from macOS and Linux:
     reviewed.json  content hashes of what you last reviewed
     runner.lock    held while the agent runs
     rollback/      one bundle per apply: manifest.json, journal.jsonl, copies of overwritten files
-  projects/<hash>.json   per-project network mode, allowlist, snapshot interval
+  projects/<hash>.json   per-project network mode, allowlist, snapshot interval, exclude list
   agents/<agent>/home/   the agent's persistent config directory
   agents/<agent>/token   stored token on Linux (macOS: the Keychain, Windows: Credential Manager)
 ```
 
 The clones cover the whole folder, including untracked, ignored and non-git
-files. They are copy-on-write clones (APFS on macOS, a reflink on btrfs or
+files, except what the project's exclude list leaves out (`.env` files and
+keys by default; see [Keep files out of the
+sandbox](#keep-files-out-of-the-sandbox)). They are copy-on-write clones (APFS on macOS, a reflink on btrfs or
 XFS), not git clones or worktrees, so on APFS they take no extra disk until
 files change. On Windows they are ReFS block clones, or plain copies on
 NTFS. If the project is on a different volume or a disk that can't clone,
 Mudroom falls back to plain copies that keep modes, symlinks and
 timestamps.
+
+An APFS clone or a reflink copies the folder in one step, so Mudroom then
+deletes the excluded entries from both clones. That happens before it writes
+the session's `session.json`, which `mudroom start` and the app need to run
+anything, so no sandbox ever starts on a clone that still has them. If an
+entry can't be deleted, the session isn't created. Plain copies and Windows
+copies skip excluded entries as they go. Docker and Podman mount the same
+`work/` clone, so the list applies to them too.
 
 `diff` compares `base/` with `work/`. `apply` copies from `work/` to the
 project after checking the project against `base/`. Set `MUDROOM_HOME` to keep
@@ -967,6 +1098,10 @@ If your project is a git repo and you're happy reviewing with git, Docker Sandbo
   Apple's `container` keeps the session's environment in a 0644
   `config.json`, and Docker shows it in `docker inspect`. See [How secrets
   reach the sandbox](#how-secrets-reach-the-sandbox).
+- The exclude list matches names, not contents. A hard link to `.env` under
+  another name, or a key pasted into `config.yml`, is copied. Files outside
+  the project that a symlink points to aren't copied either way, since links
+  are never followed.
 - The allowlist works on host names. An allowed host is allowed completely:
   Mudroom doesn't look inside TLS, so it can't tell which API calls the agent
   makes or what it uploads.

@@ -43,8 +43,27 @@ public struct DiffResult: Sendable {
     /// Changed entries inside any `.git` (the project's, a nested repo's,
     /// any case spelling). Hidden and never applied unless asked for.
     public var gitMetadataChanges: [Change]
+    /// Changes at paths the session's exclude patterns match: files the
+    /// agent created there itself (the clones never had any). Listed, never
+    /// applied.
+    public var excludedChanges: [Change] = []
 
-    public var isEmpty: Bool { changes.isEmpty && gitMetadataChanges.isEmpty }
+    public init(changes: [Change], gitMetadataChanges: [Change], excludedChanges: [Change] = []) {
+        self.changes = changes
+        self.gitMetadataChanges = gitMetadataChanges
+        self.excludedChanges = excludedChanges
+    }
+
+    public var isEmpty: Bool { changes.isEmpty && gitMetadataChanges.isEmpty && excludedChanges.isEmpty }
+
+    /// `excludedChanges` without the entries inside an excluded folder that
+    /// is itself listed: what to name in a summary.
+    public var excludedTopLevel: [Change] { Differ.topmost(excludedChanges) }
+
+    /// `excludedTopLevel` as paths, folders ending in `/`.
+    public var excludedNames: [String] {
+        excludedTopLevel.map { $0.path + ($0.after.isDirectory || $0.before.isDirectory ? "/" : "") }
+    }
 }
 
 public enum Differ {
@@ -68,6 +87,7 @@ public enum Differ {
         case ".gitattributes": return "can name filter and diff drivers that git runs"
         case ".pre-commit-config.yaml": return "pre-commit runs the hooks listed here"
         case ".npmrc", ".yarnrc", ".yarnrc.yml": return "package manager settings (registries, scripts)"
+        case ExcludeList.ignoreFileName where parts.count == 1: return "changes which files Mudroom keeps out of the sandbox"
         default: break
         }
         if parent == ".vscode", ["tasks.json", "settings.json", "launch.json", "extensions.json"].contains(name) {
@@ -99,21 +119,42 @@ public enum Differ {
         return nil
     }
 
+    /// The changes not inside another listed change's folder.
+    public static func topmost(_ changes: [Change]) -> [Change] {
+        let paths = Set(changes.map(\.path))
+        return changes.filter { c in
+            var p = Substring(c.path)
+            while let slash = p.lastIndex(of: "/") {
+                p = p[..<slash]
+                if paths.contains(String(p)) { return false }
+            }
+            return true
+        }
+    }
+
     /// `hostRisk`, else `agentArtifact`: why a path starts unselected.
     public static func reviewNote(_ path: String) -> String? {
         hostRisk(path) ?? agentArtifact(path)
     }
 
-    public static func compare(base: URL, work: URL) throws -> DiffResult {
+    /// A session's base against its work copy, with its exclude patterns.
+    public static func compare(_ handle: SessionHandle) throws -> DiffResult {
+        try compare(base: handle.base, work: handle.work, exclude: handle.session.excludeRules)
+    }
+
+    /// Changes at paths `exclude` matches go to `excludedChanges`.
+    public static func compare(base: URL, work: URL, exclude: ExcludeRules = .empty) throws -> DiffResult {
         // The two trees are independent; scan them side by side.
         let scans = parallelMap([base, work]) { url in Result { try TreeSnapshot.scan(url) } }
         let a = scans[0], b = scans[1]
-        return compare(base: try a.get(), work: try b.get())
+        return compare(base: try a.get(), work: try b.get(), exclude: exclude)
     }
 
-    public static func compare(base: TreeSnapshot, work: TreeSnapshot) -> DiffResult {
+    public static func compare(base: TreeSnapshot, work: TreeSnapshot, exclude: ExcludeRules = .empty) -> DiffResult {
         var changes: [Change] = []
         var git: [Change] = []
+        var excluded: [Change] = []
+        var folders: [String: String?] = [:]
         // Below a directory that couldn't be listed on either side nothing
         // can be compared; only the directory itself is reported.
         let blind = Set((base.nodes.filter { $0.value.isUnreadable } .map(\.key))
@@ -135,9 +176,15 @@ public enum Differ {
             let after = work.nodes[path] ?? .absent
             guard let kind = classify(before: before, after: after), !underBlind(path) else { continue }
             let change = Change(path: path, kind: kind, before: before, after: after)
-            if isGitInternal(path) { git.append(change) } else { changes.append(change) }
+            if !exclude.isEmpty, exclude.match(path, before: before, after: after, folders: &folders) != nil {
+                excluded.append(change)
+            } else if isGitInternal(path) {
+                git.append(change)
+            } else {
+                changes.append(change)
+            }
         }
-        return DiffResult(changes: changes, gitMetadataChanges: git)
+        return DiffResult(changes: changes, gitMetadataChanges: git, excludedChanges: excluded)
     }
 
     /// Returns nil when nothing reviewable changed.

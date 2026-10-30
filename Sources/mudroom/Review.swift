@@ -40,12 +40,17 @@ struct Review: ParsableCommand {
         do {
             handle = try store().open(session)
             guard handle.hasClones else { throw MudroomError.invalid("session \(handle.session.id) was discarded") }
-            let diff = try Differ.compare(base: handle.base, work: handle.work)
+            let diff = try Differ.compare(handle)
             applier = Applier(handle: handle)
             let dry = try applier.preflight(diff: diff)
             reviewed = ReviewedChanges(diff.changes + diff.gitMetadataChanges)
             try? reviewed.save(handle)
             state = TerminalReview(changes: diff.changes, conflicts: Dictionary(dry.conflicts.map { ($0.path, $0.reason) }) { a, _ in a })
+            let excluded = diff.excludedNames.map(TextLines.visible)
+            if !excluded.isEmpty {
+                state.message = "not applied, on the exclude list: " + excluded.prefix(6).joined(separator: ", ")
+                    + (excluded.count > 6 ? " and \(excluded.count - 6) more" : "")
+            }
             renderer = DiffRenderer(base: handle.base, work: handle.work)
         } catch { fail(error) }
 

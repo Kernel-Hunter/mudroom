@@ -93,17 +93,18 @@ struct Fixture {
     let store: SessionStore
     var handle: SessionHandle
 
-    /// `populate` fills the project before the session is cloned.
-    init(clone: Bool = true, populate: (URL) throws -> Void) throws {
+    /// `populate` fills the project before the session is cloned. `exclude`
+    /// nil uses the project's list (Mudroom's defaults) and .mudroomignore.
+    init(clone: Bool = true, exclude: ExcludeList? = nil, populate: (URL) throws -> Void) throws {
         tmp = try TempDir()
         project = tmp.path("project")
         try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
         try populate(project)
         store = SessionStore(root: tmp.path("store"))
-        handle = try store.create(project: project, command: ["true"], image: "test", allowClonefile: clone)
+        handle = try store.create(project: project, command: ["true"], image: "test", allowClonefile: clone, exclude: exclude)
     }
 
     var work: URL { handle.work }
 
-    func diff() throws -> DiffResult { try Differ.compare(base: handle.base, work: handle.work) }
+    func diff() throws -> DiffResult { try Differ.compare(handle) }
 }
