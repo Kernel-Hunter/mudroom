@@ -41,6 +41,9 @@ public struct SandboxSpec: Sendable, Equatable {
     /// `usesGuestFirewall`). The command then runs without root and without
     /// capabilities; if the rules can't be loaded it doesn't run at all.
     public var firewall: GuestFirewall?
+    /// Report which process opened each proxy connection (see
+    /// `ConnectionWatch`). Backends that can't run the watcher ignore it.
+    public var connectionWatch: ConnectionWatch?
 
     /// Every name passed with `--env NAME`.
     public var passedNames: [String] {
@@ -96,11 +99,16 @@ public struct ProxyListen: Sendable, Equatable {
     public var clientSubnets: [IPv4Subnet]
     /// Networks the proxy must never connect to (besides the client ones).
     public var blockedSubnets: [IPv4Subnet]
+    /// The sandbox reaches the proxy through a forwarder that starts each
+    /// connection with a PROXY protocol line (Docker's sidecar).
+    public var forwarderSendsProxyLine: Bool
 
-    public init(bindHost: String?, clientSubnets: [IPv4Subnet], blockedSubnets: [IPv4Subnet] = []) {
+    public init(bindHost: String?, clientSubnets: [IPv4Subnet], blockedSubnets: [IPv4Subnet] = [],
+                forwarderSendsProxyLine: Bool = false) {
         self.bindHost = bindHost
         self.clientSubnets = clientSubnets
         self.blockedSubnets = blockedSubnets
+        self.forwarderSendsProxyLine = forwarderSendsProxyLine
     }
 }
 
@@ -125,6 +133,9 @@ public protocol SandboxBackend: Sendable {
     /// sandbox network reaches the host, and only rules inside the VM keep
     /// it to the proxy.
     var usesGuestFirewall: Bool { get }
+    /// True if the backend runs `SandboxSpec.connectionWatch` in the
+    /// sandbox, so the network log can say which process connected.
+    var watchesConnections: Bool { get }
     /// Throws `MudroomError.backendUnavailable` with a human-readable reason.
     func checkAvailable() throws
     /// Runs the agent attached to this terminal and returns its exit status.
@@ -170,6 +181,7 @@ extension SandboxBackend {
     }
 
     public var usesGuestFirewall: Bool { false }
+    public var watchesConnections: Bool { false }
     public func isRunning(_ name: String) -> Bool { false }
     public func stop(_ name: String) {}
     public func stopHint(_ name: String) -> String { "stop the container \(name)" }
@@ -239,6 +251,9 @@ public struct AppleContainerBackend: SandboxBackend {
     /// The host-only network's gateway is the Mac itself.
     public var usesGuestFirewall: Bool { true }
 
+    /// The firewall script starts the watcher as root, beside the agent.
+    public var watchesConnections: Bool { true }
+
     public func checkAvailable() throws {
         guard let exe = executable else {
             throw MudroomError.backendUnavailable(
@@ -273,7 +288,13 @@ public struct AppleContainerBackend: SandboxBackend {
     public static func runArguments(for spec: SandboxSpec, image: GuestFirewall.ImageConfig? = nil) -> [String] {
         var args = ["run", "--rm", "--name", spec.name]
         if spec.firewall != nil {
-            args += ["--user", "0:0", "--cap-add", "CAP_NET_ADMIN", "--entrypoint", "/bin/sh"]
+            args += ["--user", "0:0", "--cap-add", "CAP_NET_ADMIN"]
+            if spec.firewall?.proxy != nil && spec.connectionWatch != nil {
+                // For the connection watcher only: it reads the agent's
+                // /proc/<pid>/fd. The agent's setpriv drops them.
+                args += ["--cap-add", "CAP_SYS_PTRACE", "--cap-add", "CAP_DAC_READ_SEARCH"]
+            }
+            args += ["--entrypoint", "/bin/sh"]
         }
         if spec.interactive { args.append("--interactive") }
         if spec.tty { args.append("--tty") }
@@ -290,16 +311,28 @@ public struct AppleContainerBackend: SandboxBackend {
         for key in spec.environment.keys.sorted() {
             args += ["--env", "\(key)=\(spec.environment[key]!)"]
         }
+        if !watchEnvironment(spec).isEmpty {
+            // By name: the value comes from `container`'s own environment,
+            // and the firewall script unsets it before the agent starts.
+            args += ["--env", ConnectionWatch.tokenVariable]
+        }
         if let network = spec.network { args += ["--network", network] }
         if let cpus = spec.cpus { args += ["--cpus", String(cpus)] }
         if let memory = spec.memory { args += ["--memory", memory] }
         args.append(spec.image)
         if let firewall = spec.firewall {
-            args += firewall.arguments(image: image ?? .init(), command: spec.command)
+            args += firewall.arguments(image: image ?? .init(), command: spec.command, watch: spec.connectionWatch)
         } else {
             args += spec.command
         }
         return args
+    }
+
+    /// The watcher's token, for `container`'s environment, when the spec
+    /// starts one (a firewall with a proxy, and a watch).
+    static func watchEnvironment(_ spec: SandboxSpec) -> [String: String] {
+        guard spec.firewall?.proxy != nil, let watch = spec.connectionWatch else { return [:] }
+        return [ConnectionWatch.tokenVariable: watch.token]
     }
 
     /// `runArguments`, reading the image's config first when the spec has
@@ -322,7 +355,8 @@ public struct AppleContainerBackend: SandboxBackend {
 
     public func run(_ spec: SandboxSpec) throws -> Int32 {
         try checkAvailable()
-        return try ProcessRunner.runAttached(executable!, arguments(for: spec), environment: spec.secretEnvironment)
+        return try ProcessRunner.runAttached(executable!, arguments(for: spec),
+                                             environment: spec.secretEnvironment.merging(Self.watchEnvironment(spec)) { a, _ in a })
     }
 
     public func isRunning(_ name: String) -> Bool {
@@ -395,7 +429,8 @@ public struct AppleContainerBackend: SandboxBackend {
     public func capture(_ spec: SandboxSpec) throws -> CapturedOutput {
         try checkAvailable()
         return try ProcessRunner.capture(executable!, ["run", "--progress", "none"] + arguments(for: spec).dropFirst(),
-                                         environment: spec.secretEnvironment, timeout: spec.timeout)
+                                         environment: spec.secretEnvironment.merging(Self.watchEnvironment(spec)) { a, _ in a },
+                                         timeout: spec.timeout)
     }
 
     public func buildImage(containerfile: URL, context: URL, tag: String) throws {

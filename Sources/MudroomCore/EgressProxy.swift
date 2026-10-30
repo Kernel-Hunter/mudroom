@@ -24,9 +24,18 @@ public struct NetworkLogEntry: Codable, Sendable, Equatable {
     public var bytesOut: Int64
     public var bytesIn: Int64
     public var durationMs: Int
+    /// The process in the sandbox that opened the connection, as the
+    /// watcher in the VM reported it (see `ConnectionWatch`). All three are
+    /// nil when it wasn't running or missed this connection, and in logs
+    /// from before it existed.
+    public var pid: Int?
+    /// Its command line.
+    public var command: String?
+    /// Its parents' command lines, nearest first, up to the agent.
+    public var parents: [String]?
 
     public init(time: Date, host: String, port: Int, method: String, allowed: Bool, reason: String? = nil,
-                bytesOut: Int64 = 0, bytesIn: Int64 = 0, durationMs: Int = 0) {
+                bytesOut: Int64 = 0, bytesIn: Int64 = 0, durationMs: Int = 0, origin: ConnectionOrigin? = nil) {
         self.time = time
         self.host = host
         self.port = port
@@ -36,6 +45,16 @@ public struct NetworkLogEntry: Codable, Sendable, Equatable {
         self.bytesOut = bytesOut
         self.bytesIn = bytesIn
         self.durationMs = durationMs
+        if let origin { setOrigin(origin.pid, origin.commands) }
+    }
+
+    /// Sets pid, command and parents from `commands` (the process first),
+    /// cleaned and capped (see `ConnectionOrigin.capped`).
+    mutating func setOrigin(_ pid: Int?, _ commands: [String]) {
+        let c = ConnectionOrigin.capped(commands)
+        self.pid = pid
+        command = c.first ?? ""
+        parents = c.count > 1 ? Array(c.dropFirst()) : nil
     }
 }
 
@@ -68,10 +87,27 @@ public enum NetworkLog {
         return d
     }
 
+    /// One entry as it is written to network.jsonl.
+    public static func jsonLine(_ e: NetworkLogEntry) -> String {
+        (try? encoder().encode(e)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
+    }
+
+    /// The entries of a network.jsonl. Command lines are cleaned again on
+    /// the way in: they are the sandbox's words, and they end up in a
+    /// terminal.
     public static func read(_ url: URL) -> [NetworkLogEntry] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         let decoder = decoder()
-        return data.split(separator: UInt8(ascii: "\n")).compactMap { try? decoder.decode(NetworkLogEntry.self, from: Data($0)) }
+        return data.split(separator: UInt8(ascii: "\n")).compactMap {
+            guard var e = try? decoder.decode(NetworkLogEntry.self, from: Data($0)) else { return nil }
+            if let command = e.command {
+                e.setOrigin(e.pid, [command] + (e.parents ?? []))
+            } else {
+                e.pid = nil
+                e.parents = nil
+            }
+            return e
+        }
     }
 
     /// How a logged destination is shown: "example.com:443", "[::1]:443".
@@ -105,6 +141,44 @@ public enum NetworkLog {
         public var last: Date
         /// Most recent refusal or failure reason.
         public var reason: String?
+        /// Programs that made these connections ("curl", "npm"), in the
+        /// order they first did, as the connection watcher reported them.
+        public var programs: [String] = []
+        /// Connections the watcher reported no process for.
+        public var unattributed: Int = 0
+    }
+
+    /// "[1234] curl -sI https://github.com", cut to `width` characters
+    /// ("..." at the end), or "unknown" when the watcher reported no
+    /// process for the connection. The program is shown without its
+    /// directory ("python3 -c ..." for "/opt/uv/.../bin/python3 -c ...").
+    public static func commandLabel(_ e: NetworkLogEntry, width: Int = 60) -> String {
+        guard let command = e.command else { return "unknown" }
+        let text = (e.pid.map { "[\($0)] " } ?? "") + (command.isEmpty ? "(no command line)" : shortCommand(command))
+        return truncate(text, width)
+    }
+
+    /// `command` with its first word cut to the last path component.
+    public static func shortCommand(_ command: String) -> String {
+        let end = command.firstIndex(of: " ") ?? command.endIndex
+        let program = command[..<end]
+        guard let slash = program.lastIndex(of: "/"), program.index(after: slash) < end else { return command }
+        return String(command[command.index(after: slash)...])
+    }
+
+    /// "curl, npm", or "curl, npm and 2 unknown", at most `limit` names.
+    public static func programsLabel(_ r: HostSummary, limit: Int = 3) -> String {
+        var parts = Array(r.programs.prefix(limit))
+        if r.programs.count > limit { parts.append("\(r.programs.count - limit) more") }
+        if r.unattributed > 0 { parts.append(r.unattributed == r.count ? "unknown" : "\(r.unattributed) unknown") }
+        guard parts.count > 1 else { return parts.first ?? "" }
+        return parts.dropLast().joined(separator: ", ") + " and " + parts.last!
+    }
+
+    /// `s` cut to `width` characters, ending in "..." when cut.
+    public static func truncate(_ s: String, _ width: Int) -> String {
+        guard s.count > width else { return s }
+        return String(s.prefix(max(0, width - 3))) + "..."
     }
 
     /// One row per host, port and decision. Blocked rows first, then by volume.
@@ -119,10 +193,13 @@ public enum NetworkLog {
                 r.first = min(r.first, e.time)
                 r.last = max(r.last, e.time)
                 if e.reason != nil { r.reason = e.reason }
+                r.add(program: e)
                 rows[key] = r
             } else {
-                rows[key] = HostSummary(host: e.host, port: e.port, allowed: e.allowed, count: 1, bytesOut: e.bytesOut,
-                                        bytesIn: e.bytesIn, first: e.time, last: e.time, reason: e.reason)
+                var r = HostSummary(host: e.host, port: e.port, allowed: e.allowed, count: 1, bytesOut: e.bytesOut,
+                                    bytesIn: e.bytesIn, first: e.time, last: e.time, reason: e.reason)
+                r.add(program: e)
+                rows[key] = r
             }
         }
         return rows.values.sorted {
@@ -201,12 +278,20 @@ public final class EgressProxy: @unchecked Sendable {
         /// The proxy picks the destination itself, so no other local port
         /// (and no other address) becomes reachable. Empty = none.
         public var hostServices: [UInt16: UInt16]
+        /// Accept the connection watcher (`ConnectionWatch`) when it sends
+        /// this token, and add the process it reports to each log entry.
+        /// Nil: no watcher.
+        public var watchToken: String?
+        /// Clients may start with a PROXY protocol (v1) line giving the
+        /// address they forward for. Docker's forwarder container sends one,
+        /// so the source port the watcher reports can be matched.
+        public var acceptsProxyLine: Bool
 
         public init(allowlist: Allowlist, logURL: URL? = nil, bindHost: String? = nil, port: UInt16 = 0,
                     clientSubnets: [IPv4Subnet] = [], blockLocalDestinations: Bool = true,
                     blockedSubnets: [IPv4Subnet] = [], connectTimeout: Int = 15,
                     headerTimeout: TimeInterval = 10, maxConnections: Int = 256,
-                    hostServices: [UInt16: UInt16] = [:]) {
+                    hostServices: [UInt16: UInt16] = [:], watchToken: String? = nil, acceptsProxyLine: Bool = false) {
             self.allowlist = allowlist
             self.logURL = logURL
             self.bindHost = bindHost
@@ -218,6 +303,8 @@ public final class EgressProxy: @unchecked Sendable {
             self.headerTimeout = headerTimeout
             self.maxConnections = maxConnections
             self.hostServices = hostServices
+            self.watchToken = watchToken
+            self.acceptsProxyLine = acceptsProxyLine
         }
     }
 
@@ -232,12 +319,17 @@ public final class EgressProxy: @unchecked Sendable {
     private var entries: [NetworkLogEntry] = []
     private let encoder = NetworkLog.encoder()
     private var ownAddresses: (Set<IPAddress>, Date) = ([], .distantPast)
+    /// What the connection watcher reported; nil without one.
+    let origins: ConnectionOrigins?
+    private var watchersConnected = 0
+    private var watcherEverConnected = false
 
     /// The port actually listened on (after `start`).
     public private(set) var port: UInt16 = 0
 
     public init(_ configuration: Configuration) {
         self.configuration = configuration
+        origins = configuration.watchToken == nil ? nil : ConnectionOrigins()
     }
 
     /// Starts listening; returns once the port is known.
@@ -297,6 +389,20 @@ public final class EgressProxy: @unchecked Sendable {
         }
     }
 
+    /// True while a watcher with the right token is connected. Without one
+    /// nothing is held waiting for its reports.
+    var hasWatcher: Bool { lock.withLock { watchersConnected > 0 } }
+
+    /// True if a watcher with the right token connected at any point.
+    public var watcherConnected: Bool { lock.withLock { watcherEverConnected } }
+
+    func watcher(connected: Bool) {
+        lock.withLock {
+            watchersConnected += connected ? 1 : -1
+            if connected { watcherEverConnected = true }
+        }
+    }
+
     /// Log entries so far (for tests and live views).
     public var loggedEntries: [NetworkLogEntry] { lock.withLock { entries } }
 
@@ -307,12 +413,12 @@ public final class EgressProxy: @unchecked Sendable {
         while true {
             guard let ready = Sock.poll([fd, wake], timeoutMs: -1) else { return }
             if ready[1] { return }
-            guard ready[0], let (conn, peer) = Sock.accept(fd) else { continue }
+            guard ready[0], let (conn, peer, peerPort) = Sock.accept(fd) else { continue }
             guard let peer, isAllowedClient(peer) else {
                 Sock.close(conn)
                 continue
             }
-            let ex = ProxyExchange(proxy: self, client: conn)
+            let ex = ProxyExchange(proxy: self, client: conn, clientPort: peerPort)
             let accepted: Bool? = lock.withLock {
                 guard running else { return false }
                 guard active.count < configuration.maxConnections else { return nil }
@@ -439,6 +545,9 @@ final class LockedBox<T>: @unchecked Sendable {
 final class ProxyExchange: @unchecked Sendable {
     unowned let proxy: EgressProxy
     let client: Int32
+    /// The client's source port: from accept, or from the forwarder's
+    /// PROXY line. 0 if unknown.
+    var clientPort: UInt16
     private var upstream: Int32 = -1
     private let fdLock = NSLock()
     private var aborted = false
@@ -453,10 +562,18 @@ final class ProxyExchange: @unchecked Sendable {
     var destination: ProxyHost?
 
     static let maxHeader = 32 * 1024
+    /// How long a refusal waits for the watcher to report the client.
+    /// A refused client closes as soon as it has the answer, often before
+    /// the watcher's next look; this holds it open long enough to be seen.
+    static let refusalHold: TimeInterval = 0.5
+    /// How long a finished connection's log line waits for a report that
+    /// may still be on its way.
+    static let logHold: TimeInterval = 0.25
 
-    init(proxy: EgressProxy, client: Int32) {
+    init(proxy: EgressProxy, client: Int32, clientPort: UInt16 = 0) {
         self.proxy = proxy
         self.client = client
+        self.clientPort = clientPort
     }
 
     var isAborted: Bool { fdLock.withLock { aborted } }
@@ -478,19 +595,82 @@ final class ProxyExchange: @unchecked Sendable {
                 if upstream >= 0 { Sock.close(upstream) }
                 upstream = -1
             }
+            let ended = Date()
             let entry = log && !host.isEmpty ? NetworkLogEntry(
                 // `allowed` is the policy decision; an allowed host whose
                 // connection failed keeps allowed = true and gets a reason.
                 time: Date(timeIntervalSince1970: (started.timeIntervalSince1970 * 1000).rounded() / 1000), host: host, port: port,
                 method: method, allowed: allowed, reason: failure, bytesOut: bytesOut, bytesIn: bytesIn,
-                durationMs: Int(Date().timeIntervalSince(started) * 1000)) : nil
+                durationMs: Int(ended.timeIntervalSince(started) * 1000), origin: origin(at: ended)) : nil
             proxy.finished(self, entry: entry)
         }
-        guard let (head, rest) = readHeader() else {
+        guard var (head, rest) = readHeader() else {
             log = false
             return
         }
+        if proxy.configuration.acceptsProxyLine, let (peerPort, after) = Self.splitProxyLine(head) {
+            // The TCP peer is the forwarder; its own port means nothing here.
+            clientPort = peerPort ?? 0
+            head = after
+        }
+        if let token = proxy.configuration.watchToken, head.starts(with: Data((ConnectionWatch.greeting + " ").utf8)) {
+            log = false
+            guard Self.sameBytes(head, Data("\(ConnectionWatch.greeting) \(token)".utf8)) else {
+                return reject(403, "wrong watcher token")
+            }
+            return readWatcher(rest)
+        }
         handle(head: head, rest: rest)
+    }
+
+    /// The process the watcher reported for this connection, waiting
+    /// briefly for a report that may still be on its way.
+    private func origin(at ended: Date) -> ConnectionOrigin? {
+        guard let origins = proxy.origins, clientPort != 0 else { return nil }
+        if let r = origins.find(port: clientPort, start: started, end: ended) { return r.origin }
+        if isAborted || !proxy.hasWatcher { return nil }
+        return origins.wait(port: clientPort, start: started, deadline: Date().addingTimeInterval(Self.logHold),
+                            cancelled: { isAborted })?.origin
+    }
+
+    /// Reads the watcher's reports until it disconnects or the proxy stops.
+    private func readWatcher(_ first: Data) {
+        guard let origins = proxy.origins else { return }
+        proxy.watcher(connected: true)
+        defer { proxy.watcher(connected: false) }
+        var pending: Data? = first.isEmpty ? nil : first
+        var buf = [UInt8](repeating: 0, count: 16 * 1024)
+        origins.consume {
+            if let p = pending {
+                pending = nil
+                return p
+            }
+            while !isAborted {
+                guard Sock.waitReadable(client, timeout: 1) else { continue }
+                guard let n = Sock.receive(client, &buf) else { continue }
+                return n > 0 ? Data(buf[0..<n]) : nil
+            }
+            return nil
+        }
+    }
+
+    /// "PROXY TCP4 172.18.0.3 172.18.0.2 41234 3128" at the start of the
+    /// head: the client's source port (nil if the line has none) and the
+    /// rest of the head. Nil if the head doesn't start with such a line.
+    static func splitProxyLine(_ head: Data) -> (UInt16?, Data)? {
+        guard head.starts(with: Data("PROXY ".utf8)), let end = head.range(of: Data("\r\n".utf8)),
+              end.lowerBound - head.startIndex <= 107 else { return nil }
+        let line = String(decoding: head[head.startIndex..<end.lowerBound], as: UTF8.self)
+        let f = line.split(separator: " ")
+        let port = f.count == 6 && (f[1] == "TCP4" || f[1] == "TCP6") ? UInt16(f[4]) : nil
+        return (port, Data(head[end.upperBound...]))
+    }
+
+    static func sameBytes(_ a: Data, _ b: Data) -> Bool {
+        guard a.count == b.count else { return false }
+        var d: UInt8 = 0
+        for (x, y) in zip(a, b) { d |= x ^ y }
+        return d == 0
     }
 
     /// Reads up to the blank line. Nil if the client went away first.
@@ -671,6 +851,10 @@ final class ProxyExchange: @unchecked Sendable {
 
     private func reject(_ status: Int, _ reason: String) {
         failure = reason
+        if let origins = proxy.origins, clientPort != 0, !host.isEmpty, proxy.hasWatcher {
+            _ = origins.wait(port: clientPort, start: started, deadline: Date().addingTimeInterval(Self.refusalHold),
+                             cancelled: { isAborted })
+        }
         let phrase = [400: "Bad Request", 403: "Forbidden", 408: "Request Timeout", 502: "Bad Gateway"][status] ?? "Error"
         let body = "mudroom: \(host.isEmpty ? "request" : NetworkLog.endpoint(host, port)) refused: \(reason)\n"
         let resp = "HTTP/1.1 \(status) \(phrase)\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"

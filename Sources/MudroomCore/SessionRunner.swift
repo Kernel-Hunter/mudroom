@@ -128,17 +128,22 @@ public final class NetworkSetup: @unchecked Sendable {
     /// Rules for inside the VM: set for locked and offline runs on backends
     /// that use them. A sandbox started from this setup must carry them.
     public let firewall: GuestFirewall?
+    /// The connection watcher a sandbox started from this setup should run
+    /// (locked mode, `watchConnections`, on backends that can).
+    public let watch: ConnectionWatch?
     private let teardown = LockedBox<(@Sendable () -> Void)?>(nil)
 
     public init(mode: NetworkMode, allowlist: Allowlist, backend: SandboxBackend, logURL: URL?,
-                hostServices: [UInt16: UInt16] = [:]) throws {
+                hostServices: [UInt16: UInt16] = [:], watchConnections: Bool = false) throws {
         plan = try NetworkPlan.make(mode: mode, allowlist: allowlist, backend: backend)
         var record = plan.record
+        var watch: ConnectionWatch?
         if mode == .locked, plan.proxyHost != nil {
             let listen = try backend.proxyListen(for: plan)
+            let token = watchConnections && backend.watchesConnections ? ConnectionWatch.newToken() : nil
             let p = EgressProxy(.init(allowlist: plan.allowlist, logURL: logURL, bindHost: listen.bindHost,
                                       clientSubnets: listen.clientSubnets, blockedSubnets: listen.blockedSubnets,
-                                      hostServices: hostServices))
+                                      hostServices: hostServices, watchToken: token, acceptsProxyLine: listen.forwarderSendsProxyLine))
             do {
                 try p.start()
             } catch {
@@ -163,6 +168,11 @@ public final class NetworkSetup: @unchecked Sendable {
             let url = "http://\(route.host):\(route.port)"
             record.proxy = url
             environment = NetworkPlan.proxyEnvironment(url)
+            if let token {
+                // processWatch is recorded once the watcher has connected
+                // (see SessionRunner.run).
+                watch = ConnectionWatch(token: token, proxyHost: route.host, port: route.port)
+            }
             if backend.usesGuestFirewall {
                 guard let f = GuestFirewall(proxyHost: route.host, port: route.port) else {
                     route.teardown?()
@@ -179,6 +189,7 @@ public final class NetworkSetup: @unchecked Sendable {
             firewall = backend.usesGuestFirewall && mode != .open ? .closed : nil
         }
         if firewall != nil { record.guestFirewall = true }
+        self.watch = watch
         self.record = record
     }
 
@@ -272,7 +283,8 @@ public struct SessionRunner {
             }
         }
         let net = try NetworkSetup(mode: mode, allowlist: allowlist, backend: backend, logURL: handle.networkLog,
-                                   hostServices: localModels ? Dictionary(uniqueKeysWithValues: NetworkDefaults.localModelPorts.keys.map { ($0, $0) }) : [:])
+                                   hostServices: localModels ? Dictionary(uniqueKeysWithValues: NetworkDefaults.localModelPorts.keys.map { ($0, $0) }) : [:],
+                                   watchConnections: true)
         defer { net.stop() }
         let record = net.record
         net.summary.forEach(log)
@@ -320,6 +332,7 @@ public struct SessionRunner {
             cpus: options.cpus, memory: options.memory, mounts: mounts, environment: env, network: net.plan.vmNetwork)
         var runSpec = spec
         runSpec.firewall = net.firewall
+        runSpec.connectionWatch = net.watch
         runSpec.secretEnvironment = secrets
         let log = self.log
         handoff?.start { url in AuthLinkHandoff.deliver(url) { log($0) } }
@@ -382,6 +395,7 @@ public struct SessionRunner {
         }
         let final = snapshotter?.finish()
         net.stop()
+        if net.proxy?.watcherConnected == true { handle.session.network?.processWatch = true }
         if runsSession {
             handle.session.runnerPID = nil
             handle.session.finished = Date()

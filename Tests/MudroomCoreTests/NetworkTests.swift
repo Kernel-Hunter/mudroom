@@ -161,7 +161,7 @@ final class TestHTTPServer: @unchecked Sendable {
         while !stopped.value {
             guard Sock.waitReadable(fd, timeout: 0.1) else { continue }
             if stopped.value { return }
-            guard let (conn, _) = Sock.accept(fd) else { continue }
+            guard let (conn, _, _) = Sock.accept(fd) else { continue }
             var buf = Data()
             var chunk = [UInt8](repeating: 0, count: 65536)
             while buf.range(of: Data("\r\n\r\n".utf8)) == nil {

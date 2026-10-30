@@ -110,11 +110,17 @@ struct NetworkCommand: ParsableCommand {
         var session: String
         @Flag(help: "One line per connection instead of per host.")
         var all = false
+        @Flag(help: "One JSON object per connection (the session's network.jsonl), with the full command lines.")
+        var json = false
 
         func run() throws {
             do {
                 let handle = try store().open(session)
                 let entries = NetworkLog.read(handle.networkLog)
+                if json {
+                    entries.forEach { print(NetworkLog.jsonLine($0)) }
+                    return
+                }
                 if let n = handle.session.network {
                     print("mode \(n.mode.rawValue) (\(n.enforcement.title))\(n.proxy.map { ", proxy \($0)" } ?? "")")
                 }
@@ -122,16 +128,21 @@ struct NetworkCommand: ParsableCommand {
                     print("no connections logged")
                     return
                 }
+                // Which process made each connection, when the session ran
+                // with the watcher in the VM.
+                let processes = handle.session.network?.processWatch == true || NetworkLog.hasProcesses(entries)
                 if all {
                     for e in entries {
                         let verdict = e.allowed ? (e.reason == nil ? "allowed" : "failed ") : "BLOCKED"
-                        print("\(timeFormatter.string(from: e.time))  \(verdict)  \(e.method.padding(toLength: 7, withPad: " ", startingAt: 0)) \(NetworkLog.endpoint(e.host, e.port))  out \(bytes(e.bytesOut)) in \(bytes(e.bytesIn))  \(e.durationMs) ms\(e.reason.map { "  (\($0))" } ?? "")")
+                        let command = processes ? "  \(NetworkLog.commandLabel(e))" : ""
+                        print("\(timeFormatter.string(from: e.time))  \(verdict)  \(e.method.padding(toLength: 7, withPad: " ", startingAt: 0)) \(NetworkLog.endpoint(e.host, e.port))  out \(bytes(e.bytesOut)) in \(bytes(e.bytesIn))  \(e.durationMs) ms\(command)\(e.reason.map { "  (\($0))" } ?? "")")
                     }
                     return
                 }
                 for r in NetworkLog.summarize(entries) {
                     let verdict = r.allowed ? "allowed" : "BLOCKED"
-                    print("\(verdict)  \(NetworkLog.endpoint(r.host, r.port).padding(toLength: 44, withPad: " ", startingAt: 0)) \(r.count)x  out \(bytes(r.bytesOut)) in \(bytes(r.bytesIn))")
+                    let by = processes ? "  by \(NetworkLog.programsLabel(r))" : ""
+                    print("\(verdict)  \(NetworkLog.endpoint(r.host, r.port).padding(toLength: 44, withPad: " ", startingAt: 0)) \(r.count)x  out \(bytes(r.bytesOut)) in \(bytes(r.bytesIn))\(by)")
                 }
                 let blocked = Set(entries.filter { !$0.allowed }.map(\.host))
                 if !blocked.isEmpty {

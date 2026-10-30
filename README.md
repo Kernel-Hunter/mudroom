@@ -699,6 +699,63 @@ The proxy is strict about what it accepts:
   be at most 32 KB (then 400), and at most 256 connections are open at once
   (then 503).
 
+### Which process made each connection
+
+In locked sessions the network log also says which program in the sandbox
+opened each connection:
+
+```
+$ mudroom network log last
+BLOCKED  example.com:443                              10x  out 0 B in 0 B  by node
+allowed  pypi.org:443                                 10x  out 17 KB in 1.2 MB  by python3
+allowed  github.com:443                               30x  out 49 KB in 178 KB  by git-remote-https and node
+
+$ mudroom network log last --all
+... BLOCKED  CONNECT gitlab.com:443  out 0 B in 0 B  8 ms  [73] git-remote-https https://gitlab.com/gitlab-org/gitla...  (not on this project's allowlist)
+```
+
+`--all` shows the process id in the VM and its command line, cut to fit.
+`--json` prints the log as JSON lines with the full command line (`command`),
+the pid (`pid`) and the command lines of its parents up to the agent
+(`parents`, nearest first). The app shows the command in the connection list,
+with the parents in its tooltip, and the programs under each host.
+
+How it works: a small bash script, the watcher, runs inside the VM next to
+the agent. It reads TCP's connection counter in `/proc/net/snmp` every 100 ms
+(every 20 ms for a second after a connection opens), and when it changed,
+looks in `/proc/net/tcp` and `tcp6` for new connections to the proxy. It finds
+the process holding each socket through `/proc/<pid>/fd`, and sends the proxy
+the connection's source port, the pid and the command lines over its own
+connection, which starts with a random token only the watcher has. The proxy
+matches the report to the connection it accepted from that port, and writes
+the fields into `network.jsonl`. While the watcher is connected, a refused
+connection waits up to half a second for its report before getting its 403,
+so blocked requests are almost always attributed. Logs from older sessions have no command and still load.
+
+With the apple backend the watcher starts from the firewall script as root,
+keeping only `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH` (to read the agent's
+`/proc/<pid>/fd`), from `/` with a fixed `PATH`, so nothing the agent can
+write runs as root; the agent can't stop it or read its token. With Docker and
+Podman it starts with `exec` a moment after the container, as the container's
+user, and the forwarder container passes each client's source port to the
+proxy in a PROXY protocol line. The image needs bash (Mudroom's has it);
+without it the log simply has no commands.
+
+Limits:
+
+- It is informational, not a security boundary. The allowlist is decided on
+  the Mac and never depends on it. The watcher runs inside the VM, so a
+  hostile agent can mislead it: a program can rename itself, since its command
+  line is its own memory. With Docker and Podman the agent runs as the same
+  user as the watcher and can stop it or read its token.
+- It polls, so an allowed connection that opens and closes within a few tens
+  of milliseconds can be missed, and so can connections made before the
+  watcher starts (on Docker, the first second or so). Those show as
+  `unknown`; Mudroom doesn't guess. In a test session, 50 out of 50
+  connections (git, python, node, and 10 blocked requests) were attributed.
+- Its cost: in that test the watcher used 0.2% of one core while idle, and
+  about 5 ms of CPU per new connection.
+
 ### What the isolation stops
 
 `mudroom network check` starts a sandbox with a project's settings and tries
@@ -736,7 +793,9 @@ database. With the apple backend, locked and offline sessions (and the
 network check, the pre-session probe and `agent login`) close that:
 
 - The sandbox starts as root with one added capability, `CAP_NET_ADMIN`, in a
-  small shell script instead of the agent.
+  small shell script instead of the agent. Locked sessions also add
+  `CAP_SYS_PTRACE` and `CAP_DAC_READ_SEARCH`, which only the [connection
+  watcher](#which-process-made-each-connection) keeps.
 - The script loads an nftables table, `inet mudroom`: outgoing, only
   loopback and TCP to the proxy's address and port are allowed (in offline
   mode, only loopback), and everything else, IPv4 and IPv6, is rejected.
