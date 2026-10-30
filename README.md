@@ -57,7 +57,8 @@ https://github.com/user-attachments/assets/ff599cbc-fbd9-4c8f-801d-fd2e52ccb0c6
 
 **Your folder stays untouched**<br>
 The agent edits a copy-on-write clone (APFS, or a reflink on btrfs and XFS),
-untracked and ignored files included. Your project is never mounted.
+untracked and ignored files included, minus `.env` files and keys. Your
+project is never mounted.
 
 </td>
 <td width="50%" valign="top">
