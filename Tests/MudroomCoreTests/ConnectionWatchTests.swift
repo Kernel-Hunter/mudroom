@@ -60,10 +60,10 @@ struct ConnectionWatchTests {
         for bad in ["", "x\t1\tcurl", "0\t1\tcurl", "70000\t1\tcurl", "40312", "40312\t0\tcurl", "40312\tabc\tcurl", "MUDROOM-WATCH x"] {
             #expect(ConnectionOrigin.parse(Substring(bad)) == nil, "\(bad)")
         }
-        // At most 8 command lines, each cut to 256 characters.
+        // Each command line cut to 256 characters, about 1 KB in all.
         let long = (0..<20).map { _ in String(repeating: "a", count: 1000) }.joined(separator: "\t")
         let capped = try #require(ConnectionOrigin.parse(Substring("1\t2\t" + long))?.origin)
-        #expect(capped.commands.count == 8 && capped.commands.allSatisfy { $0.count == 256 })
+        #expect(capped.commands.count == 4 && capped.commands.allSatisfy { $0.count == 256 })
     }
 
     @Test("command lines lose control characters and bidi overrides (they end up in a terminal)")
@@ -265,6 +265,11 @@ struct ProxyWatchTests {
         return p
     }
 
+    func waitForWatcher(_ p: EgressProxy, connected: Bool = true) throws {
+        for _ in 0..<150 where p.hasWatcher != connected { usleep(10_000) }
+        try #require(p.hasWatcher == connected)
+    }
+
     func waitForEntries(_ p: EgressProxy, _ n: Int) {
         for _ in 0..<150 where p.loggedEntries.count < n { usleep(20_000) }
     }
@@ -277,6 +282,7 @@ struct ProxyWatchTests {
         let watcher = try open(p.port)
         defer { Sock.close(watcher) }
         send(watcher, "MUDROOM-WATCH \(token)\r\n\r\n")
+        try waitForWatcher(p)
 
         let client = try open(p.port)
         defer { Sock.close(client) }
@@ -304,6 +310,10 @@ struct ProxyWatchTests {
         let token = ConnectionWatch.newToken()
         let p = try proxy(token: token)
         defer { p.stop() }
+        let watcher = try open(p.port)
+        defer { Sock.close(watcher) }
+        send(watcher, "MUDROOM-WATCH \(token)\r\n\r\n")
+        try waitForWatcher(p)
         let client = try open(p.port)
         defer { Sock.close(client) }
         let started = Date()
@@ -314,6 +324,35 @@ struct ProxyWatchTests {
         waitForEntries(p, 1)
         let e = try #require(p.loggedEntries.first)
         #expect(e.pid == nil && e.command == nil)
+    }
+
+    @Test("with a token but no watcher connected (never, or no longer), nothing waits")
+    func watcherGone() throws {
+        let token = ConnectionWatch.newToken()
+        let p = try proxy(token: token)
+        defer { p.stop() }
+        func refusalTime() throws -> TimeInterval {
+            let client = try open(p.port)
+            defer { Sock.close(client) }
+            let started = Date()
+            send(client, "CONNECT blocked.test:443 HTTP/1.1\r\n\r\n")
+            #expect(readToEnd(client).hasPrefix("HTTP/1.1 403"))
+            return Date().timeIntervalSince(started)
+        }
+        #expect(try refusalTime() < 0.3)
+        #expect(!p.watcherConnected)
+
+        // A watcher comes and goes (an agent on Docker can kill it).
+        let watcher = try open(p.port)
+        send(watcher, "MUDROOM-WATCH \(token)\r\n\r\n")
+        try waitForWatcher(p)
+        Sock.close(watcher)
+        try waitForWatcher(p, connected: false)
+        #expect(p.watcherConnected)
+        #expect(try refusalTime() < 0.3)
+        // Log lines aren't held either.
+        waitForEntries(p, 2)
+        #expect(p.loggedEntries.count == 2)
     }
 
     @Test("without a watcher, nothing waits and nothing is added")
@@ -354,6 +393,7 @@ struct ProxyWatchTests {
         let watcher = try open(p.port)
         defer { Sock.close(watcher) }
         send(watcher, "PROXY TCP4 172.18.0.3 172.18.0.2 39001 3128\r\nMUDROOM-WATCH \(token)\r\n\r\n")
+        try waitForWatcher(p)
         send(watcher, "40404\t77\tnpm install\tclaude\n")
         let client = try open(p.port)
         defer { Sock.close(client) }
@@ -401,6 +441,7 @@ struct ProxyWatchTests {
         let watcher = try open(DockerBackend.sidecarPort)
         defer { Sock.close(watcher) }
         send(watcher, "MUDROOM-WATCH \(token)\r\n\r\n")
+        try waitForWatcher(p)
         let client = try open(DockerBackend.sidecarPort)
         defer { Sock.close(client) }
         send(watcher, "\(Sock.localPort(client))\t9\tgit fetch\n")
@@ -439,7 +480,9 @@ struct WatcherStartTests {
         let w = try #require(locked.watch)
         #expect(w.proxyPort == locked.proxy?.port && "\(w.proxyAddress)" == "127.0.0.1")
         #expect(locked.proxy?.configuration.watchToken == w.token)
-        #expect(locked.record.processWatch == true)
+        // Recorded only once a watcher has actually connected.
+        #expect(locked.record.processWatch == nil)
+        #expect(locked.proxy?.watcherConnected == false)
 
         let notAsked = try NetworkSetup(mode: .locked, allowlist: Allowlist(strings: []), backend: vm, logURL: nil)
         defer { notAsked.stop() }
@@ -471,13 +514,19 @@ struct WatcherStartTests {
         #expect(args.contains("CAP_SYS_PTRACE") && args.contains("CAP_DAC_READ_SEARCH") && args.contains("CAP_NET_ADMIN"))
         let i = try #require(args.firstIndex(of: "--watch"))
         #expect(args[i + 1] == ConnectionWatch.script)
-        #expect(args[i + 2] == ([token] + watch.arguments).joined(separator: " "))
+        #expect(args[i + 2] == watch.arguments.joined(separator: " "))
         #expect(Array(args[(i + 3)...]) == ["--", "claude"])
+        // The token goes by name; `container` reads it from its own environment.
+        #expect(!args.contains { $0.contains(token) })
+        let e = try #require(args.firstIndex(of: ConnectionWatch.tokenVariable))
+        #expect(args[e - 1] == "--env")
+        #expect(AppleContainerBackend.watchEnvironment(spec) == [ConnectionWatch.tokenVariable: token])
 
         // Offline (no proxy): never a watcher.
         spec.firewall = .closed
         let offline = AppleContainerBackend.runArguments(for: spec, image: image)
         #expect(!offline.contains("--watch") && !offline.contains("CAP_SYS_PTRACE"))
+        #expect(!offline.contains(ConnectionWatch.tokenVariable) && AppleContainerBackend.watchEnvironment(spec).isEmpty)
     }
 
     @Test("Docker starts the watcher with exec, with the token and script passed by name only")
@@ -485,15 +534,16 @@ struct WatcherStartTests {
         let token = ConnectionWatch.newToken()
         let watch = try #require(ConnectionWatch(token: token, proxyHost: "172.18.0.2", port: 3128))
         let args = DockerBackend.watcherArguments(container: "mudroom-s1", watch: watch)
-        #expect(args.starts(with: ["exec", "--detach", "--env", "MUDROOM_WATCH_TOKEN", "--env", "MUDROOM_WATCH", "mudroom-s1", "bash", "-c"]))
+        #expect(args.starts(with: ["exec", "--detach", "--env", "MUDROOM_WATCH_TOKEN", "--env", "MUDROOM_WATCH", "mudroom-s1", "/bin/bash", "-c"]))
         #expect(Array(args.suffix(5)) == ["172.18.0.2", "3128", "1", "020012AC:0C38", "0000000000000000FFFF0000020012AC:0C38"])
         #expect(!args.joined(separator: " ").contains(token))
         #expect(DockerBackend(flavor: .docker, executable: nil).watchesConnections)
         #expect(DockerBackend.forwarderScript.contains("PROXY TCP4"))
+        #expect(DockerBackend.forwarderScript.contains("u.setNoDelay(true)"))
     }
 
     #if !os(Windows)
-    @Test("the firewall script starts the watcher as root with two capabilities, and keeps the token from the agent")
+    @Test("the firewall script keeps the token from the agent and never takes the watcher's tools from PATH")
     func scriptStartsWatcher() throws {
         guard let bash = ProcessRunner.which("bash") else { return }
         let tmp = try TempDir()
@@ -506,7 +556,10 @@ struct WatcherStartTests {
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: u.path)
         }
         try tool("nft", "cat >/dev/null; exit 0")
-        try tool("setpriv", "echo \"setpriv token=${MUDROOM_WATCH_TOKEN:-none} script=${MUDROOM_WATCH:+set} $*\" >> '\(log)'; exit 0")
+        // A setpriv, bash and env on PATH, as an agent-writable directory
+        // could provide: the watcher must not use them.
+        try tool("setpriv", "echo \"setpriv token=${MUDROOM_WATCH_TOKEN:-none} $*\" >> '\(log)'; exit 0")
+        try tool("env", "echo \"env $*\" >> '\(log)'; exit 0")
         try FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent("bash").path, withDestinationPath: bash)
         for t in ["id", "cut", "cat"] {
             if let p = ProcessRunner.which(t) { try? FileManager.default.createSymbolicLink(atPath: bin.appendingPathComponent(t).path, withDestinationPath: p) }
@@ -515,29 +568,33 @@ struct WatcherStartTests {
         let fw = try #require(GuestFirewall(proxyHost: "127.0.0.1", port: 3128))
         let watch = try #require(ConnectionWatch(token: token, proxyHost: "127.0.0.1", port: 3128))
         let args = fw.arguments(image: .init(user: "nosuchuser-mudroom", setsHome: true), command: ["true"], watch: watch)
-        let out = try ProcessRunner.capture("/bin/sh", args, environment: ["PATH": bin.path])
+        #expect(!args.contains { $0.contains(token) })
+        let out = try ProcessRunner.capture("/bin/sh", args, environment: ["PATH": bin.path, ConnectionWatch.tokenVariable: token])
         #expect(out.status == 0, "\(out.stderr)")
-        var lines: [String] = []
-        for _ in 0..<100 {
-            lines = ((try? String(contentsOfFile: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
-            if lines.count >= 2 { break }
-            usleep(20_000)
-        }
-        let watcher = try #require(lines.first { $0.contains("mudroom-watch") })
-        #expect(watcher.contains("token=\(token) script=set"))
-        #expect(watcher.contains("--bounding-set=-all,+sys_ptrace,+dac_read_search --no-new-privs -- bash -c eval \"$MUDROOM_WATCH\" mudroom-watch 127.0.0.1 3128"))
-        #expect(watcher.hasSuffix("0100007F:0C38 0000000000000000FFFF00000100007F:0C38"))
-        #expect(!watcher.contains("--reuid"))
+        usleep(300_000)
+        let lines = ((try? String(contentsOfFile: log, encoding: .utf8)) ?? "").split(separator: "\n").map(String.init)
+        // The agent's setpriv (the one on PATH, as before) gets no token.
         let agent = try #require(lines.first { $0.contains("--reuid") })
-        #expect(agent.contains("token=none script= "))
+        #expect(agent.contains("token=none "))
         #expect(agent.contains("--bounding-set=-all") && agent.hasSuffix("-- true"))
+        // Nothing on PATH was run for the watcher.
+        #expect(!lines.contains { $0.contains("mudroom-watch") || $0.hasPrefix("env ") }, "\(lines)")
 
-        // Without bash the agent still starts, with no watcher.
-        try FileManager.default.removeItem(at: bin.appendingPathComponent("bash"))
+        // How the watcher is started, as far as the text goes; the VM run
+        // in the README checks what it ends up with.
+        let script = GuestFirewall.script
+        #expect(script.contains("unset MUDROOM_WATCH_TOKEN"))
+        #expect(script.contains("for d in /usr/bin /bin /usr/sbin /sbin"))
+        #expect(script.contains(#""$wenv" -i PATH=/usr/sbin:/usr/bin:/sbin:/bin"#))
+        #expect(script.contains("--inh-caps=-all --ambient-caps=-all --bounding-set=-all,+sys_ptrace,+dac_read_search --no-new-privs"))
+        #expect(script.contains("cd / ||"))
+        #expect(ConnectionWatch.script.contains("PATH=/usr/sbin:/usr/bin:/sbin:/bin") && ConnectionWatch.script.contains("cd / ||"))
+        #expect(ConnectionWatch.script.contains(#"out=$("$find" "#))
+
+        // Without a token in the environment, no watcher and the agent runs.
         try? FileManager.default.removeItem(atPath: log)
         let out2 = try ProcessRunner.capture("/bin/sh", args, environment: ["PATH": bin.path])
         #expect(out2.status == 0)
-        usleep(200_000)
         let calls = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
         #expect(!calls.contains("mudroom-watch") && calls.contains("--reuid"))
     }
@@ -548,4 +605,107 @@ struct WatcherStartTests {
         #expect(out.status == 0, "\(out.stderr)")
     }
     #endif
+}
+
+@Suite("Connection watcher limits")
+struct ConnectionWatchLimitTests {
+    @Test("a record wakes only the waiters for its port, and waiters clean up after themselves")
+    func perPortWakeups() {
+        let o = ConnectionOrigins()
+        let start = Date()
+        let other = LockedBox(0)
+        let otherDone = DispatchSemaphore(value: 0)
+        Thread {
+            // Waits for port 2; records for port 1 must not end its wait.
+            let r = o.wait(port: 2, start: start, deadline: start.addingTimeInterval(0.6))
+            other.value = r == nil ? -1 : r!.origin!.pid
+            otherDone.signal()
+        }.start()
+        for _ in 0..<100 where o.waiterCount < 1 { usleep(5_000) }
+        #expect(o.waiterCount == 1)
+        for i in 0..<50 { o.add(1, ConnectionOrigin(pid: 100 + i, commands: ["x"])) }
+        usleep(100_000)
+        #expect(other.value == 0, "a report for another port ended the wait")
+        o.add(2, ConnectionOrigin(pid: 7, commands: ["y"]))
+        otherDone.wait()
+        #expect(other.value == 7)
+        #expect(o.waiterCount == 0)
+    }
+
+    @Test("reports from one watcher connection are rate limited")
+    func rateLimit() {
+        let o = ConnectionOrigins()
+        let t0 = Date()
+        let clock = LockedBox(t0)
+        // 5000 reports in one instant: only the burst gets in.
+        var chunks = [Data((1...5000).map { "\($0)\t1\tx\n" }.joined().utf8)]
+        o.consume(now: { clock.value }) { chunks.isEmpty ? nil : chunks.removeFirst() }
+        let kept = (1...5000).filter { o.find(port: UInt16($0), start: t0, end: t0) != nil }.count
+        #expect(kept == Int(ConnectionOrigins.reportBurst))
+        // Later reports refill at the steady rate.
+        let o2 = ConnectionOrigins()
+        var t = t0
+        var lines: [Data] = []
+        for i in 0..<3000 { lines.append(Data("\(i + 1)\t1\tx\n".utf8)) }
+        o2.consume(now: { t = t.addingTimeInterval(0.01); return t }) { lines.isEmpty ? nil : lines.removeFirst() }
+        // 3000 lines at 100 a second, under the 200 a second limit: all fit.
+        let kept2 = (1...3000).filter { o2.find(port: UInt16($0), start: t0, end: t) != nil }.count
+        #expect(kept2 == 3000)
+    }
+
+    @Test("repeated reports for one port don't grow the arrival list without bound")
+    func compaction() {
+        let o = ConnectionOrigins(limit: 100)
+        let t = Date()
+        for i in 0..<50_000 { o.add(4242, ConnectionOrigin(pid: i + 1, commands: ["x"]), at: t.addingTimeInterval(Double(i) / 1000)) }
+        #expect(o.arrivalCount <= 2 * 1024 + 1)
+        #expect(o.find(port: 4242, start: t.addingTimeInterval(49.999), end: t.addingTimeInterval(50))?.origin?.pid == 50_000)
+        // Eviction still finds the oldest after a rebuild.
+        for p in 1...200 { o.add(UInt16(p), ConnectionOrigin(pid: p, commands: ["y"]), at: t.addingTimeInterval(60)) }
+        #expect(o.find(port: 1, start: t.addingTimeInterval(60), end: t.addingTimeInterval(60)) == nil)
+        #expect(o.find(port: 200, start: t.addingTimeInterval(60), end: t.addingTimeInterval(60)) != nil)
+    }
+
+    @Test("an entry's command lines are capped at about 1 KB together, the process's own first")
+    func entryCap() throws {
+        let long = (0..<8).map { i in "cmd\(i) " + String(repeating: "a", count: 300) }
+        let r = try #require(ConnectionOrigin.parse(Substring("5\t9\t" + long.joined(separator: "\t")))?.origin)
+        let total = r.commands.reduce(0) { $0 + $1.count }
+        #expect(total <= ConnectionOrigin.maxEntryCommands)
+        #expect(r.commands.first?.hasPrefix("cmd0 ") == true && r.commands.count < 8)
+        let e = NetworkLogEntry(time: Date(), host: "h", port: 1, method: "CONNECT", allowed: true,
+                                origin: ConnectionOrigin(pid: 9, commands: long))
+        #expect(((e.command?.count ?? 0) + (e.parents ?? []).reduce(0) { $0 + $1.count }) <= ConnectionOrigin.maxEntryCommands)
+        #expect(NetworkLog.jsonLine(e).utf8.count < 1600)
+    }
+
+    @Test("invisible format characters are cleaned too")
+    func invisibles() {
+        for v: UInt32 in [0x200b, 0x200c, 0x200d, 0x200e, 0x200f, 0x2028, 0x2029, 0x2060, 0x2061, 0x2064, 0xfeff] {
+            let s = "cu" + String(Character(Unicode.Scalar(v)!)) + "rl"
+            #expect(ConnectionOrigin.clean(s) == "cu rl", "U+\(String(v, radix: 16))")
+        }
+    }
+
+    @Test("reading a log cleans and caps command lines again, whatever the file says")
+    func readCleans() throws {
+        let tmp = try TempDir()
+        let url = tmp.path("network.jsonl")
+        let parents = (0..<8).map { _ in String(repeating: "p", count: 400) }
+        let raw: [String: Any] = ["time": "2026-10-30T10:00:00Z", "host": "x.test", "port": 443, "method": "CONNECT",
+                                  "allowed": false, "bytesOut": 0, "bytesIn": 0, "durationMs": 1, "pid": 5,
+                                  "command": "curl \u{1b}]0;title\u{07}\u{1b}[2J\u{202e}x\u{200b}y", "parents": parents]
+        var data = try JSONSerialization.data(withJSONObject: raw)
+        data.append(UInt8(ascii: "\n"))
+        // A parents list without a command is dropped.
+        data.append(Data(#"{"time":"2026-10-30T10:00:01Z","host":"y.test","port":443,"method":"CONNECT","allowed":true,"bytesOut":0,"bytesIn":0,"durationMs":1,"pid":3,"parents":["z"]}"#.utf8))
+        try data.write(to: url)
+        let entries = NetworkLog.read(url)
+        #expect(entries.count == 2)
+        let e = entries[0]
+        #expect(e.command == "curl ]0;title [2J x y")
+        #expect(e.pid == 5)
+        #expect(((e.command?.count ?? 0) + (e.parents ?? []).reduce(0) { $0 + $1.count }) <= ConnectionOrigin.maxEntryCommands)
+        #expect(entries[1].pid == nil && entries[1].parents == nil && entries[1].command == nil)
+    }
 }

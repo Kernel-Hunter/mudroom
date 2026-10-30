@@ -169,8 +169,9 @@ public final class NetworkSetup: @unchecked Sendable {
             record.proxy = url
             environment = NetworkPlan.proxyEnvironment(url)
             if let token {
+                // processWatch is recorded once the watcher has connected
+                // (see SessionRunner.run).
                 watch = ConnectionWatch(token: token, proxyHost: route.host, port: route.port)
-                if watch != nil { record.processWatch = true }
             }
             if backend.usesGuestFirewall {
                 guard let f = GuestFirewall(proxyHost: route.host, port: route.port) else {
@@ -394,6 +395,7 @@ public struct SessionRunner {
         }
         let final = snapshotter?.finish()
         net.stop()
+        if net.proxy?.watcherConnected == true { handle.session.network?.processWatch = true }
         if runsSession {
             handle.session.runnerPID = nil
             handle.session.finished = Date()

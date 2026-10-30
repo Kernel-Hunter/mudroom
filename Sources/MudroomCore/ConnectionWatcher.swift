@@ -45,6 +45,9 @@ public struct ConnectionWatch: Sendable, Equatable {
         s.count >= 16 && s.count <= 128 && s.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }
     }
 
+    /// Where the watcher finds its token.
+    public static let tokenVariable = "MUDROOM_WATCH_TOKEN"
+
     /// The first line the watcher sends, before the records.
     public static let greeting = "MUDROOM-WATCH"
 
@@ -84,8 +87,10 @@ public struct ConnectionWatch: Sendable, Equatable {
     /// needs to read the agent's /proc/<pid>/fd. Arguments: proxy host,
     /// proxy port, the agent's pid (where a chain of parents stops), then
     /// the proxy's /proc/net addresses. The token comes in
-    /// MUDROOM_WATCH_TOKEN (and the script itself in MUDROOM_WATCH, so it
-    /// doesn't fill the process list).
+    /// MUDROOM_WATCH_TOKEN, or as the first line on stdin; the script itself
+    /// comes in MUDROOM_WATCH, so it doesn't fill the process list. It sets
+    /// its own PATH and works from /, so a program the agent can write is
+    /// never run in its place.
     ///
     /// It reads TCP's ActiveOpens counter in /proc/net/snmp every 100 ms
     /// (every 20 ms for a second after a connection was opened) and only
@@ -97,6 +102,13 @@ public struct ConnectionWatch: Sendable, Equatable {
     /// lines become spaces; each is cut to 256 bytes.
     public static let script = #"""
     set -f
+    PATH=/usr/sbin:/usr/bin:/sbin:/bin
+    cd / || exit 1
+    # The token: from the environment (Docker's exec), else the first line
+    # on stdin (the firewall script's pipe).
+    if [[ -z ${MUDROOM_WATCH_TOKEN-} ]]; then IFS= read -r MUDROOM_WATCH_TOKEN || exit 1; fi
+    exec 0</dev/null
+    find=$(type -P find) || exit 1
     host=$1 port=$2 top=$3
     shift 3
     pats=" $* "
@@ -137,7 +149,7 @@ public struct ConnectionWatch: Sendable, Equatable {
       local -A owner=()
       for k in "$@"; do expr+=(-o -lname "socket:\[${k#*/}\]"); done
       set +f
-      out=$(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 \( "${expr[@]:1}" \) -printf '%h %l\n' 2>/dev/null 3>&- 4>&-)
+      out=$("$find" /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 \( "${expr[@]:1}" \) -printf '%h %l\n' 2>/dev/null 3>&- 4>&-)
       set -f
       while read -r l tgt; do
         [[ $l ]] || continue
@@ -212,19 +224,45 @@ public struct ConnectionOrigin: Sendable, Equatable {
         guard fields.count >= 2, let port = UInt16(fields[0]), port != 0 else { return nil }
         if fields[1] == "-" { return (port, nil) }
         guard let pid = Int(fields[1]), pid > 0 else { return nil }
-        let commands = fields.dropFirst(2).prefix(maxCommands).map { clean(String($0)) }
+        let commands = capped(fields.dropFirst(2).prefix(maxCommands).map(String.init))
         return (port, ConnectionOrigin(pid: pid, commands: commands))
     }
 
-    /// Control and bidirectional-formatting characters become spaces; runs
-    /// of spaces collapse; the result is cut to `maxCommandLength`.
+    /// Characters per log entry for the command and its parents together.
+    /// A deep chain of long command lines would otherwise make every entry
+    /// several KB.
+    static let maxEntryCommands = 1024
+
+    /// `commands` (the process first) cleaned and cut so that together
+    /// they fit in `maxEntryCommands`: the process's own command line is
+    /// kept, parents are left off from the far end.
+    public static func capped(_ commands: [String]) -> [String] {
+        var left = maxEntryCommands
+        var out: [String] = []
+        for c in commands.prefix(maxCommands) {
+            let cleaned = clean(c)
+            if cleaned.count <= left {
+                out.append(cleaned)
+                left -= cleaned.count
+            } else {
+                if left >= 16 { out.append(NetworkLog.truncate(cleaned, left)) }
+                break
+            }
+        }
+        return out
+    }
+
+    /// Control, bidirectional-formatting and invisible characters become
+    /// spaces; runs of spaces collapse; the result is cut to
+    /// `maxCommandLength`.
     public static func clean(_ s: String) -> String {
         var out = ""
         var lastSpace = false
         for u in s.unicodeScalars {
             let v = u.value
             let bad = v < 0x20 || (v >= 0x7f && v < 0xa0) || (0x202a...0x202e).contains(v) || (0x2066...0x2069).contains(v)
-                || v == 0x200e || v == 0x200f || v == 0x061c
+                || (0x200b...0x200f).contains(v) || v == 0x2028 || v == 0x2029 || (0x2060...0x2064).contains(v)
+                || v == 0xfeff || v == 0x061c
             let c: Unicode.Scalar = bad ? " " : u
             if c == " " {
                 if lastSpace { continue }
@@ -248,21 +286,29 @@ final class ConnectionOrigins: @unchecked Sendable {
         var time: Date
     }
 
-    private let cond = NSCondition()
+    private let lock = NSLock()
     private var byPort: [UInt16: [Record]] = [:]
+    /// Ports in the order records arrived, oldest first from `arrivalsStart`.
     private var arrivals: [UInt16] = []
     private var arrivalsStart = 0
     private var count = 0
+    /// Waiters by port; a record wakes only those waiting for its port.
+    private var waiters: [UInt16: [DispatchSemaphore]] = [:]
     /// Records kept at most (oldest go first), and per port.
     let limit: Int
     static let perPort = 4
+    /// Reports taken from one watcher connection: `reportRate` a second,
+    /// in bursts of up to `reportBurst`. Agents open a few connections a
+    /// second; this keeps a flood from pushing real records out.
+    static let reportRate = 200.0
+    static let reportBurst = 1000.0
 
     init(limit: Int = 20_000) {
         self.limit = limit
     }
 
     func add(_ port: UInt16, _ origin: ConnectionOrigin?, at time: Date = Date()) {
-        cond.withLock {
+        let wake: [DispatchSemaphore] = lock.withLock {
             var list = byPort[port] ?? []
             list.append(Record(port: port, origin: origin, time: time))
             count += 1
@@ -281,13 +327,27 @@ final class ConnectionOrigins: @unchecked Sendable {
                     count -= 1
                 }
             }
-            if arrivalsStart > 4096 {
-                arrivals.removeFirst(arrivalsStart)
-                arrivalsStart = 0
-            }
-            cond.broadcast()
+            compact()
+            return waiters[port] ?? []
         }
+        wake.forEach { $0.signal() }
     }
+
+    /// Keeps `arrivals` from growing past a few times `limit`: repeated
+    /// reports for one port are trimmed per port but each adds an arrival.
+    /// Rebuilt from the records themselves, oldest first.
+    private func compact() {
+        if arrivalsStart > 4096 {
+            arrivals.removeFirst(arrivalsStart)
+            arrivalsStart = 0
+        }
+        guard arrivals.count > 2 * max(limit, 1024) else { return }
+        arrivals = byPort.values.flatMap { $0 }.sorted { $0.time < $1.time }.map(\.port)
+        arrivalsStart = 0
+    }
+
+    /// Arrivals kept, for tests.
+    var arrivalCount: Int { lock.withLock { arrivals.count - arrivalsStart } }
 
     /// The record for a connection from `port` that started at `start`:
     /// the one that arrived closest to `start`, between a second before it
@@ -295,19 +355,34 @@ final class ConnectionOrigins: @unchecked Sendable {
     /// is around when the proxy accepts it; a record from long before is
     /// an earlier connection that happened to use the same port.
     func find(port: UInt16, start: Date, end: Date) -> Record? {
-        cond.withLock { match(port: port, start: start, end: end) }
+        lock.withLock { match(port: port, start: start, end: end) }
     }
 
     /// `find`, waiting until `deadline` for the record to arrive.
     func wait(port: UInt16, start: Date, deadline: Date, cancelled: () -> Bool = { false }) -> Record? {
-        cond.withLock {
-            while true {
-                if let r = match(port: port, start: start, end: deadline) { return r }
-                if cancelled() || Date() >= deadline { return nil }
-                _ = cond.wait(until: min(deadline, Date().addingTimeInterval(0.05)))
+        let sem = DispatchSemaphore(value: 0)
+        let first: Record? = lock.withLock {
+            if let r = match(port: port, start: start, end: deadline) { return r }
+            waiters[port, default: []].append(sem)
+            return nil
+        }
+        if let first { return first }
+        defer {
+            lock.withLock {
+                waiters[port]?.removeAll { $0 === sem }
+                if waiters[port]?.isEmpty == true { waiters[port] = nil }
             }
         }
+        while true {
+            if let r = find(port: port, start: start, end: deadline) { return r }
+            if cancelled() || Date() >= deadline { return nil }
+            // Short slices, so `cancelled` is noticed.
+            _ = sem.wait(timeout: .now() + min(deadline.timeIntervalSinceNow, 0.05))
+        }
     }
+
+    /// Waiters right now, for tests.
+    var waiterCount: Int { lock.withLock { waiters.values.reduce(0) { $0 + $1.count } } }
 
     private func match(port: UInt16, start: Date, end: Date) -> Record? {
         let from = start.addingTimeInterval(-1)
@@ -316,15 +391,22 @@ final class ConnectionOrigins: @unchecked Sendable {
     }
 
     /// Reads watcher lines from a stream until it ends. `read` returns
-    /// bytes, or nil at the end.
-    func consume(_ read: () -> Data?) {
+    /// bytes, or nil at the end. Lines past the rate limit are dropped.
+    func consume(now: () -> Date = Date.init, _ read: () -> Data?) {
         var partial = Data()
+        var budget = Self.reportBurst
+        var last = now()
         while let data = read() {
             partial.append(data)
             while let nl = partial.firstIndex(of: 0x0A) {
                 let line = String(decoding: partial[partial.startIndex..<nl], as: UTF8.self)
                 partial = Data(partial[partial.index(after: nl)...])
-                if let (port, origin) = ConnectionOrigin.parse(Substring(line)) { add(port, origin) }
+                let t = now()
+                budget = min(Self.reportBurst, budget + t.timeIntervalSince(last) * Self.reportRate)
+                last = t
+                guard budget >= 1 else { continue }
+                budget -= 1
+                if let (port, origin) = ConnectionOrigin.parse(Substring(line)) { add(port, origin, at: t) }
             }
             // One line is a few KB at most; anything longer is junk.
             if partial.count > 64 << 10 { partial = Data() }

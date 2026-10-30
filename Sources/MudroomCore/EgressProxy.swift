@@ -45,11 +45,16 @@ public struct NetworkLogEntry: Codable, Sendable, Equatable {
         self.bytesOut = bytesOut
         self.bytesIn = bytesIn
         self.durationMs = durationMs
-        if let origin {
-            pid = origin.pid
-            command = origin.commands.first ?? ""
-            parents = origin.commands.count > 1 ? Array(origin.commands.dropFirst()) : nil
-        }
+        if let origin { setOrigin(origin.pid, origin.commands) }
+    }
+
+    /// Sets pid, command and parents from `commands` (the process first),
+    /// cleaned and capped (see `ConnectionOrigin.capped`).
+    mutating func setOrigin(_ pid: Int?, _ commands: [String]) {
+        let c = ConnectionOrigin.capped(commands)
+        self.pid = pid
+        command = c.first ?? ""
+        parents = c.count > 1 ? Array(c.dropFirst()) : nil
     }
 }
 
@@ -87,10 +92,22 @@ public enum NetworkLog {
         (try? encoder().encode(e)).map { String(decoding: $0, as: UTF8.self) } ?? "{}"
     }
 
+    /// The entries of a network.jsonl. Command lines are cleaned again on
+    /// the way in: they are the sandbox's words, and they end up in a
+    /// terminal.
     public static func read(_ url: URL) -> [NetworkLogEntry] {
         guard let data = try? Data(contentsOf: url) else { return [] }
         let decoder = decoder()
-        return data.split(separator: UInt8(ascii: "\n")).compactMap { try? decoder.decode(NetworkLogEntry.self, from: Data($0)) }
+        return data.split(separator: UInt8(ascii: "\n")).compactMap {
+            guard var e = try? decoder.decode(NetworkLogEntry.self, from: Data($0)) else { return nil }
+            if let command = e.command {
+                e.setOrigin(e.pid, [command] + (e.parents ?? []))
+            } else {
+                e.pid = nil
+                e.parents = nil
+            }
+            return e
+        }
     }
 
     /// How a logged destination is shown: "example.com:443", "[::1]:443".
@@ -304,6 +321,8 @@ public final class EgressProxy: @unchecked Sendable {
     private var ownAddresses: (Set<IPAddress>, Date) = ([], .distantPast)
     /// What the connection watcher reported; nil without one.
     let origins: ConnectionOrigins?
+    private var watchersConnected = 0
+    private var watcherEverConnected = false
 
     /// The port actually listened on (after `start`).
     public private(set) var port: UInt16 = 0
@@ -367,6 +386,20 @@ public final class EgressProxy: @unchecked Sendable {
             try? logHandle?.synchronize()
             try? logHandle?.close()
             logHandle = nil
+        }
+    }
+
+    /// True while a watcher with the right token is connected. Without one
+    /// nothing is held waiting for its reports.
+    var hasWatcher: Bool { lock.withLock { watchersConnected > 0 } }
+
+    /// True if a watcher with the right token connected at any point.
+    public var watcherConnected: Bool { lock.withLock { watcherEverConnected } }
+
+    func watcher(connected: Bool) {
+        lock.withLock {
+            watchersConnected += connected ? 1 : -1
+            if connected { watcherEverConnected = true }
         }
     }
 
@@ -595,7 +628,7 @@ final class ProxyExchange: @unchecked Sendable {
     private func origin(at ended: Date) -> ConnectionOrigin? {
         guard let origins = proxy.origins, clientPort != 0 else { return nil }
         if let r = origins.find(port: clientPort, start: started, end: ended) { return r.origin }
-        if isAborted { return nil }
+        if isAborted || !proxy.hasWatcher { return nil }
         return origins.wait(port: clientPort, start: started, deadline: Date().addingTimeInterval(Self.logHold),
                             cancelled: { isAborted })?.origin
     }
@@ -603,6 +636,8 @@ final class ProxyExchange: @unchecked Sendable {
     /// Reads the watcher's reports until it disconnects or the proxy stops.
     private func readWatcher(_ first: Data) {
         guard let origins = proxy.origins else { return }
+        proxy.watcher(connected: true)
+        defer { proxy.watcher(connected: false) }
         var pending: Data? = first.isEmpty ? nil : first
         var buf = [UInt8](repeating: 0, count: 16 * 1024)
         origins.consume {
@@ -816,7 +851,7 @@ final class ProxyExchange: @unchecked Sendable {
 
     private func reject(_ status: Int, _ reason: String) {
         failure = reason
-        if let origins = proxy.origins, clientPort != 0, !host.isEmpty {
+        if let origins = proxy.origins, clientPort != 0, !host.isEmpty, proxy.hasWatcher {
             _ = origins.wait(port: clientPort, start: started, deadline: Date().addingTimeInterval(Self.refusalHold),
                              cancelled: { isAborted })
         }

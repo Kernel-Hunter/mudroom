@@ -205,7 +205,7 @@ public struct DockerBackend: SandboxBackend {
     public static func watcherArguments(container: String, watch: ConnectionWatch) -> [String] {
         let args = watch.arguments
         return ["exec", "--detach", "--env", "MUDROOM_WATCH_TOKEN", "--env", "MUDROOM_WATCH", container,
-                "bash", "-c", #"eval "$MUDROOM_WATCH""#, "mudroom-watch", args[0], args[1], "1"] + args.dropFirst(2)
+                "/bin/bash", "-c", #"eval "$MUDROOM_WATCH""#, "mudroom-watch", args[0], args[1], "1"] + args.dropFirst(2)
     }
 
     /// Waits (in the background) for the container to run, then starts the
@@ -501,7 +501,10 @@ public struct DockerBackend: SandboxBackend {
     const [host, port] = [process.env.MUDROOM_UPSTREAM_HOST, +process.env.MUDROOM_UPSTREAM_PORT];
     const v4 = a => /^(::ffff:)?\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(a || '') ? a.replace('::ffff:', '') : null;
     net.createServer({allowHalfOpen: true}, c => {
+      // No Nagle delay for the short PROXY line ahead of the client's data.
       const u = net.connect({host, port, allowHalfOpen: true});
+      u.setNoDelay(true);
+      c.setNoDelay(true);
       const [src, dst] = [v4(c.remoteAddress), v4(c.localAddress)];
       u.write(src && dst ? `PROXY TCP4 ${src} ${dst} ${c.remotePort} ${c.localPort}\\r\\n` : 'PROXY UNKNOWN\\r\\n');
       c.pipe(u); u.pipe(c);

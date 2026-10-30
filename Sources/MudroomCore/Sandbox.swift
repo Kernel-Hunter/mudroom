@@ -311,6 +311,11 @@ public struct AppleContainerBackend: SandboxBackend {
         for key in spec.environment.keys.sorted() {
             args += ["--env", "\(key)=\(spec.environment[key]!)"]
         }
+        if !watchEnvironment(spec).isEmpty {
+            // By name: the value comes from `container`'s own environment,
+            // and the firewall script unsets it before the agent starts.
+            args += ["--env", ConnectionWatch.tokenVariable]
+        }
         if let network = spec.network { args += ["--network", network] }
         if let cpus = spec.cpus { args += ["--cpus", String(cpus)] }
         if let memory = spec.memory { args += ["--memory", memory] }
@@ -321,6 +326,13 @@ public struct AppleContainerBackend: SandboxBackend {
             args += spec.command
         }
         return args
+    }
+
+    /// The watcher's token, for `container`'s environment, when the spec
+    /// starts one (a firewall with a proxy, and a watch).
+    static func watchEnvironment(_ spec: SandboxSpec) -> [String: String] {
+        guard spec.firewall?.proxy != nil, let watch = spec.connectionWatch else { return [:] }
+        return [ConnectionWatch.tokenVariable: watch.token]
     }
 
     /// `runArguments`, reading the image's config first when the spec has
@@ -343,7 +355,8 @@ public struct AppleContainerBackend: SandboxBackend {
 
     public func run(_ spec: SandboxSpec) throws -> Int32 {
         try checkAvailable()
-        return try ProcessRunner.runAttached(executable!, arguments(for: spec), environment: spec.secretEnvironment)
+        return try ProcessRunner.runAttached(executable!, arguments(for: spec),
+                                             environment: spec.secretEnvironment.merging(Self.watchEnvironment(spec)) { a, _ in a })
     }
 
     public func isRunning(_ name: String) -> Bool {
@@ -416,7 +429,8 @@ public struct AppleContainerBackend: SandboxBackend {
     public func capture(_ spec: SandboxSpec) throws -> CapturedOutput {
         try checkAvailable()
         return try ProcessRunner.capture(executable!, ["run", "--progress", "none"] + arguments(for: spec).dropFirst(),
-                                         environment: spec.secretEnvironment, timeout: spec.timeout)
+                                         environment: spec.secretEnvironment.merging(Self.watchEnvironment(spec)) { a, _ in a },
+                                         timeout: spec.timeout)
     }
 
     public func buildImage(containerfile: URL, context: URL, tag: String) throws {
