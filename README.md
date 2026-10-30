@@ -597,7 +597,11 @@ Patterns use `.gitignore` syntax, relative to the project root:
   `dir/name` match from the project root only.
 - `secrets/` matches folders (and symlinks) only, and everything inside them.
 - `*`, `?` and `[a-z]` match within one name, `**` across folders
-  (`**/id_rsa`, `logs/**`, `a/**/b`).
+  (`**/id_rsa`, `logs/**`, `a/**/b`). Sets take the POSIX classes
+  `[:alpha:]`, `[:digit:]`, `[:alnum:]`, `[:upper:]`, `[:lower:]`,
+  `[:space:]`, `[:punct:]` and `[:xdigit:]` (`key[[:digit:]].pem`). Since
+  case is ignored, `[:upper:]` and `[:lower:]` both match any letter that has
+  case. An unknown class is an error.
 - `!pattern` lets a file back in. As in git, nothing inside an excluded
   folder can be let back in.
 - Lines starting with `#` are comments, and `\` escapes the next character.
@@ -609,6 +613,10 @@ A `.mudroomignore` file at the project root, in the same syntax, adds
 patterns for everyone who uses the project, and can be committed. It can only
 add: a `!` line in it takes back a pattern from the same file, never one from
 your list, so a repository can't use it to pull your `.env` into the sandbox.
+It must be a regular file (not a symlink), at most 1 MB, with at most 1,000
+patterns of at most 1,024 characters each. If it breaks one of these rules,
+or has a line that isn't a pattern, Mudroom refuses to create the session
+and says why.
 
 The list is read when a session is created and recorded in its
 `session.json`. Changing it later affects new sessions only. Diff and apply
@@ -628,6 +636,19 @@ unselected, like `.envrc`.
 Symlinks are copied as links and never followed. A link named `.env` is left
 out, and a link that points at an excluded file (`config.env -> ../.env`) is
 copied but finds nothing at the other end.
+
+Two things to know when the project is a git repository:
+
+- An excluded file that git tracks is missing from the agent's copy, so
+  inside the sandbox `git status` shows it as deleted, and a `git commit -a`
+  by the agent records the deletion. `apply` leaves `.git` alone unless you
+  pass `--include-git`, but with it that commit would land in your
+  repository's history. Session start prints a warning when git tracks
+  any of the files left out.
+- If the agent deletes a folder that holds an excluded file in your project
+  (`src/` with your `src/.env` in it), apply removes the other files, reports
+  the folder as a conflict because it isn't empty on your side, and applies
+  the rest. Your `src/.env` stays.
 
 ## Network
 
@@ -783,7 +804,10 @@ Text files get a unified diff from Mudroom's own line diff. Binary files show
 `binary changed (size a -> b)` (or `binary added`, `binary deleted`). Changes
 inside any `.git` directory (also nested ones, and `.GIT` on case-insensitive
 disks) are collapsed into one line unless you pass `--include-git`; `apply`
-skips them by default for the same reason.
+skips them by default for the same reason. Check them before applying with
+`--include-git` if the project has files on the exclude list that git
+tracks: the agent's repository sees those files as deleted (see [Keep files
+out of the sandbox](#keep-files-out-of-the-sandbox)).
 
 Some lines get a marker:
 
