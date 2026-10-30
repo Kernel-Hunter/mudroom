@@ -356,7 +356,7 @@ and per-apply undo.
 ## How it works
 
 ```mermaid
-flowchart LR
+flowchart TD
     P["Your project"] -->|"copy-on-write clone"| W["Session copy"]
     W -->|"mounted at /workspace"| A
     subgraph VM["Linux micro-VM or container"]
@@ -658,12 +658,16 @@ instead). Aider needs either a provider key or a model named with `--model`;
 without one, the session stops right away with a message instead of waiting
 for a sign-in that can't finish inside the VM.
 
-| Agent | Ways to sign in |
-|---|---|
-| Claude Code | Your Claude account (`claude setup-token` on the Mac), a sign-in inside the VM, or `ANTHROPIC_API_KEY` |
-| Codex | Your existing ChatGPT login (`~/.codex/auth.json`), a device code, or an OpenAI API key |
-| Gemini CLI | Your existing Google login (`~/.gemini/oauth_creds.json`), a sign-in inside the VM, or `GEMINI_API_KEY` |
-| opencode, Aider, custom commands | Any provider API key, or local models |
+Ways to sign in, per agent:
+
+- **Claude Code:** your Claude account (`claude setup-token` on the Mac), a
+  sign-in inside the VM, or `ANTHROPIC_API_KEY`.
+- **Codex:** your existing ChatGPT login (`~/.codex/auth.json`), a device
+  code, or an OpenAI API key.
+- **Gemini CLI:** your existing Google login (`~/.gemini/oauth_creds.json`),
+  a sign-in inside the VM, or `GEMINI_API_KEY`.
+- **opencode, Aider, custom commands:** any provider API key, or local
+  models.
 
 ### Claude Code: your Claude account
 
@@ -972,14 +976,17 @@ Each project has a mode:
 
 The allowlist is the agent's own hosts plus whatever you add:
 
-| Agent | Default hosts |
-|---|---|
-| Claude Code | api.anthropic.com, console.anthropic.com, platform.claude.com, claude.ai |
-| Codex | api.openai.com, chatgpt.com, auth.openai.com |
-| Gemini CLI | generativelanguage.googleapis.com, cloudcode-pa.googleapis.com, oauth2.googleapis.com, www.googleapis.com |
-| opencode | models.opencode.ai, models.dev (its model catalog), plus the API host of each key you set |
-| Aider, custom commands | the API host of each key you set |
-| Package registries (off by default) | registry.npmjs.org, pypi.org, files.pythonhosted.org, github.com, codeload.github.com, *.githubusercontent.com |
+- **Claude Code:** api.anthropic.com, console.anthropic.com,
+  platform.claude.com, claude.ai
+- **Codex:** api.openai.com, chatgpt.com, auth.openai.com
+- **Gemini CLI:** generativelanguage.googleapis.com,
+  cloudcode-pa.googleapis.com, oauth2.googleapis.com, www.googleapis.com
+- **opencode:** models.opencode.ai, models.dev (its model catalog), plus the
+  API host of each key you set
+- **Aider, custom commands:** the API host of each key you set
+- **Package registries (off by default):** registry.npmjs.org, pypi.org,
+  files.pythonhosted.org, github.com, codeload.github.com,
+  `*.githubusercontent.com`
 
 Telemetry and error-reporting hosts are left out; Claude Code runs with
 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` so it doesn't try them. Patterns
