@@ -23,6 +23,8 @@ struct NewSessionSheet: View {
     @State private var showPatterns = false
     /// "Leaves out .env, secrets/ (3 files)" for the chosen folder.
     @State private var leftOut: String?
+    /// The project's .mudroomignore exists but can't be used.
+    @State private var ignoreFileProblem: String?
     /// Set on the first click, so a double-click starts one session.
     @State private var starting = false
 
@@ -61,7 +63,9 @@ struct NewSessionSheet: View {
         return text.prefix(1).uppercased() + text.dropFirst() + "."
     }
 
-    var canStart: Bool { project != nil && projectProblem == nil && !command.isEmpty && isReady && !checkingNetwork && !starting }
+    var canStart: Bool {
+        project != nil && projectProblem == nil && ignoreFileProblem == nil && !command.isEmpty && isReady && !checkingNetwork && !starting
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -181,6 +185,11 @@ struct NewSessionSheet: View {
                     Text(project == nil ? "Choose a folder to see which files stay out." : leftOut ?? "Checking the folder…")
                         .font(.system(size: 11.5)).foregroundStyle(.secondary)
                         .lineLimit(2).truncationMode(.middle)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let problem = ignoreFileProblem {
+                    Label(problem, systemImage: "exclamationmark.triangle.fill")
+                        .font(.system(size: 11.5)).foregroundStyle(.orange)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 DisclosureGroup("Patterns (\(excludePatterns.count + ignoreFilePatterns.count))", isExpanded: $showPatterns) {
@@ -341,7 +350,9 @@ struct NewSessionSheet: View {
     /// repaired here instead of in a session that can't reach its API.
     func start() async {
         guard let project else { starting = false; return }
-        saveNetwork(project)
+        // The session gets the list shown here even if saving it failed;
+        // a failed save stops the start so nothing differs from what you see.
+        guard saveNetwork(project) else { starting = false; return }
         if networkMode == .locked {
             checkingNetwork = true
             let r = await app.setup.probeBeforeSession()
@@ -352,7 +363,8 @@ struct NewSessionSheet: View {
                 return
             }
         }
-        app.startSession(project: project, preset: preset, customCommand: customCommand, image: image)
+        app.startSession(project: project, preset: preset, customCommand: customCommand, image: image,
+                         exclude: excludePatterns)
         dismiss()
     }
 
@@ -363,11 +375,18 @@ struct NewSessionSheet: View {
         localModels = c.localModels
         projectHosts = c.allowedHosts.map(\.value)
         excludePatterns = c.excludePatterns
-        ignoreFilePatterns = ExcludeList.readIgnoreFile(project)
+        do {
+            ignoreFilePatterns = try ExcludeList.readIgnoreFile(project)
+            ignoreFileProblem = nil
+        } catch {
+            ignoreFilePatterns = []
+            ignoreFileProblem = MudroomError.message(error)
+        }
         refreshLeftOut()
     }
 
-    func saveNetwork(_ project: URL) {
+    /// False (with the error shown) if the settings couldn't be saved.
+    func saveNetwork(_ project: URL) -> Bool {
         do {
             try configStore.update(project.path) {
                 $0.networkMode = networkMode
@@ -375,8 +394,10 @@ struct NewSessionSheet: View {
                 $0.localModels = localModels
                 $0.excludePatterns = excludePatterns
             }
+            return true
         } catch {
             app.errorMessage = "Couldn't save the project settings: \(MudroomError.message(error))"
+            return false
         }
     }
 

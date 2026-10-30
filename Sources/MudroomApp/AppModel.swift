@@ -143,7 +143,9 @@ final class AppModel {
 
     // MARK: Sessions
 
-    func startSession(project: URL, preset: AgentPreset?, customCommand: String, image: String) {
+    /// `exclude` is the project's exclude list as the sheet showed it; the
+    /// project's .mudroomignore is read again when the copy is made.
+    func startSession(project: URL, preset: AgentPreset?, customCommand: String, image: String, exclude: [String]) {
         let command = preset?.command ?? AgentPreset.parseCommand(customCommand)
         let agent = preset?.name ?? command.first.map { "Custom: \($0)" }
         let store = self.store
@@ -159,7 +161,8 @@ final class AppModel {
                     let backend = try Backends.make(choice)
                     try backend.checkAvailable()
                     if let why = backend.missingImageProblem(image) { throw why }
-                    return try store.create(project: project, command: command, image: image, agent: agent)
+                    let list = ExcludeList(patterns: exclude, ignoreFile: try ExcludeList.readIgnoreFile(project))
+                    return try store.create(project: project, command: command, image: image, agent: agent, exclude: list)
                 }
             }.value
             creatingSession = nil
