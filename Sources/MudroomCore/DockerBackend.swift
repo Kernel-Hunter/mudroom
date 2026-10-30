@@ -187,8 +187,47 @@ public struct DockerBackend: SandboxBackend {
     public func run(_ spec: SandboxSpec) throws -> Int32 {
         try checkAvailable()
         try ensureImage(spec.image)
+        let done = LockedBox(false)
+        if let watch = spec.connectionWatch { startWatcher(watch, in: spec.name, until: done) }
+        defer { done.value = true }
         return try ProcessRunner.runAttached(executable!, Self.runArguments(for: spec, host: .current(self), ociRuntime: ociRuntime),
                                              environment: spec.secretEnvironment)
+    }
+
+    /// The forwarder passes on each client's source port, and the watcher
+    /// runs with `exec` once the container is up.
+    public var watchesConnections: Bool { true }
+
+    /// `exec` arguments that start the connection watcher in the agent's
+    /// container. It runs as the container's user (no capabilities are
+    /// needed to read that user's own /proc/<pid>/fd). The token and the
+    /// script are passed by name, so their values stay out of argv.
+    public static func watcherArguments(container: String, watch: ConnectionWatch) -> [String] {
+        let args = watch.arguments
+        return ["exec", "--detach", "--env", "MUDROOM_WATCH_TOKEN", "--env", "MUDROOM_WATCH", container,
+                "bash", "-c", #"eval "$MUDROOM_WATCH""#, "mudroom-watch", args[0], args[1], "1"] + args.dropFirst(2)
+    }
+
+    /// Waits (in the background) for the container to run, then starts the
+    /// watcher in it. Connections made before that have no command in the
+    /// log. Without bash in the image, `exec` fails and nothing changes.
+    func startWatcher(_ watch: ConnectionWatch, in container: String, until done: LockedBox<Bool>) {
+        guard let exe = executable else { return }
+        let backend = self
+        let t = Thread {
+            let deadline = Date().addingTimeInterval(300)
+            while !done.value, Date() < deadline {
+                if backend.isRunning(container) {
+                    _ = try? ProcessRunner.capture(exe, Self.watcherArguments(container: container, watch: watch),
+                                                   environment: ["MUDROOM_WATCH_TOKEN": watch.token, "MUDROOM_WATCH": ConnectionWatch.script],
+                                                   timeout: 30)
+                    return
+                }
+                usleep(200_000)
+            }
+        }
+        t.name = "mudroom.watcher-start"
+        t.start()
     }
 
     public func isRunning(_ name: String) -> Bool {
@@ -341,14 +380,14 @@ public struct DockerBackend: SandboxBackend {
         guard let bridge = try defaultNetwork(), !bridge.gateway.isEmpty, let subnet = IPv4Subnet(bridge.subnet) else {
             throw MudroomError.backendUnavailable("couldn't read the \(name) default network's gateway for the proxy")
         }
-        return ProxyListen(bindHost: bridge.gateway, clientSubnets: [subnet], blockedSubnets: blocked)
+        return ProxyListen(bindHost: bridge.gateway, clientSubnets: [subnet], blockedSubnets: blocked, forwarderSendsProxyLine: true)
         #else
         #if os(Windows)
         if let wsl = try podmanMachineGateway() {
-            return ProxyListen(bindHost: wsl.gateway, clientSubnets: [wsl.subnet], blockedSubnets: blocked)
+            return ProxyListen(bindHost: wsl.gateway, clientSubnets: [wsl.subnet], blockedSubnets: blocked, forwarderSendsProxyLine: true)
         }
         #endif
-        return ProxyListen(bindHost: "127.0.0.1", clientSubnets: [], blockedSubnets: blocked)
+        return ProxyListen(bindHost: "127.0.0.1", clientSubnets: [], blockedSubnets: blocked, forwarderSendsProxyLine: true)
         #endif
     }
 
@@ -454,12 +493,17 @@ public struct DockerBackend: SandboxBackend {
     #endif
 
     /// Node one-liner for the sidecar: accept on 3128, pipe each connection
-    /// to the host proxy. Half-closes pass through.
+    /// to the host proxy. Half-closes pass through. Each connection starts
+    /// with a PROXY protocol line, so the proxy knows the client's source
+    /// port (the connection watcher reports processes by it).
     static let forwarderScript = """
     const net = require('net');
     const [host, port] = [process.env.MUDROOM_UPSTREAM_HOST, +process.env.MUDROOM_UPSTREAM_PORT];
+    const v4 = a => /^(::ffff:)?\\d+\\.\\d+\\.\\d+\\.\\d+$/.test(a || '') ? a.replace('::ffff:', '') : null;
     net.createServer({allowHalfOpen: true}, c => {
       const u = net.connect({host, port, allowHalfOpen: true});
+      const [src, dst] = [v4(c.remoteAddress), v4(c.localAddress)];
+      u.write(src && dst ? `PROXY TCP4 ${src} ${dst} ${c.remotePort} ${c.localPort}\\r\\n` : 'PROXY UNKNOWN\\r\\n');
       c.pipe(u); u.pipe(c);
       c.on('error', () => u.destroy()); u.on('error', () => c.destroy());
     }).listen(\(sidecarPort), '0.0.0.0', () => console.log('mudroom-forwarder ready'));

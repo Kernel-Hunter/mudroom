@@ -89,15 +89,17 @@ enum Sock {
     }
 
     /// Accepts one connection; returns the fd and the peer address.
-    static func accept(_ fd: Int32) -> (Int32, IPAddress?)? {
+    static func accept(_ fd: Int32) -> (Int32, IPAddress?, UInt16)? {
         var ss = sockaddr_storage()
         var len = Int32(MemoryLayout<sockaddr_storage>.size)
         let c = withUnsafeMutablePointer(to: &ss) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { wsAccept(handle(fd), $0, &len) }
         }
         guard c != INVALID_SOCKET else { return nil }
-        let peer = withUnsafePointer(to: &ss) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { IPAddress($0) } }
-        return (descriptor(c), peer)
+        let (peer, port) = withUnsafePointer(to: &ss) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { (IPAddress($0), IPAddress.port($0)) }
+        }
+        return (descriptor(c), peer, port)
     }
 
     static func withSockaddr<R>(_ a: IPAddress, port: UInt16, _ body: (UnsafePointer<sockaddr>, Int32) -> R) -> R {

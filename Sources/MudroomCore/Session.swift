@@ -98,15 +98,20 @@ public struct SessionNetwork: Codable, Sendable, Equatable {
     /// True if a firewall inside the VM allowed only the proxy (see
     /// `GuestFirewall`). nil in sessions from before it existed.
     public var guestFirewall: Bool?
+    /// True if a watcher in the sandbox reported which process opened each
+    /// connection (see `ConnectionWatch`). nil in sessions from before it
+    /// existed and where it couldn't run.
+    public var processWatch: Bool?
 
     public init(mode: NetworkMode, enforcement: NetworkEnforcement, allowlist: [String] = [],
-                proxy: String? = nil, vmNetwork: String? = nil, guestFirewall: Bool? = nil) {
+                proxy: String? = nil, vmNetwork: String? = nil, guestFirewall: Bool? = nil, processWatch: Bool? = nil) {
         self.mode = mode
         self.enforcement = enforcement
         self.allowlist = allowlist
         self.proxy = proxy
         self.vmNetwork = vmNetwork
         self.guestFirewall = guestFirewall
+        self.processWatch = processWatch
     }
 }
 

@@ -53,6 +53,15 @@ public enum IPAddress: Hashable, Sendable, CustomStringConvertible {
         }
     }
 
+    /// The port in a sockaddr (AF_INET or AF_INET6), or 0.
+    static func port(_ sa: UnsafePointer<sockaddr>) -> UInt16 {
+        switch Int32(sa.pointee.sa_family) {
+        case AF_INET: return sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { UInt16(bigEndian: $0.pointee.sin_port) }
+        case AF_INET6: return sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { UInt16(bigEndian: $0.pointee.sin6_port) }
+        default: return 0
+        }
+    }
+
     /// The IPv4 address inside an IPv4-mapped IPv6 address (::ffff:a.b.c.d).
     public var asIPv4: UInt32? {
         switch self {
@@ -220,8 +229,8 @@ enum Sock {
         }
     }
 
-    /// Accepts one connection; returns the fd and the peer address.
-    static func accept(_ fd: Int32) -> (Int32, IPAddress?)? {
+    /// Accepts one connection; returns the fd, the peer address and port.
+    static func accept(_ fd: Int32) -> (Int32, IPAddress?, UInt16)? {
         var ss = sockaddr_storage()
         var len = socklen_t(MemoryLayout<sockaddr_storage>.size)
         let c = withUnsafeMutablePointer(to: &ss) {
@@ -232,8 +241,10 @@ enum Sock {
         var one: Int32 = 1
         setsockopt(c, SOL_SOCKET, SO_NOSIGPIPE, &one, socklen_t(MemoryLayout<Int32>.size))
         #endif
-        let peer = withUnsafePointer(to: &ss) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { IPAddress($0) } }
-        return (c, peer)
+        let (peer, port) = withUnsafePointer(to: &ss) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { (IPAddress($0), IPAddress.port($0)) }
+        }
+        return (c, peer, port)
     }
 
     static func withSockaddr<R>(_ a: IPAddress, port: UInt16, _ body: (UnsafePointer<sockaddr>, socklen_t) -> R) -> R {

@@ -74,14 +74,25 @@ public struct GuestFirewall: Sendable, Equatable {
 
     /// The sandbox's first process (`/bin/sh -c script`). Arguments: the
     /// rules, the user and group to become (empty: the image has none, so
-    /// root), "1" to set HOME from that user's passwd entry, "--", then the
-    /// command. Everything is passed as arguments, never pasted into the
-    /// script, so nothing in them is interpreted by the shell.
+    /// root), "1" to set HOME from that user's passwd entry, optionally
+    /// "--watch", the connection watcher's script and its arguments (see
+    /// `ConnectionWatch`), then "--" and the command. Everything is passed
+    /// as arguments, never pasted into the script, so nothing in them is
+    /// interpreted by the shell.
+    ///
+    /// The watcher is started just before the agent, as root but with only
+    /// CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH, and only if the image has
+    /// bash. Its token and script go in its environment, which the agent
+    /// (another user, without CAP_SYS_PTRACE) can't read; `ps` shows it as
+    /// `bash -c eval "$MUDROOM_WATCH" mudroom-watch <proxy address>...`. If it can't start, the
+    /// agent still runs; the log then has no commands.
     public static let script = #"""
     fail() { echo "mudroom-firewall: $1. The agent was not started." >&2; exit 125; }
-    rules=$1 u=$2 g=$3 sethome=$4
-    [ "$5" = "--" ] || fail "bad arguments"
-    shift 5
+    rules=$1 u=$2 g=$3 sethome=$4 watch= wargs=
+    shift 4
+    if [ "$1" = "--watch" ]; then watch=$2 wargs=$3; shift 3; fi
+    [ "$1" = "--" ] || fail "bad arguments"
+    shift
     command -v nft >/dev/null 2>&1 || fail "this image has no nft (the nftables package), which locked and offline modes need to firewall the VM. Rebuild Mudroom's image with \`mudroom image build\`, or add nftables to your image"
     command -v setpriv >/dev/null 2>&1 || fail "this image has no setpriv (util-linux), which locked and offline modes need to drop root before the agent starts. Rebuild Mudroom's image with \`mudroom image build\`, or add util-linux to your image"
     printf '%s\n' "$rules" | nft -f - || fail "the firewall rules could not be loaded"
@@ -93,6 +104,16 @@ public struct GuestFirewall: Sendable, Equatable {
       h=$(getent passwd "$u" 2>/dev/null | cut -d: -f6)
       [ -n "$h" ] || h=/
       export HOME="$h"
+    fi
+    if [ -n "$watch" ] && command -v bash >/dev/null 2>&1; then
+      top=$$
+      (
+        set -f
+        set -- $wargs
+        tok=$1 host=$2 port=$3
+        shift 3
+        MUDROOM_WATCH_TOKEN=$tok MUDROOM_WATCH=$watch exec setpriv --bounding-set=-all,+sys_ptrace,+dac_read_search --no-new-privs -- bash -c 'eval "$MUDROOM_WATCH"' mudroom-watch "$host" "$port" "$top" "$@"
+      ) </dev/null >/dev/null 2>&1 &
     fi
     exec setpriv --reuid="$u" --regid="$g" $groups --inh-caps=-all --bounding-set=-all --no-new-privs -- "$@" || fail "could not drop root"
     """#
@@ -123,10 +144,15 @@ public struct GuestFirewall: Sendable, Equatable {
     /// is replaced with `/bin/sh`: the script, its arguments, then what the
     /// image would have run (its entrypoint, then `command`, or its own CMD
     /// when `command` is empty).
-    public func arguments(image: ImageConfig, command: [String]) -> [String] {
+    /// With `watch` (and a proxy), the connection watcher starts beside the
+    /// agent.
+    public func arguments(image: ImageConfig, command: [String], watch: ConnectionWatch? = nil) -> [String] {
         let (u, g) = Self.splitUser(image.user)
-        return ["-c", Self.script, "mudroom-firewall", rules, u, g, image.setsHome ? "0" : "1", "--"]
-            + image.entrypoint + (command.isEmpty ? image.cmd : command)
+        var args = ["-c", Self.script, "mudroom-firewall", rules, u, g, image.setsHome ? "0" : "1"]
+        if let watch, proxy != nil {
+            args += ["--watch", ConnectionWatch.script, ([watch.token] + watch.arguments).joined(separator: " ")]
+        }
+        return args + ["--"] + image.entrypoint + (command.isEmpty ? image.cmd : command)
     }
 
     /// Reads an image's user, entrypoint and CMD from `container image
