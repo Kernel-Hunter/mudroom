@@ -423,8 +423,9 @@ struct ProxyWatchTests {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: node)
         proc.arguments = ["-e", script]
-        proc.environment = ["MUDROOM_UPSTREAM_HOST": "127.0.0.1", "MUDROOM_UPSTREAM_PORT": "\(p.port)",
-                            "PATH": ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin"]
+        // Keep the rest of the environment: on Windows, Winsock needs SystemRoot.
+        proc.environment = ProcessInfo.processInfo.environment.merging(
+            ["MUDROOM_UPSTREAM_HOST": "127.0.0.1", "MUDROOM_UPSTREAM_PORT": "\(p.port)"]) { _, new in new }
         proc.standardOutput = FileHandle.nullDevice
         try proc.run()
         defer { proc.terminate() }
