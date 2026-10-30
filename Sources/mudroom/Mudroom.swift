@@ -159,7 +159,12 @@ struct Run: ParsableCommand {
 /// left anything out.
 func printExcluded(_ s: Session, to out: FileHandle? = nil) {
     guard let summary = ExcludedEntry.summary(s.excluded ?? []) else { return }
-    let text = "left out of the sandbox: \(summary). Change the list with `mudroom exclude`.\n"
+    var text = "left out of the sandbox: \(summary). Change the list with `mudroom exclude`.\n"
+    if let tracked = s.excludedTracked, !tracked.isEmpty {
+        let names = tracked.prefix(8).joined(separator: ", ") + (tracked.count > 8 ? " and \(tracked.count - 8) more" : "")
+        text += "warning: git tracks \(names), so inside the sandbox git sees \(tracked.count == 1 ? "it" : "them") as deleted. "
+            + "If the agent commits, its commit deletes \(tracked.count == 1 ? "it" : "them"); check before using apply --include-git.\n"
+    }
     if let out { out.write(Data(text.utf8)) } else { print(text, terminator: "") }
 }
 

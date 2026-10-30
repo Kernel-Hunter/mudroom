@@ -56,6 +56,9 @@ public struct Session: Codable, Sendable, Equatable {
     public var exclude: ExcludeList?
     /// What the clones left out because of `exclude`. Nil when nothing was.
     public var excluded: [ExcludedEntry]?
+    /// Those of `excluded` that git tracks in the project: inside the
+    /// sandbox git sees them as deleted. Nil when none are (or no git).
+    public var excludedTracked: [String]?
 
     public init(id: String, projectPath: String, created: Date, command: [String], image: String,
                 status: SessionStatus, cloneMethod: CloneMethod, exitCode: Int32? = nil, agent: String? = nil) {
@@ -181,6 +184,9 @@ public struct SessionStore: Sendable {
 
     public init(root: URL) { self.root = root }
 
+    /// Held by `create` while it makes a session's clones.
+    static let creatingLockName = "creating.lock"
+
     /// `$MUDROOM_HOME`, or ~/Library/Application Support/Mudroom
     /// (Linux: ~/.local/share/mudroom; Windows: %LOCALAPPDATA%\Mudroom).
     public static func defaultStore() -> SessionStore {
@@ -233,6 +239,12 @@ public struct SessionStore: Sendable {
         var handle = SessionHandle(directory: dir, session: Session(
             id: id, projectPath: project.path, created: Date(), command: command, image: image,
             status: .created, cloneMethod: .clonefile, agent: agent))
+        // Held until session.json exists, so `discard` of a session dir
+        // without one (`brokenSessions`) leaves a session being made alone.
+        // Its own file: runner.lock's absence marks sessions from older
+        // versions (see `isRunnerAlive`).
+        let creatingURL = dir.appendingPathComponent(SessionStore.creatingLockName)
+        let creating = FileLock.tryAcquire(creatingURL)
         do {
             let r1 = try Cloner.clone(from: project, to: handle.base, allowClonefile: allowClonefile, exclude: rules)
             let r2 = try Cloner.clone(from: project, to: handle.work, allowClonefile: allowClonefile, exclude: rules)
@@ -243,9 +255,16 @@ public struct SessionStore: Sendable {
             handle.session.exclude = exclude
             var excluded = r1.excluded
             for e in r2.excluded where !excluded.contains(where: { $0.path == e.path }) { excluded.append(e) }
-            if !excluded.isEmpty { handle.session.excluded = excluded.sorted { $0.path < $1.path } }
+            if !excluded.isEmpty {
+                handle.session.excluded = excluded.sorted { $0.path < $1.path }
+                let tracked = ExcludedEntry.trackedByGit(handle.session.excluded!, project: project)
+                if !tracked.isEmpty { handle.session.excludedTracked = tracked }
+            }
             try handle.save()
+            creating?.release()
+            try? FileManager.default.removeItem(at: creatingURL)
         } catch {
+            creating?.release()
             #if os(Windows)
             try? FileManager.default.removeItem(at: dir)
             #else
@@ -316,7 +335,10 @@ public struct SessionStore: Sendable {
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir), isDir.boolValue else { return nil }
             guard let data = try? Data(contentsOf: dir.appendingPathComponent("session.json")),
-                  (try? Self.decode(data)) != nil else { return dir }
+                  (try? Self.decode(data)) != nil else {
+                // Still being created (its clones are being made).
+                return FileLock.isHeld(dir.appendingPathComponent(Self.creatingLockName)) ? nil : dir
+            }
             return nil
         }
     }
@@ -327,8 +349,8 @@ public struct SessionStore: Sendable {
         guard let dir = brokenSessions().first(where: { $0.lastPathComponent == id }) else {
             throw MudroomError.sessionNotFound(id)
         }
-        if FileLock.isHeld(dir.appendingPathComponent("runner.lock")) {
-            throw MudroomError.invalid("session \(id) is still running")
+        if FileLock.isHeld(dir.appendingPathComponent("runner.lock")) || FileLock.isHeld(dir.appendingPathComponent(Self.creatingLockName)) {
+            throw MudroomError.invalid("session \(id) is still being created or running")
         }
         try FileManager.default.removeItem(at: dir)
     }

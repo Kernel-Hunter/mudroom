@@ -93,14 +93,20 @@ enum ExcludeWalk {
     }
 
     /// Deletes a file, symlink or whole folder, making read-only folders
-    /// (in the clone, which is ours) writable as needed.
+    /// (in the clone, which is ours) writable as needed. On macOS, flags
+    /// like `uchg` that block a delete are cleared first.
     static func removeEntry(_ path: String) throws {
         if unlinkOrRemoveTree(path) { return }
-        // The parent may be read-only: open it up for the removal only.
+        // The parent may be read-only or locked: open it up for the removal only.
         let parent = (path as NSString).deletingLastPathComponent
         var st = stat()
         guard lstat(parent, &st) == 0 else { throw MudroomError.posix("lstat", parent, errno) }
         let mode = st.st_mode & 0o7777
+        #if canImport(Darwin)
+        let flags = st.st_flags
+        if flags != 0 { chflags(parent, 0) }
+        defer { if flags != 0 { chflags(parent, flags) } }
+        #endif
         guard chmod(parent, mode | 0o700) == 0 else { throw MudroomError.posix("chmod", parent, errno) }
         defer { chmod(parent, mode) }
         guard unlinkOrRemoveTree(path) else { throw MudroomError.posix("remove", path, errno) }
@@ -109,6 +115,10 @@ enum ExcludeWalk {
     private static func unlinkOrRemoveTree(_ path: String) -> Bool {
         var st = stat()
         guard lstat(path, &st) == 0 else { return errno == ENOENT }
+        #if canImport(Darwin)
+        // uchg/uappnd (and schg, which only root can clear) refuse unlink and rmdir.
+        if st.st_flags != 0 { lchflags(path, 0) }
+        #endif
         guard st.st_mode & S_IFMT == S_IFDIR else { return unlink(path) == 0 }
         chmod(path, 0o700)
         guard let entries = try? list(path) else { return false }
