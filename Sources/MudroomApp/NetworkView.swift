@@ -198,8 +198,9 @@ struct HostRow: View {
     var detail: String {
         let port = row.port == 443 ? "" : ":\(row.port) · "
         let times = row.count == 1 ? "1 connection" : "\(row.count) connections"
-        if row.allowed { return "\(port)\(times) · ↓ \(NetworkLog.byteString(row.bytesIn))" }
-        return "\(port)\(times) blocked"
+        let by = row.programs.isEmpty ? "" : " · by \(NetworkLog.programsLabel(row))"
+        if row.allowed { return "\(port)\(times) · ↓ \(NetworkLog.byteString(row.bytesIn))\(by)" }
+        return "\(port)\(times) blocked\(by)"
     }
 }
 
@@ -225,7 +226,9 @@ struct NetworkDetailView: View {
             if entries.isEmpty {
                 allowlist
             } else {
-                ConnectionTable(entries: entries)
+                ConnectionTable(entries: entries,
+                                showsCommands: review.handle.session.network?.processWatch == true
+                                    || NetworkLog.hasProcesses(review.networkEntries))
             }
         }
         .background(Color.diffBackground)
@@ -303,10 +306,14 @@ struct NetworkDetailView: View {
 /// offscreen snapshots the docs use, and this is short anyway).
 struct ConnectionTable: View {
     let entries: [NetworkLogEntry]
+    /// The session ran with the connection watcher: show which process
+    /// made each connection.
+    var showsCommands = false
 
     var body: some View {
         VStack(spacing: 0) {
-            row(time: "Time", icon: nil, host: "Host", kind: "Kind", sent: "Sent", received: "Received", open: "Open", note: "Note")
+            row(time: "Time", icon: nil, host: "Host", kind: "Kind", sent: "Sent", received: "Received", open: "Open",
+                command: showsCommands ? "Command" : nil, note: "Note")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .padding(.vertical, 6)
@@ -319,7 +326,9 @@ struct ConnectionTable: View {
                             icon: e.allowed ? (e.reason == nil ? ("checkmark", Color.green) : ("exclamationmark.triangle", Color.orange)) : ("xmark", Color.red),
                             host: NetworkLog.endpoint(e.host, e.port), kind: e.method == "CONNECT" ? "HTTPS" : "HTTP \(e.method)",
                             sent: NetworkLog.byteString(e.bytesOut), received: NetworkLog.byteString(e.bytesIn),
-                            open: Self.duration(e.durationMs), note: e.reason ?? "")
+                            open: Self.duration(e.durationMs),
+                            command: showsCommands ? NetworkLog.commandLabel(e, width: 200) : nil,
+                            commandHelp: Self.processHelp(e), note: e.reason ?? "")
                             .font(.system(size: 11.5))
                             .padding(.vertical, 5)
                             .background(i % 2 == 1 ? Color.secondary.opacity(0.05) : Color.clear)
@@ -331,7 +340,7 @@ struct ConnectionTable: View {
     }
 
     func row(time: String, icon: (String, Color)?, host: String, kind: String, sent: String, received: String,
-             open: String, note: String) -> some View {
+             open: String, command: String?, commandHelp: String = "", note: String) -> some View {
         HStack(spacing: 10) {
             Text(time).monospacedDigit().frame(width: 72, alignment: .leading)
             Group {
@@ -343,9 +352,25 @@ struct ConnectionTable: View {
             Text(sent).monospacedDigit().frame(width: 60, alignment: .trailing)
             Text(received).monospacedDigit().frame(width: 64, alignment: .trailing)
             Text(open).monospacedDigit().frame(width: 56, alignment: .trailing)
+            if let command {
+                Text(command).font(.system(size: 11, design: .monospaced)).lineLimit(1).truncationMode(.tail)
+                    .foregroundStyle(command == "unknown" ? .tertiary : .primary)
+                    .frame(minWidth: 120, maxWidth: 280, alignment: .leading)
+                    .help(commandHelp)
+            }
             Text(note).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 14)
+    }
+
+    /// The process and its parents, the agent first, for the tooltip.
+    static func processHelp(_ e: NetworkLogEntry) -> String {
+        guard let command = e.command else {
+            return "The watcher in the VM didn't see which process made this connection (it closed between two looks)."
+        }
+        let chain = (e.parents ?? []).reversed() + [command]
+        return chain.enumerated().map { i, c in String(repeating: "  ", count: i) + (i == 0 ? "" : "└ ") + c }
+            .joined(separator: "\n") + (e.pid.map { "\n(pid \($0) in the VM)" } ?? "")
     }
 
     static func duration(_ ms: Int) -> String {
