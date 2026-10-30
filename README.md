@@ -122,7 +122,7 @@ installed. Keep the files together and put the folder on your PATH (copying
 `mudroom.exe` alone won't run without Swift installed). In PowerShell:
 
 ```powershell
-$v = '0.3.0'; $arch = 'x86_64'          # or 'arm64'
+$v = '0.4.0'; $arch = 'x86_64'          # or 'arm64'
 $name = "mudroom-$v-windows-$arch"
 Invoke-WebRequest "https://github.com/Kernel-Hunter/mudroom/releases/download/v$v/$name.zip" -OutFile "$env:TEMP\$name.zip"
 Get-FileHash "$env:TEMP\$name.zip"     # compare with $name.zip.sha256 on the release page
