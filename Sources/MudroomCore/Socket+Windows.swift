@@ -256,7 +256,7 @@ enum Sock {
         let (listener, port) = try listen(host: "127.0.0.1", port: 0)
         defer { close(listener) }
         guard case .success(let writer) = connect(.v4(0x7F00_0001), port: port, timeout: 5, cancelled: { false }),
-              let (reader, _) = accept(listener) else {
+              let (reader, _, _) = accept(listener) else {
             throw MudroomError.invalid("couldn't make the proxy's wake-up sockets: \(errorText(lastError))")
         }
         return (reader, writer)
