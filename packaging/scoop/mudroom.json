@@ -1,5 +1,5 @@
 {
-    "version": "0.4.0",
+    "version": "0.5.0",
     "description": "Run coding agents in a sandbox, then review their changes like a pull request before anything touches your project.",
     "homepage": "https://github.com/Kernel-Hunter/mudroom",
     "license": "MIT",
@@ -10,14 +10,14 @@
     ],
     "architecture": {
         "64bit": {
-            "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v0.4.0/mudroom-0.4.0-windows-x86_64.zip",
-            "hash": "63817e64819322e0f2b5cda101b95a86810b322e545bac66d9ec1e835484d481",
-            "extract_dir": "mudroom-0.4.0-windows-x86_64"
+            "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v0.5.0/mudroom-0.5.0-windows-x86_64.zip",
+            "hash": "66742a5a31fae0c0a3ff79bd648ac07de1776b26fdd1e283d887c1e7479b9c81",
+            "extract_dir": "mudroom-0.5.0-windows-x86_64"
         },
         "arm64": {
-            "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v0.4.0/mudroom-0.4.0-windows-arm64.zip",
-            "hash": "163e15d97cff46f14f0949f459539b2281e605ad293d1e56226014d759b157b1",
-            "extract_dir": "mudroom-0.4.0-windows-arm64"
+            "url": "https://github.com/Kernel-Hunter/mudroom/releases/download/v0.5.0/mudroom-0.5.0-windows-arm64.zip",
+            "hash": "970fa73fa69f463d082bfbaff6277ec769f1d904809c7cf1824f6295446a8c16",
+            "extract_dir": "mudroom-0.5.0-windows-arm64"
         }
     },
     "bin": "mudroom.exe",
