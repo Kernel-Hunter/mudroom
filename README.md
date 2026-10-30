@@ -1576,8 +1576,8 @@ Built by [Karim Masmoudi](https://github.com/Kernel-Hunter). My other projects a
 
 <a href="https://star-history.com/#Kernel-Hunter/mudroom&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=Kernel-Hunter/mudroom&type=Date&theme=dark">
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=Kernel-Hunter/mudroom&type=Date">
-    <img alt="Star history of Kernel-Hunter/mudroom" src="https://api.star-history.com/svg?repos=Kernel-Hunter/mudroom&type=Date" width="600">
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=kernel-hunter/mudroom&type=Date&theme=dark">
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=kernel-hunter/mudroom&type=Date">
+    <img alt="Star history of Kernel-Hunter/mudroom" src="https://api.star-history.com/svg?repos=kernel-hunter/mudroom&type=Date" width="600">
   </picture>
 </a>
