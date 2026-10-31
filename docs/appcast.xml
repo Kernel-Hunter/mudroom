@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>Mudroom</title>
+    <link>https://github.com/Kernel-Hunter/mudroom</link>
+    <description>Updates for Mudroom.app. Made by scripts/appcast.sh; edit nothing by hand, the signature covers the whole file.</description>
+    <language>en</language>
+    <item>
+      <title>Mudroom 0.6.0</title>
+      <pubDate>Sat, 31 Oct 2026 21:19:45 GMT</pubDate>
+      <sparkle:version>161</sparkle:version>
+      <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>26.0.0</sparkle:minimumSystemVersion>
+      <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+      <sparkle:fullReleaseNotesLink>https://github.com/Kernel-Hunter/mudroom/releases/tag/v0.6.0</sparkle:fullReleaseNotesLink>
+      <description sparkle:format="markdown"><![CDATA[## What's Changed
+* Redesign the README by @Kernel-Hunter in https://github.com/Kernel-Hunter/mudroom/pull/13
+* Update notifications and one-step updates by @Kernel-Hunter in https://github.com/Kernel-Hunter/mudroom/pull/15
+
+
+**Full Changelog**: https://github.com/Kernel-Hunter/mudroom/compare/v0.5.0...v0.6.0]]></description>
+      <enclosure url="https://github.com/Kernel-Hunter/mudroom/releases/download/v0.6.0/Mudroom-0.6.0.zip" length="4651355" type="application/octet-stream" sparkle:edSignature="y9ZhWle4PMqjELxpuyO+v2k/Q1t3LVqyEd8l6d0LFj3Ql2xs8h3htTr716JVYu2kV8icdMaHMzECweJhD9HmDg=="/>
+    </item>
+  </channel>
+</rss>
+<!-- sparkle-signatures:
+edSignature: 5VNMKrmCW+vVH7RqYbk6Fn/KZ9U6lS/OXy0PKyUiaZ0WQJuQ7tB9Jk3QFdXwFpYVTRc8FQEOkrcVy7jLP8f0Dw==
+length: 1568
+-->
