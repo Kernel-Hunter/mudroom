@@ -22,6 +22,7 @@ struct MudroomApp: App {
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About Mudroom") { AppDelegate.showAbout() }
+                CheckForUpdatesButton(updater: AppUpdater.shared)
                 Button("Setup…") { app.openSetup() }
             }
             CommandGroup(replacing: .newItem) {
@@ -65,6 +66,10 @@ struct MudroomApp: App {
         }
         .defaultSize(width: 720, height: 860)
         .windowResizability(.contentMinSize)
+
+        Settings {
+            UpdateSettingsView(updater: AppUpdater.shared)
+        }
     }
 }
 
@@ -88,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+        AppUpdater.shared.listenForCLI()
 
         let defaults = UserDefaults.standard
         switch defaults.string(forKey: "MudroomAppearance") {

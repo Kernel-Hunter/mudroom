@@ -1,6 +1,8 @@
 #!/bin/zsh
 # Builds a release zip: dist/Mudroom-<version>.zip, containing Mudroom.app
-# (app + bundled `mudroom` CLI), ad-hoc signed. Prints the SHA-256.
+# (app, bundled `mudroom` CLI and Sparkle), ad-hoc signed. Prints the SHA-256.
+# After the release is published, scripts/appcast.sh adds it to the update
+# feed.
 #
 #   scripts/release.sh 0.4.0
 #
@@ -29,7 +31,14 @@ if [[ "$plist_version" != "$VERSION" || "$cli_version" != "$VERSION" ]]; then
     exit 1
 fi
 codesign --verify --deep --strict "$APP"
-for bin in "$APP/Contents/MacOS/Mudroom" "$CLI"; do
+# Sparkle checks updates against this key; a build without it could never
+# update again.
+key=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP/Contents/Info.plist")
+if [[ "$key" != "QKKfpvfADDZDhLbEDTOZ4QKgc5EgHgxP3hGulato8T8=" ]]; then
+    echo "release.sh: Info.plist has the wrong SUPublicEDKey: $key" >&2
+    exit 1
+fi
+for bin in "$APP/Contents/MacOS/Mudroom" "$CLI" "$APP/Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle"; do
     if ! lipo -archs "$bin" | grep -qw arm64; then
         echo "release.sh: $bin is not arm64" >&2
         exit 1

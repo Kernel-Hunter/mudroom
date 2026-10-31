@@ -34,5 +34,17 @@
 	<string>NSApplication</string>
 	<key>NSSupportsAutomaticTermination</key>
 	<false/>
+	<key>SUFeedURL</key>
+	<string>https://kernel-hunter.github.io/mudroom/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>QKKfpvfADDZDhLbEDTOZ4QKgc5EgHgxP3hGulato8T8=</string>
+	<key>SURequireSignedFeed</key>
+	<true/>
+	<key>SUVerifyUpdateBeforeExtraction</key>
+	<true/>
+	<key>SUEnableSystemProfiling</key>
+	<false/>
+	<key>SUAllowsAutomaticUpdates</key>
+	<false/>
 </dict>
 </plist>
