@@ -1,7 +1,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 
 PackageIdentifier: KernelHunter.Mudroom
-PackageVersion: 0.5.0
+PackageVersion: 0.6.0
 InstallerType: zip
 NestedInstallerType: portable
 # mudroom.exe loads the Swift runtime DLLs next to it, so the folder goes on
@@ -13,15 +13,15 @@ Commands:
 Installers:
 - Architecture: x64
   NestedInstallerFiles:
-  - RelativeFilePath: mudroom-0.5.0-windows-x86_64/mudroom.exe
+  - RelativeFilePath: mudroom-0.6.0-windows-x86_64/mudroom.exe
     PortableCommandAlias: mudroom
-  InstallerUrl: https://github.com/Kernel-Hunter/mudroom/releases/download/v0.5.0/mudroom-0.5.0-windows-x86_64.zip
-  InstallerSha256: 66742A5A31FAE0C0A3FF79BD648AC07DE1776B26FDD1E283D887C1E7479B9C81
+  InstallerUrl: https://github.com/Kernel-Hunter/mudroom/releases/download/v0.6.0/mudroom-0.6.0-windows-x86_64.zip
+  InstallerSha256: E9984215CEF7F024A510006F765BAA3A210F4251641C951E509C3EFB517025EB
 - Architecture: arm64
   NestedInstallerFiles:
-  - RelativeFilePath: mudroom-0.5.0-windows-arm64/mudroom.exe
+  - RelativeFilePath: mudroom-0.6.0-windows-arm64/mudroom.exe
     PortableCommandAlias: mudroom
-  InstallerUrl: https://github.com/Kernel-Hunter/mudroom/releases/download/v0.5.0/mudroom-0.5.0-windows-arm64.zip
-  InstallerSha256: 970FA73FA69F463D082BFBAFF6277EC769F1D904809C7CF1824F6295446A8C16
+  InstallerUrl: https://github.com/Kernel-Hunter/mudroom/releases/download/v0.6.0/mudroom-0.6.0-windows-arm64.zip
+  InstallerSha256: 145F5119A2A1E471465C44A4ADE1F3396F73D8C786FF327897A2CC05FC769893
 ManifestType: installer
 ManifestVersion: 1.12.0
