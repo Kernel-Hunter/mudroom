@@ -23,15 +23,25 @@ struct Mudroom: ParsableCommand {
         """,
         version: mudroomVersion,
         subcommands: [SetupCommand.self, Run.self, New.self, Start.self, Diff.self, Review.self, Hunks.self, Apply.self, Undo.self,
-                      Snapshots.self, NetworkCommand.self, Exclude.self, Agent.self, Keys.self, List.self, Stop.self, Discard.self, Image.self]
+                      Snapshots.self, NetworkCommand.self, Exclude.self, Agent.self, Keys.self, List.self, Stop.self, Discard.self, Image.self,
+                      Update.self]
     )
 
-    #if os(Windows)
+    /// ArgumentParser's main, plus the daily update check: started before
+    /// the command, its one line printed after the command's own output.
     static func main() {
+        #if os(Windows)
         WindowsConsole.setUp()
-        main(nil)
+        #endif
+        let notice = UpdateNoticeHook.begin(arguments: Array(CommandLine.arguments.dropFirst()))
+        do {
+            var command = try parseAsRoot()
+            try command.run()
+        } catch {
+            exit(withError: error)
+        }
+        UpdateNoticeHook.finish(notice)
     }
-    #endif
 }
 
 func store() -> SessionStore { SessionStore.defaultStore() }

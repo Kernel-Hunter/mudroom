@@ -12,6 +12,9 @@ cask "mudroom" do
     strategy :github_latest
   end
 
+  # Mudroom.app updates itself (Sparkle). `brew upgrade --cask mudroom`
+  # still works when asked for by name.
+  auto_updates true
   depends_on arch: :arm64
   depends_on formula: "container"
   depends_on macos: :tahoe
@@ -30,6 +33,8 @@ cask "mudroom" do
 
   zap trash: [
     "~/Library/Application Support/Mudroom",
+    "~/Library/Caches/io.github.kernel-hunter.mudroom",
+    "~/Library/HTTPStorages/io.github.kernel-hunter.mudroom",
     "~/Library/Preferences/io.github.kernel-hunter.mudroom.plist",
     "~/Library/Saved Application State/io.github.kernel-hunter.mudroom.savedState",
   ]
