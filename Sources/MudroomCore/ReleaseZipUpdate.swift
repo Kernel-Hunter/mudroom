@@ -5,6 +5,9 @@ import Glibc
 #elseif canImport(Musl)
 import Musl
 #endif
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 #if canImport(CryptoKit)
 import CryptoKit
 #else
