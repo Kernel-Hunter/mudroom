@@ -89,13 +89,14 @@ struct HunkApplyTests {
         #expect(try Applier(handle: f.handle).apply(paths: ["src/file.txt"]).alreadyApplied == ["src/file.txt"])
     }
 
-    @Test("a human edit to the file is a conflict and nothing is written")
+    @Test("a human edit to the hunk's lines is a conflict and nothing is written")
     func conflict() throws {
         let f = try fixture()
-        try write(Self.base + "mine\n", to: target(f))
+        let mine = Self.base.replacingOccurrences(of: "line 3\n", with: "mine\n")
+        try write(mine, to: target(f))
         let report = try Applier(handle: f.handle).applyHunks(path: "src/file.txt", hunks: [1])
         #expect(report.conflicts.map(\.path) == ["src/file.txt"])
-        #expect(try read(target(f)) == Self.base + "mine\n")
+        #expect(try read(target(f)) == mine)
         #expect(report.bundle == nil)
     }
 

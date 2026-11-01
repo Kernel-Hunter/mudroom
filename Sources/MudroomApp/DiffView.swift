@@ -21,10 +21,19 @@ struct FileDetailView: View {
                     .padding(.vertical, 10)
                 Divider()
             }
+            if entry.merges && !entry.isApplied && !entry.readOnly {
+                Banner(style: .info, title: "This file also changed in your project",
+                       detail: "The changes are in different lines, so applying merges them: your version keeps its changes and gets the agent's. Undo puts your version back.")
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                Divider()
+            }
             if let conflict = entry.conflict {
                 Banner(style: .warning,
                        title: FileEntry.conflictTitle(conflict),
-                       detail: "Mudroom won't overwrite your version, so this change can't be applied. Copy the parts you want by hand.")
+                       detail: conflict.contains("overlap the agent's")
+                           ? "Your version and the agent's change the same or neighbouring lines, so Mudroom can't merge them. Copy the parts you want by hand."
+                           : "Mudroom won't overwrite your version, so this change can't be applied. Copy the parts you want by hand.")
                     .help(conflict)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)

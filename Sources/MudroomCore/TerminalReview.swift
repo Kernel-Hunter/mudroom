@@ -10,6 +10,9 @@ public struct TerminalReview: Sendable {
         public var selected: Bool
         /// Set when a dry run reports a conflict; such paths start unselected.
         public var conflict: String?
+        /// The project changed this file too, in other lines: an apply
+        /// merges both (from a dry run, like `conflict`).
+        public var merge = false
         public var applied = false
         /// Set once the file is opened in the hunk view (see `showHunks`).
         /// From then on `selectedHunks` decides what goes in.
@@ -71,11 +74,11 @@ public struct TerminalReview: Sendable {
     /// One line of feedback under the list ("applied 3 paths").
     public var message: String?
 
-    public init(changes: [Change], conflicts: [String: String] = [:]) {
+    public init(changes: [Change], conflicts: [String: String] = [:], merges: Set<String> = []) {
         // Conflicts, unreadable entries and files the host acts on start unselected.
         items = changes.map {
             Item(change: $0, selected: conflicts[$0.path] == nil && $0.kind != .unreadable && Differ.reviewNote($0.path) == nil,
-                 conflict: conflicts[$0.path])
+                 conflict: conflicts[$0.path], merge: merges.contains($0.path))
         }
     }
 
@@ -143,6 +146,7 @@ public struct TerminalReview: Sendable {
             }
             if let c = conflicts[items[i].path] {
                 items[i].conflict = c
+                items[i].merge = false
                 items[i].selected = false
                 items[i].selectedHunks = []
             }
@@ -309,6 +313,7 @@ public struct TerminalReview: Sendable {
                     if !it.appliedHunks.isEmpty { line += "  (\(it.appliedHunks.count) of \(hunks.count) hunks applied)" }
                 }
                 if let c = it.conflict, !it.applied { line += "  CONFLICT: \(c)" }
+                else if it.merge && !it.applied { line += "  MERGE: changed in the project too, in other lines; apply keeps both" }
                 var s = Self.clip(line, width)
                 if i == cursor { s = style(s.padding(toLength: max(s.count, width), withPad: " ", startingAt: 0), .cursor) }
                 else if it.conflict != nil && !it.applied { s = style(s, .deleted) }

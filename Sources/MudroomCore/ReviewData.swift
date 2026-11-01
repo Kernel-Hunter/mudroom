@@ -48,6 +48,9 @@ public struct FileEntry: Identifiable, Sendable {
     public var isApplied: Bool
     /// Hunks already in the project from an earlier partial apply.
     public var appliedHunks: Set<Int>
+    /// The project changed this file too, in other lines: applying merges
+    /// both (see `Applier`). Never set together with `conflict`.
+    public var merges = false
     /// Shown for a timeline comparison (snapshot to work): look, don't apply.
     public var readOnly = false
     public let added: Int
@@ -259,6 +262,7 @@ public struct ReviewSnapshot: Sendable {
         let preflight = try applier.preflight(diff: diff)
         let conflicts = Dictionary(preflight.conflicts.map { ($0.path, $0.reason) }, uniquingKeysWith: { a, _ in a })
         let applied = Set(preflight.alreadyApplied)
+        let merges = Set(preflight.merged)
         let written = applier.lastWrittenIndex()
 
         let all = visibleRows(diff.changes)
@@ -274,16 +278,15 @@ public struct ReviewSnapshot: Sendable {
             guard case .text(let hunks, true) = content else { return (content, []) }
             // Hunks already in the project from an earlier partial apply.
             let real = (try? FileNode.read(at: handle.project.appendingPathComponent(change.path))) ?? .absent
-            if real == Applier.sanitized(change.after) { return (content, Set(hunks.map(\.id))) }
-            if real == change.before { return (content, []) }
-            if let last = written[change.path], last.applied == real { return (content, Set(last.hunks ?? [])) }
-            return (content, [])
+            return (content, Applier.hunksPresent(change, hunks: hunks, real: real, last: written[change.path]))
         }
         var files: [FileEntry] = []
         files.reserveCapacity(rows.count)
         for (change, (content, appliedHunks)) in zip(rows, loaded) {
-            files.append(FileEntry(change: change, content: content, conflict: conflicts[change.path],
-                                   isApplied: applied.contains(change.path), appliedHunks: appliedHunks))
+            var entry = FileEntry(change: change, content: content, conflict: conflicts[change.path],
+                                  isApplied: applied.contains(change.path), appliedHunks: appliedHunks)
+            entry.merges = merges.contains(change.path)
+            files.append(entry)
         }
         files.sort { ($0.group, $0.path) < ($1.group, $1.path) }
         var snap = ReviewSnapshot(files: files, hiddenDeletedDirectories: hiddenDeleted,

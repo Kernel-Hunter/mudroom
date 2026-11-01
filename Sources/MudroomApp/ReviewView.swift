@@ -262,6 +262,10 @@ struct FileRow: View {
                     .help(entry.conflict ?? "")
             } else if entry.isApplied {
                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).help("Applied")
+            } else if entry.merges {
+                Image(systemName: "arrow.triangle.merge")
+                    .foregroundStyle(.blue)
+                    .help("Also changed in your project, in other lines. Applying merges both.")
             } else if !entry.appliedHunks.isEmpty {
                 Text("\(entry.appliedHunks.count)/\(entry.hunks.count)")
                     .font(.system(size: 10, weight: .semibold)).foregroundStyle(.green)
