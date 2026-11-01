@@ -59,6 +59,23 @@ try {
     expect (-not (Test-Path (Join-Path $project 'new.txt'))) 'undo removes the added file'
     expect (Test-Path (Join-Path $project 'old.txt')) 'undo brings back the deleted file'
 
+    # Two sessions edit one file in different lines: the second apply merges.
+    $appTxt = Join-Path $project 'src\app.txt'
+    $a = (mr @('new', $project, '--agent', 'smoke', '--', 'cmd', '/c', 'exit')).Trim()
+    $b = (mr @('new', $project, '--agent', 'smoke', '--', 'cmd', '/c', 'exit')).Trim()
+    [IO.File]::WriteAllText((Join-Path $env:MUDROOM_HOME "sessions\$a\work\src\app.txt"), "ONE`r`ntwo`r`nthree`r`n")
+    [IO.File]::WriteAllText((Join-Path $env:MUDROOM_HOME "sessions\$b\work\src\app.txt"), "one`r`ntwo`r`nTHREE`r`n")
+    mr @('apply', $a, '--all') | Out-Null
+    $merge = mr @('apply', $b, '--all')
+    expect ($merge -match 'merged\s+src/app.txt') 'the second apply reports a merge'
+    expect ([IO.File]::ReadAllText($appTxt) -eq "ONE`r`ntwo`r`nTHREE`r`n") 'both edits are in the file, CRLF intact'
+    mr @('undo', $b) | Out-Null
+    expect ([IO.File]::ReadAllText($appTxt) -eq "ONE`r`ntwo`r`nthree`r`n") 'undo of the merge puts back the first apply'
+    mr @('undo', $a) | Out-Null
+    expect ([IO.File]::ReadAllText($appTxt) -eq "one`r`ntwo`r`nthree`r`n") 'undo of the first apply restores the original'
+    mr @('discard', $a) | Out-Null
+    mr @('discard', $b) | Out-Null
+
     $list = mr @('list')
     expect ($list -match $id) 'list shows the session'
     mr @('discard', $id) | Out-Null

@@ -320,10 +320,16 @@ struct Hunks: ParsableCommand {
                 throw MudroomError.invalid("\(path) is not a modified text file; it can only be applied as a whole")
             }
             let applied = try applier.appliedHunks(for: change)
+            let dry = try applier.preflight(paths: [path], diff: diff)
             print("--- a/\(TextLines.visible(path))\n+++ b/\(TextLines.visible(path))")
             print(LineDiff.numberedText(hunks))
             if !applied.isEmpty {
                 print("\nalready applied: \(applied.sorted().map(String.init).joined(separator: ", "))")
+            }
+            if dry.merged.contains(path) {
+                print("\nthe project changed this file too, in other lines; apply merges the hunks into your version")
+            } else if let c = dry.conflicts.first(where: { $0.path == path }) {
+                print("\nconflict: \(TextLines.visible(c.reason))")
             }
         } catch { fail(error) }
     }
@@ -379,8 +385,10 @@ struct Apply: ParsableCommand {
         abstract: "Copy approved changes into the real project.",
         discussion: """
         A path is written only if the real project still matches the state the \
-        agent started from; otherwise it is reported as a conflict and left alone. \
-        Overwritten files are saved in a rollback bundle for `mudroom undo`.
+        agent started from. A text file that changed in the project too is merged \
+        when the two sets of changes touch different lines; anything else is \
+        reported as a conflict and left alone. Overwritten files are saved in a \
+        rollback bundle for `mudroom undo`.
         """)
 
     @Argument(help: "Session id, unique prefix, or 'last'.")
@@ -432,14 +440,22 @@ struct Apply: ParsableCommand {
             }
         } catch { fail(error) }
 
-        for p in report.applied { print("applied    \(TextLines.visible(p))") }
+        let merged = Set(report.merged)
+        for p in report.applied {
+            if merged.contains(p) {
+                print("merged     \(TextLines.visible(p)) (changed in the project too; both sets of changes kept)")
+            } else {
+                print("applied    \(TextLines.visible(p))")
+            }
+        }
         for w in report.warnings { print("note       \(TextLines.visible(w.path)): check it; it \(w.reason)") }
         for p in report.alreadyApplied { print("unchanged  \(TextLines.visible(p)) (project already matches)") }
         for i in report.skipped { print("skipped    \(i)") }
         for i in report.conflicts { print("CONFLICT   \(i)") }
         if !report.applied.isEmpty {
             try handle.setStatus(.applied)
-            print("\n\(report.applied.count) applied. Undo with: mudroom undo \(handle.session.id)")
+            let note = merged.isEmpty ? "" : " (\(merged.count) merged)"
+            print("\n\(report.applied.count) applied\(note). Undo with: mudroom undo \(handle.session.id)")
         } else if report.conflicts.isEmpty {
             print("nothing to apply")
         }

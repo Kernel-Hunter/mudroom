@@ -19,7 +19,8 @@ struct Review: ParsableCommand {
         discussion: """
         Keys: up/down (or j/k) move, space toggles, a toggles all, enter shows the diff, \
         x applies the selected paths (after a y/N prompt), q quits. Conflicting paths \
-        start unselected. For a modified text file the diff is split into hunks: j/k \
+        start unselected. A file that changed in the project too, in other lines, \
+        is marked MERGE: applying it keeps both sets of changes. For a modified text file the diff is split into hunks: j/k \
         move between them, space toggles one, a/n select all or none, q goes back. A \
         file with only some hunks selected shows [~] and is applied hunk by hunk. \
         `mudroom hunks` and `apply --hunks` do the same from scripts.
@@ -45,7 +46,8 @@ struct Review: ParsableCommand {
             let dry = try applier.preflight(diff: diff)
             reviewed = ReviewedChanges(diff.changes + diff.gitMetadataChanges)
             try? reviewed.save(handle)
-            state = TerminalReview(changes: diff.changes, conflicts: Dictionary(dry.conflicts.map { ($0.path, $0.reason) }) { a, _ in a })
+            state = TerminalReview(changes: diff.changes, conflicts: Dictionary(dry.conflicts.map { ($0.path, $0.reason) }) { a, _ in a },
+                                   merges: Set(dry.merged))
             let excluded = diff.excludedNames.map(TextLines.visible)
             if !excluded.isEmpty {
                 state.message = "not applied, on the exclude list: " + excluded.prefix(6).joined(separator: ", ")
@@ -107,6 +109,7 @@ struct Review: ParsableCommand {
                     state.markApplied(report.applied + report.alreadyApplied, conflicts: conflicts, hunks: nowApplied)
                     if !report.applied.isEmpty { try handle.setStatus(.applied) }
                     var parts = ["applied \(report.applied.count)"]
+                    if !report.merged.isEmpty { parts.append("\(report.merged.count) merged with project changes") }
                     if !report.conflicts.isEmpty { parts.append("\(report.conflicts.count) conflict(s)") }
                     if !report.skipped.isEmpty { parts.append("\(report.skipped.count) skipped") }
                     state.message = parts.joined(separator: ", ") + ". Undo with: mudroom undo \(handle.session.id)"

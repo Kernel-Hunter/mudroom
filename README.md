@@ -586,8 +586,10 @@ claude`.
   project's allowlist for the next session.
 - **Timeline**: if the session has snapshots, a slider picks a point in time
   and the file list shows only what changed after it (read-only).
-- **Conflicts**: files you changed yourself since the session started are
-  flagged in the list and above the diff, and are never overwritten.
+- **Conflicts and merges**: files you changed yourself since the session
+  started are flagged in the list and above the diff, and are never
+  overwritten. When your changes and the agent's are in different lines of a
+  text file, the file is marked as a merge instead and applying keeps both.
 - **Apply Selected** (⌘↩), **Apply All** (⇧⌘↩), **Undo** (⌥⌘Z) and
   **Discard** (⌘⌫). Each apply can be undone in one step. Space toggles the
   selected file.
@@ -1276,9 +1278,30 @@ point Mudroom at a file outside the session.
 ### How apply stays safe
 
 For each path, Mudroom checks that the real project still has exactly what the
-session started from. If you edited `README.md` while the agent was working,
-`apply` reports a conflict for that file and leaves it alone; the rest still
-applies. Other rules:
+session started from. If you edited `README.md` while the agent was working
+(or another session's apply changed it), Mudroom tries a three-way merge of
+the session's base, your current file and the agent's copy:
+
+- If the two sets of changes are in different lines, the merged file is
+  applied like any other change. `apply` prints it as `merged`, the review
+  marks it before you apply, and `undo` puts back your file exactly as it was
+  before the apply. A later apply of the same session merges again instead of
+  writing the agent's copy over it.
+- If they change the same lines, or lines right next to each other, it's a
+  conflict: nothing is written to that file and the rest still applies. The
+  same goes for permissions changed on both sides.
+- Only regular text files are merged. A binary file, a symlink, a mode-only
+  change, a change of type, a file one side deleted and the other edited, a
+  file both sides added, files over 4 MB and anything inside `.git` stay
+  conflicts.
+- Line endings are part of each line, so CRLF files stay CRLF and a missing
+  final newline stays missing. Converting a whole file between CRLF and LF on
+  one side touches every line, so it conflicts with any edit on the other.
+- Selected hunks merge the same way: the base plus the hunks you picked is
+  merged into your current file, so a hunk still goes in when you changed a
+  different part of the file.
+
+Other rules:
 
 - Files are written to a temp name and renamed into place.
 - Directories are removed with `rmdir`, so a directory that gained a file on
@@ -1589,8 +1612,10 @@ safe](#how-apply-stays-safe).
 <br>
 
 Apply checks each file in your project against the session's starting copy.
-A file you changed is reported as a conflict and left alone; the rest still
-applies.
+If you changed a text file in different lines from the agent, apply merges
+the two and keeps both. If you changed the same or neighbouring lines, the file is reported
+as a conflict and left alone; the rest still applies. The same happens when
+two sessions on one project edit the same file and you apply both.
 
 </details>
 

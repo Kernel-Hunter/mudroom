@@ -110,6 +110,15 @@ public struct Hunk: Sendable, Equatable, Identifiable {
     }
 }
 
+/// What a three-way merge (`LineDiff.merge`) came to.
+public enum MergeResult: Sendable, Equatable {
+    /// Both sides' changes in one file.
+    case clean(TextLines)
+    /// Base line ranges (0-based, half-open) that both sides changed in
+    /// different ways. Nothing is merged.
+    case conflict([Range<Int>])
+}
+
 public enum LineDiff {
     /// Past this many edits Myers gives up and reports the rest of the
     /// differing region as one replaced block. Keeps worst-case time bounded
@@ -303,6 +312,51 @@ public enum LineDiff {
     public static func apply(selected: Set<Int>, base: Data, work: Data, context: Int = 3) -> Data {
         let b = TextLines(base), w = TextLines(work)
         return apply(hunks(base: b, work: w, context: context), selected: selected, base: b, work: w).data
+    }
+
+    /// Three-way merge of two edits of `base`, the way diff3 does it. A
+    /// block changed on one side only takes that side's lines; a block both
+    /// sides changed in the same way is taken once. Blocks both sides
+    /// changed differently are a conflict, and so are blocks that touch (no
+    /// unchanged line between them), since their order would be a guess.
+    /// Line terminators are part of a line, so switching CRLF to LF or
+    /// adding a final newline is a change like any other.
+    public static func merge(base: TextLines, ours: TextLines, theirs: TextLines) -> MergeResult {
+        let a = changes(base.lines, ours.lines), b = changes(base.lines, theirs.lines)
+        var out: [Data] = []
+        var conflicts: [Range<Int>] = []
+        var i = 0, j = 0, pos = 0
+        while i < a.count || j < b.count {
+            // A group starts at the first block left on either side and takes
+            // in every block, from either side, that overlaps or touches it.
+            let lo = min(i < a.count ? a[i].old.lowerBound : .max, j < b.count ? b[j].old.lowerBound : .max)
+            var hi = lo, ea = i, eb = j
+            while true {
+                if ea < a.count, a[ea].old.lowerBound <= hi { hi = max(hi, a[ea].old.upperBound); ea += 1; continue }
+                if eb < b.count, b[eb].old.lowerBound <= hi { hi = max(hi, b[eb].old.upperBound); eb += 1; continue }
+                break
+            }
+            // One side's lines for base lines lo..<hi. Outside its own blocks
+            // a side has the base's lines, so the ends map by offset.
+            func side(_ blocks: ArraySlice<(old: Range<Int>, new: Range<Int>)>, _ text: TextLines) -> ArraySlice<Data> {
+                guard let f = blocks.first, let l = blocks.last else { return base.lines[lo..<hi] }
+                return text.lines[(f.new.lowerBound - (f.old.lowerBound - lo))..<(l.new.upperBound + (hi - l.old.upperBound))]
+            }
+            out.append(contentsOf: base.lines[pos..<lo])
+            let o = side(a[i..<ea], ours), t = side(b[j..<eb], theirs)
+            if ea == i {
+                out.append(contentsOf: t)
+            } else if eb == j || o.elementsEqual(t) {
+                out.append(contentsOf: o)
+            } else {
+                conflicts.append(lo..<hi)
+            }
+            pos = hi
+            i = ea
+            j = eb
+        }
+        out.append(contentsOf: base.lines[pos..<base.count])
+        return conflicts.isEmpty ? .clean(TextLines(lines: out)) : .conflict(conflicts)
     }
 
     /// A unified diff with numbered hunk headers ("[1] @@ -1,3 +1,4 @@").

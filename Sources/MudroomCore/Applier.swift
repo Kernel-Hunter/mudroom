@@ -26,6 +26,10 @@ public struct RollbackEntry: Codable, Sendable, Equatable {
     public var pending: Bool?
     /// This entry has been rolled back.
     public var undone: Bool?
+    /// The file was written as a three-way merge of base/, the project's
+    /// copy and work/, so it also holds changes that aren't this session's.
+    /// A later apply merges again instead of writing work/ over it.
+    public var merged: Bool?
 
     public init(path: String, prior: FileNode, applied: FileNode, backup: String? = nil, hunks: [Int]? = nil) {
         self.path = path
@@ -51,7 +55,7 @@ public struct RollbackManifest: Codable, Sendable {
 public struct PathIssue: Sendable, Equatable, CustomStringConvertible {
     public let path: String
     public let reason: String
-    public var description: String { "\(TextLines.visible(path)): \(reason)" }
+    public var description: String { "\(TextLines.visible(path)): \(TextLines.visible(reason))" }
 
     public init(path: String, reason: String) {
         self.path = path
@@ -61,6 +65,9 @@ public struct PathIssue: Sendable, Equatable, CustomStringConvertible {
 
 public struct ApplyReport: Sendable {
     public var applied: [String] = []
+    /// Paths in `applied` that had changed in the project too, written as a
+    /// three-way merge: the project's changes kept, the agent's added.
+    public var merged: [String] = []
     /// The project already matched the agent's version.
     public var alreadyApplied: [String] = []
     /// Refused because the real project (or the agent's copy) changed.
@@ -325,8 +332,8 @@ public struct Applier {
             }
         }
 
-        // Per-hunk paths are planned separately (below).
-        var hunkPlans: [HunkPlan] = []
+        // Per-hunk paths are planned separately (below), and so are merges.
+        var textPlans: [TextPlan] = []
         for (path, selected) in hunkSel.sorted(by: { $0.key < $1.key }) {
             guard let change = changes.first(where: { $0.path == path }) else {
                 if !report.skipped.contains(where: { $0.path == path }) && !report.conflicts.contains(where: { $0.path == path }) {
@@ -334,7 +341,7 @@ public struct Applier {
                 }
                 continue
             }
-            if let plan = try planHunks(change, selected: selected, written: written, report: &report) { hunkPlans.append(plan) }
+            if let plan = try planHunks(change, selected: selected, written: written, report: &report) { textPlans.append(plan) }
         }
         changes.removeAll { hunkSel[$0.path] != nil }
 
@@ -385,7 +392,7 @@ public struct Applier {
         for (change, real) in zip(candidates, reals) {
             if renamedAway.contains(change.path) {
                 // Checked along with its rename partner.
-                if real != change.before && written[change.path]?.applied != real {
+                if real != change.before && !Self.ownWrite(written[change.path], real) {
                     report.conflicts.append(PathIssue(path: change.path, reason: conflictReason(change, real)))
                     renames = renames.filter { $0.value.path != change.path }
                     renamedAway.remove(change.path)
@@ -409,10 +416,25 @@ public struct Applier {
             }
             if real == want {
                 report.alreadyApplied.append(change.path)
-            } else if !(real == change.before || written[change.path]?.applied == real) {
-                report.conflicts.append(PathIssue(path: change.path, reason: conflictReason(change, real)))
-            } else {
+            } else if real == change.before || Self.ownWrite(written[change.path], real) {
                 planned.append((change, real))
+            } else {
+                // Changed in the project too (by you, or by another session's
+                // apply). A text file can still go in if the changes don't overlap.
+                do {
+                    switch try mergeWhole(change, real: real) {
+                    case nil:
+                        report.conflicts.append(PathIssue(path: change.path, reason: conflictReason(change, real)))
+                    case .unchanged?:
+                        report.alreadyApplied.append(change.path)
+                    case .overlap(let why)?:
+                        report.conflicts.append(PathIssue(path: change.path, reason: why))
+                    case .merged(let content, let mode)?:
+                        textPlans.append(TextPlan(change: change, real: real, content: content, mode: mode, hunks: nil, merged: true))
+                    }
+                } catch {
+                    report.conflicts.append(PathIssue(path: change.path, reason: "\(error)"))
+                }
             }
         }
         // A repository's .git goes in whole or not at all. Half of one (the
@@ -430,14 +452,15 @@ public struct Applier {
             renamedAway.remove(renames[added]!.path)
             renames[added] = nil
         }
-        for (change, _) in planned {
+        for change in planned.map(\.change) + textPlans.filter(\.merged).map(\.change) {
             if let risk = Differ.hostRisk(change.path) { report.warnings.append(PathIssue(path: change.path, reason: risk)) }
         }
         if dryRun {
-            report.applied = planned.map(\.change.path) + Array(renamedAway).sorted() + hunkPlans.map(\.change.path)
+            report.applied = planned.map(\.change.path) + Array(renamedAway).sorted() + textPlans.map(\.change.path)
+            report.merged = textPlans.filter(\.merged).map(\.change.path).sorted()
             return report
         }
-        guard !planned.isEmpty || !hunkPlans.isEmpty else { return report }
+        guard !planned.isEmpty || !textPlans.isEmpty else { return report }
 
         let bundle = try makeBundleDirectory()
         report.bundle = bundle
@@ -549,8 +572,9 @@ public struct Applier {
             }
         }
 
-        // 2b. Partial files: write the base with the chosen hunks applied.
-        for plan in hunkPlans {
+        // 2b. Files built in memory: the base with the chosen hunks applied,
+        // or a three-way merge with the project's copy.
+        for plan in textPlans {
             run(plan.change.path) {
                 var cache: [String: String?] = [:]
                 if let bad = unsafeAncestor(of: plan.change.path, cache: &cache) {
@@ -560,10 +584,25 @@ public struct Applier {
                 stagedCount += 1
                 let staged = staging.appendingPathComponent(String(stagedCount))
                 try plan.content.write(to: staged)
-                let i = try record(try backup(plan.change.path, prior: plan.real, applied: .absent, bundle: bundle))
-                try placeFile(from: staged, to: target, mode: plan.mode & ~0o6000, consume: true)
-                entries[i].hunks = plan.hunks
+                // The content was built from the project's copy as read
+                // above, and undo restores the backup: both must be that copy.
+                let changedHere = MudroomError.invalid("changed in the project while applying; nothing written, try again")
+                guard try FileNode.read(at: target) == plan.real else { throw changedHere }
+                // setuid/setgid stay only when the file keeps the project's own mode.
+                let mode = plan.mode == plan.real.mode ? plan.mode : plan.mode & ~0o6000
+                // What the write will leave, so undo after a crash right
+                // after it still knows the file.
+                let expected = FileNode.file(mode: mode, size: Int64(plan.content.count), sha256: SafeFS.sha256(plan.content))
+                var entry = try backup(plan.change.path, prior: plan.real, applied: expected, bundle: bundle)
+                if let rel = entry.backup, try FileNode.read(at: bundle.appendingPathComponent(rel)).sha256 != plan.real.sha256 {
+                    throw changedHere
+                }
+                entry.hunks = plan.hunks
+                entry.merged = plan.merged ? true : nil
+                let i = try record(entry)
+                try placeFile(from: staged, to: target, mode: mode, consume: true)
                 done(i, applied: try FileNode.read(at: target))
+                if plan.merged { report.merged.append(plan.change.path) }
             }
         }
 
@@ -573,6 +612,7 @@ public struct Applier {
         }
         try? fm.removeItem(at: staging)
         report.applied.sort()
+        report.merged.sort()
         return report
     }
 
@@ -620,26 +660,41 @@ public struct Applier {
 
     // MARK: - Hunks
 
-    struct HunkPlan {
+    /// A file built in memory: the base with some hunks applied, or a
+    /// three-way merge with the project's copy.
+    struct TextPlan {
         let change: Change
+        /// The project's copy the content was built from.
         let real: FileNode
         let content: Data
         let mode: UInt16
         /// Hunk ids present after the write; nil when that is all of them.
         let hunks: [Int]?
+        /// Built by merging with a project copy that changed since the base.
+        let merged: Bool
+    }
+
+    /// True when `real` is what this session last wrote at a path, and that
+    /// was the session's own content (base or work, or base plus hunks), not
+    /// a merge holding someone else's changes.
+    static func ownWrite(_ last: RollbackEntry?, _ real: FileNode) -> Bool {
+        guard let last, last.applied == real else { return false }
+        return last.merged != true
     }
 
     /// Base and work bytes of a modified text file, read without following
-    /// symlinks; the work bytes are checked against the diff's hash.
-    func texts(for change: Change) throws -> (Data, Data)? {
+    /// symlinks; the work bytes are checked against the diff's hash. Reads
+    /// at most `limit` bytes of each, so a file that grew past it since the
+    /// diff fails the hash check instead of being read whole.
+    func texts(for change: Change, limit: Int = .max) throws -> (Data, Data)? {
         guard change.kind == .modified, case .file = change.before, case .file(_, _, let sha) = change.after else { return nil }
-        let b = try SafeFS.readBeneath(handle.base, change.path)
+        let b = try SafeFS.readBeneath(handle.base, change.path, limit: limit)
         #if os(Windows)
-        let w = try SafeFS.readBeneath(handle.work, change.path)
+        let w = try SafeFS.readBeneath(handle.work, change.path, limit: limit)
         #else
         let fd = try SafeFS.openBeneath(handle.work, change.path)
         defer { close(fd) }
-        let w = try SafeFS.readAll(fd, limit: .max)
+        let w = try SafeFS.readAll(fd, limit: limit)
         #endif
         guard SafeFS.sha256(w) == sha else {
             throw MudroomError.invalid("\(change.path) changed in the agent's copy since the diff was taken; review again")
@@ -659,18 +714,84 @@ public struct Applier {
     /// partial apply. Empty when the project still has the base version.
     public func appliedHunks(for change: Change, hunks known: [Hunk]? = nil) throws -> Set<Int> {
         let real = try FileNode.read(at: project.appendingPathComponent(change.path))
-        if real == Self.sanitized(change.after) {
-            guard let hunks = try known ?? hunks(for: change) else { return [] }
-            return Set(hunks.map(\.id))
-        }
         if real == change.before { return [] }
-        guard let last = lastWritten(change.path), last.applied == real, let ids = last.hunks else { return [] }
-        return Set(ids)
+        guard let hunks = try known ?? hunks(for: change) else { return [] }
+        return Self.hunksPresent(change, hunks: hunks, real: real, last: lastWritten(change.path))
+    }
+
+    /// Which of `hunks` the project copy `real` has, going by what this
+    /// session wrote last (`last`).
+    static func hunksPresent(_ change: Change, hunks: [Hunk], real: FileNode, last: RollbackEntry?) -> Set<Int> {
+        if real == sanitized(change.after) { return Set(hunks.map(\.id)) }
+        guard real != change.before, let last, last.applied == real else { return [] }
+        if let ids = last.hunks { return Set(ids) }
+        // A whole-file merge has every hunk in it.
+        return last.merged == true ? Set(hunks.map(\.id)) : []
+    }
+
+    // MARK: - Merge
+
+    /// What merging one file came to.
+    enum MergeOutcome {
+        /// Clean: write this content with this mode.
+        case merged(Data, mode: UInt16)
+        /// The merge is what the project already has.
+        case unchanged
+        /// Both sides changed the same lines (or the permissions) differently.
+        case overlap(String)
+    }
+
+    /// Whether `change` can be merged with the project copy `real` at all:
+    /// a modified regular file on all three sides, outside .git, no larger
+    /// than the review shows as text. Anything else stays a conflict.
+    static func mergeable(_ change: Change, real: FileNode) -> Bool {
+        guard change.kind == .modified, gitDirectory(of: change.path) == nil,
+              case .file(_, let b, _) = change.before, case .file(_, let w, _) = change.after,
+              case .file(_, let p, _) = real else { return false }
+        return max(b, w, p) <= ReviewSnapshot.maxTextBytes
+    }
+
+    /// The whole of work/ merged into the project's copy of a file that
+    /// changed there too. Nil when it can't be merged (see `mergeable`).
+    func mergeWhole(_ change: Change, real: FileNode) throws -> MergeOutcome? {
+        guard Self.mergeable(change, real: real),
+              let (b, w) = try texts(for: change, limit: Int(ReviewSnapshot.maxTextBytes) + 1) else { return nil }
+        return try merge(change, real: real, base: TextLines(b), theirs: TextLines(w), theirsMode: change.after.mode ?? 0o644)
+    }
+
+    /// Three-way merge of base, the project's copy (`real`, read here and
+    /// checked against its hash) and `theirs`, what this session would write.
+    /// Nil when the project's copy isn't text.
+    func merge(_ change: Change, real: FileNode, base: TextLines, theirs: TextLines, theirsMode: UInt16) throws -> MergeOutcome? {
+        guard case .file(let realMode, _, let realSHA) = real, let baseMode = change.before.mode else { return nil }
+        let ours = try SafeFS.readBeneath(project, change.path, limit: Int(ReviewSnapshot.maxTextBytes) + 1)
+        guard SafeFS.sha256(ours) == realSHA else {
+            throw MudroomError.invalid("changed in the project while applying; nothing written, try again")
+        }
+        if DiffRenderer.looksBinary(ours) { return nil }
+        // Permissions merge the same way: whichever side changed them wins.
+        let mode: UInt16
+        if theirsMode & 0o7777 == baseMode & 0o7777 {
+            mode = realMode
+        } else if realMode & 0o7777 == baseMode & 0o7777 || realMode & 0o7777 == theirsMode & 0o7777 {
+            mode = theirsMode
+        } else {
+            return .overlap("project changed since the session started, and both the project and the agent changed its permissions; apply it by hand")
+        }
+        switch LineDiff.merge(base: base, ours: TextLines(ours), theirs: theirs) {
+        case .clean(let lines):
+            let content = lines.data
+            if content == ours && mode & 0o7777 == realMode & 0o7777 { return .unchanged }
+            return .merged(content, mode: mode)
+        case .conflict(let ranges):
+            let more = ranges.count > 1 ? " (and \(ranges.count - 1) more place\(ranges.count > 2 ? "s" : ""))" : ""
+            return .overlap("project changed since the session started, and its changes overlap the agent's near line \(ranges[0].lowerBound + 1)\(more); merge it by hand")
+        }
     }
 
     /// Checks one per-hunk selection and computes the file to write. Returns
     /// nil (after noting why in `report`) when there is nothing to write.
-    func planHunks(_ change: Change, selected: Set<Int>, written: [String: RollbackEntry], report: inout ApplyReport) throws -> HunkPlan? {
+    func planHunks(_ change: Change, selected: Set<Int>, written: [String: RollbackEntry], report: inout ApplyReport) throws -> TextPlan? {
         let path = change.path
         guard let (baseData, workData) = try texts(for: change) else {
             report.skipped.append(PathIssue(path: path, reason: "not a modified text file; apply the whole path instead"))
@@ -694,10 +815,38 @@ public struct Applier {
         } else if real == Self.sanitized(change.after) {
             report.alreadyApplied.append(path)
             return nil
-        } else if let last = written[path], last.applied == real {
-            previous = Set(last.hunks ?? [])
+        } else if Self.ownWrite(written[path], real) {
+            previous = Set(written[path]?.hunks ?? [])
         } else {
-            report.conflicts.append(PathIssue(path: path, reason: conflictReason(change, real)))
+            // Changed in the project too: merge base plus the wanted hunks
+            // into the project's copy, if the changes don't overlap.
+            guard Self.mergeable(change, real: real) else {
+                report.conflicts.append(PathIssue(path: path, reason: conflictReason(change, real)))
+                return nil
+            }
+            let earlier = Self.hunksPresent(change, hunks: hunks, real: real, last: written[path])
+            let wanted = earlier.union(selected)
+            let partial = LineDiff.apply(hunks, selected: wanted, base: baseLines, work: workLines)
+            let complete = partial.data == workData
+            let theirsMode = (complete ? change.after.mode : change.before.mode) ?? 0o644
+            let outcome: MergeOutcome?
+            do {
+                outcome = try merge(change, real: real, base: baseLines, theirs: partial, theirsMode: theirsMode)
+            } catch {
+                report.conflicts.append(PathIssue(path: path, reason: "\(error)"))
+                return nil
+            }
+            switch outcome {
+            case nil:
+                report.conflicts.append(PathIssue(path: path, reason: conflictReason(change, real)))
+            case .unchanged?:
+                report.alreadyApplied.append(path)
+            case .overlap(let why)?:
+                report.conflicts.append(PathIssue(path: path, reason: why))
+            case .merged(let content, let mode)?:
+                return TextPlan(change: change, real: real, content: content, mode: mode,
+                                hunks: complete ? nil : wanted.sorted(), merged: true)
+            }
             return nil
         }
         let wanted = previous.union(selected)
@@ -707,9 +856,9 @@ public struct Applier {
         }
         let content = LineDiff.apply(hunks, selected: wanted, base: baseLines, work: workLines).data
         let complete = content == workData
-        return HunkPlan(change: change, real: real, content: content,
+        return TextPlan(change: change, real: real, content: content,
                         mode: (complete ? change.after.mode : change.before.mode) ?? 0o644,
-                        hunks: complete ? nil : wanted.sorted())
+                        hunks: complete ? nil : wanted.sorted(), merged: false)
     }
 
     /// Applies some hunks of one modified text file. Shorthand for

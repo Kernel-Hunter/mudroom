@@ -389,13 +389,15 @@ final class ReviewModel {
                 // contents aren't rows.
                 let rows = Set(baseFiles.map(\.path))
                 let n = report.applied.filter { rows.contains($0) }.count
+                let m = report.merged.count
                 let c = report.conflicts.count
                 if n == 0 && c == 0 {
                     lastResult = .init(style: .info, title: "Nothing to apply", detail: nil, offerUndo: false)
                 } else {
                     let files = n == 1 ? "1 file" : "\(n) files"
-                    let detail = c == 0 ? "Undo puts the previous versions back."
-                        : "\(c) \(c == 1 ? "path was" : "paths were") left alone because of conflicts."
+                    let merged = m == 0 ? "" : "\(m == 1 ? "1 file was" : "\(m) files were") merged with changes in your project. "
+                    let detail = merged + (c == 0 ? "Undo puts the previous versions back."
+                        : "\(c) \(c == 1 ? "path was" : "paths were") left alone because of conflicts.")
                     lastResult = .init(style: c == 0 ? .success : .warning, title: "\(verb) \(files)",
                                        detail: detail, offerUndo: n > 0)
                 }
