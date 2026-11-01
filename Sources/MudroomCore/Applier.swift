@@ -55,7 +55,7 @@ public struct RollbackManifest: Codable, Sendable {
 public struct PathIssue: Sendable, Equatable, CustomStringConvertible {
     public let path: String
     public let reason: String
-    public var description: String { "\(TextLines.visible(path)): \(reason)" }
+    public var description: String { "\(TextLines.visible(path)): \(TextLines.visible(reason))" }
 
     public init(path: String, reason: String) {
         self.path = path
@@ -588,14 +588,19 @@ public struct Applier {
                 // above, and undo restores the backup: both must be that copy.
                 let changedHere = MudroomError.invalid("changed in the project while applying; nothing written, try again")
                 guard try FileNode.read(at: target) == plan.real else { throw changedHere }
-                var entry = try backup(plan.change.path, prior: plan.real, applied: .absent, bundle: bundle)
+                // setuid/setgid stay only when the file keeps the project's own mode.
+                let mode = plan.mode == plan.real.mode ? plan.mode : plan.mode & ~0o6000
+                // What the write will leave, so undo after a crash right
+                // after it still knows the file.
+                let expected = FileNode.file(mode: mode, size: Int64(plan.content.count), sha256: SafeFS.sha256(plan.content))
+                var entry = try backup(plan.change.path, prior: plan.real, applied: expected, bundle: bundle)
                 if let rel = entry.backup, try FileNode.read(at: bundle.appendingPathComponent(rel)).sha256 != plan.real.sha256 {
                     throw changedHere
                 }
                 entry.hunks = plan.hunks
                 entry.merged = plan.merged ? true : nil
                 let i = try record(entry)
-                try placeFile(from: staged, to: target, mode: plan.mode & ~0o6000, consume: true)
+                try placeFile(from: staged, to: target, mode: mode, consume: true)
                 done(i, applied: try FileNode.read(at: target))
                 if plan.merged { report.merged.append(plan.change.path) }
             }
@@ -678,16 +683,18 @@ public struct Applier {
     }
 
     /// Base and work bytes of a modified text file, read without following
-    /// symlinks; the work bytes are checked against the diff's hash.
-    func texts(for change: Change) throws -> (Data, Data)? {
+    /// symlinks; the work bytes are checked against the diff's hash. Reads
+    /// at most `limit` bytes of each, so a file that grew past it since the
+    /// diff fails the hash check instead of being read whole.
+    func texts(for change: Change, limit: Int = .max) throws -> (Data, Data)? {
         guard change.kind == .modified, case .file = change.before, case .file(_, _, let sha) = change.after else { return nil }
-        let b = try SafeFS.readBeneath(handle.base, change.path)
+        let b = try SafeFS.readBeneath(handle.base, change.path, limit: limit)
         #if os(Windows)
-        let w = try SafeFS.readBeneath(handle.work, change.path)
+        let w = try SafeFS.readBeneath(handle.work, change.path, limit: limit)
         #else
         let fd = try SafeFS.openBeneath(handle.work, change.path)
         defer { close(fd) }
-        let w = try SafeFS.readAll(fd, limit: .max)
+        let w = try SafeFS.readAll(fd, limit: limit)
         #endif
         guard SafeFS.sha256(w) == sha else {
             throw MudroomError.invalid("\(change.path) changed in the agent's copy since the diff was taken; review again")
@@ -747,7 +754,8 @@ public struct Applier {
     /// The whole of work/ merged into the project's copy of a file that
     /// changed there too. Nil when it can't be merged (see `mergeable`).
     func mergeWhole(_ change: Change, real: FileNode) throws -> MergeOutcome? {
-        guard Self.mergeable(change, real: real), let (b, w) = try texts(for: change) else { return nil }
+        guard Self.mergeable(change, real: real),
+              let (b, w) = try texts(for: change, limit: Int(ReviewSnapshot.maxTextBytes) + 1) else { return nil }
         return try merge(change, real: real, base: TextLines(b), theirs: TextLines(w), theirsMode: change.after.mode ?? 0o644)
     }
 

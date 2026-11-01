@@ -272,6 +272,20 @@ struct MergeApplyTests {
         #expect(r.conflicts.first?.reason.contains("permissions") == true)
     }
 
+    @Test("a merge keeps the project's own setuid bit but never takes one from work/",
+          .disabled(if: isWindows, "no mode bits on Windows"))
+    func setuid() throws {
+        let f = try fixture()
+        chmod(target(f).path, 0o4755)
+        #expect(try Applier(handle: f.handle).apply(paths: nil).merged == ["src/file.txt"])
+        #expect(try modeOf(target(f)) == 0o4755)
+
+        let g = try fixture()
+        chmod(g.work.appendingPathComponent("src/file.txt").path, 0o4755)
+        #expect(try Applier(handle: g.handle).apply(paths: nil).merged == ["src/file.txt"])
+        #expect(try modeOf(target(g)) == 0o755)
+    }
+
     @Test("undo of a merged file refuses after a later edit, unless forced")
     func undoAfterEdit() throws {
         let f = try fixture()

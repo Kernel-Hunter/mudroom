@@ -329,7 +329,7 @@ struct Hunks: ParsableCommand {
             if dry.merged.contains(path) {
                 print("\nthe project changed this file too, in other lines; apply merges the hunks into your version")
             } else if let c = dry.conflicts.first(where: { $0.path == path }) {
-                print("\nconflict: \(c.reason)")
+                print("\nconflict: \(TextLines.visible(c.reason))")
             }
         } catch { fail(error) }
     }
